@@ -324,12 +324,14 @@ namespace GenOnlineService
 
 			{
 				// TODO_SOCIAL: Move this to a class
-				// inform any friends who are online that this person just came online
+				// inform any friends who are online that this person just came offline
 				WebSocketMessage_Social_FriendStatusChanged friendStatusChangedEvent = new();
 				friendStatusChangedEvent.msg_id = (int)EWebSocketMessageID.SOCIAL_FRIEND_ONLINE_STATUS_CHANGED;
+				if (sourceData != null)
+			{
 				friendStatusChangedEvent.display_name = sourceData.m_strDisplayName;
-				friendStatusChangedEvent.online = false;
-				byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(friendStatusChangedEvent));
+					friendStatusChangedEvent.online = false;
+					byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(friendStatusChangedEvent));
 
 				if (sourceData != null)
 				{
@@ -831,12 +833,12 @@ namespace GenOnlineService
 			m_UserID = ownerID;
 
 			// TODO_SOCIAL: Move this to a class
-			// inform any friends who are online that this person just came online
+			// inform any friends who are online that this person just came offline
 			WebSocketMessage_Social_FriendStatusChanged friendStatusChangedEvent = new();
 			friendStatusChangedEvent.msg_id = (int)EWebSocketMessageID.SOCIAL_FRIEND_ONLINE_STATUS_CHANGED;
 			friendStatusChangedEvent.display_name = strDisplayName;
 			friendStatusChangedEvent.online = true;
-			byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(friendStatusChangedEvent));
+				byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(friendStatusChangedEvent));
 
 			// friends are reciprocal so we can just iterate our friends
 			foreach (Int64 friendID in socialContainer.Friends)
