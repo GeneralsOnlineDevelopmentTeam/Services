@@ -147,7 +147,7 @@ namespace GenOnlineService.Controllers
 				return;
 			}
 
-			HelperFunction_AcceptFriendRequest(source_user_id, target_user_id);
+			await HelperFunction_AcceptFriendRequest(source_user_id, target_user_id);
 
 			UserSession? sourceSession = WebSocketManager.GetDataFromUser(source_user_id);
 			if (sourceSession != null)
@@ -319,7 +319,7 @@ namespace GenOnlineService.Controllers
 			if (userData.GetSocialContainer().PendingRequests.Contains(target_user_id))
 			{
 				// accept their request
-                HelperFunction_AcceptFriendRequest(requester_user_id, target_user_id);
+                await HelperFunction_AcceptFriendRequest(requester_user_id, target_user_id);
             }
             else
 			{
@@ -628,4 +628,4 @@ namespace GenOnlineService.Controllers
             }
         }
 	}
-}
+}

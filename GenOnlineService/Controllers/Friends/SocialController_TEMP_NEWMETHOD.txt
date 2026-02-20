@@ -1,0 +1,67 @@
+	private async Task HelperFunction_AcceptFriendRequest(Int64 source_user_id, Int64 target_user_id)
+	{
+		try
+		{
+			// target user does NOT need to be signed in
+			UserSession? sourceData = WebSocketManager.GetDataFromUser(source_user_id);
+			UserSession? targetData = WebSocketManager.GetDataFromUser(target_user_id);
+
+			// remove the request from requestor (online version)
+			if (sourceData != null)
+			{
+				sourceData.GetSocialContainer().PendingRequests.Remove(target_user_id);
+			}
+
+			// remove the request from requestor (db)
+			await Database.Functions.Auth.RemovePendingFriendRequest(GlobalDatabaseInstance.g_Database, source_user_id, target_user_id);
+
+			// Add to both players friends list (online version and db)
+
+			// SHARED db (we only have to add this once and it covers both players)
+			await Database.Functions.Auth.CreateFriendship(GlobalDatabaseInstance.g_Database, source_user_id, target_user_id);
+
+			// source player
+			if (sourceData != null)
+			{
+				// sess
+				sourceData.GetSocialContainer().Friends.Add(target_user_id);
+			}
+
+			// target player
+			{
+				// sess
+				if (targetData != null)
+				{
+					targetData.GetSocialContainer().Friends.Add(source_user_id);
+				}
+			}
+
+			// notify the source player that the target player is online, if they are
+			if (sourceData != null && targetData != null)
+			{
+				WebSocketMessage_Social_FriendStatusChanged friendStatusChangedEvent = new();
+				friendStatusChangedEvent.msg_id = (int)EWebSocketMessageID.SOCIAL_FRIEND_ONLINE_STATUS_CHANGED;
+				friendStatusChangedEvent.display_name = targetData.m_strDisplayName;
+				friendStatusChangedEvent.online = true;
+				byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(friendStatusChangedEvent));
+
+				sourceData.QueueWebsocketSend(bytesJSON);
+			}
+
+			// notify the target player that the source player accepted their request
+			if (targetData != null && sourceData != null)
+			{
+				WebSocketMessage_Social_FriendRequestAccepted friendRequestAcceptedEvent = new();
+				friendRequestAcceptedEvent.msg_id = (int)EWebSocketMessageID.SOCIAL_FRIEND_FRIEND_REQUEST_ACCEPTED_BY_TARGET;
+				friendRequestAcceptedEvent.display_name = sourceData.m_strDisplayName;
+				byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(friendRequestAcceptedEvent));
+
+				targetData.QueueWebsocketSend(bytesJSON);
+			}
+		}
+		catch (Exception ex)
+		{
+			// Log the exception to prevent unobserved task exceptions
+			Console.WriteLine($"Error in HelperFunction_AcceptFriendRequest: {ex.Message}");
+		}
+	}
