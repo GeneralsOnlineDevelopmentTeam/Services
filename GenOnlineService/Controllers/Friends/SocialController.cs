@@ -83,6 +83,13 @@ namespace GenOnlineService.Controllers
 			UserSession? targetData = WebSocketManager.GetDataFromUser(target_user_id);
 
 			// remove the request from requestor (online version)
+			// If source user is not online, we cannot proceed
+			if (sourceData == null)
+			{
+				return;
+			}
+
+
 #pragma warning disable CS8602 // Dereference of a possibly null reference.
 			sourceData.GetSocialContainer().PendingRequests.Remove(target_user_id);
 #pragma warning restore CS8602 // Dereference of a possibly null reference.
@@ -147,7 +154,7 @@ namespace GenOnlineService.Controllers
 				return;
 			}
 
-			HelperFunction_AcceptFriendRequest(source_user_id, target_user_id);
+			await HelperFunction_AcceptFriendRequest(source_user_id, target_user_id);
 
 			UserSession? sourceSession = WebSocketManager.GetDataFromUser(source_user_id);
 			if (sourceSession != null)
@@ -319,7 +326,7 @@ namespace GenOnlineService.Controllers
 			if (userData.GetSocialContainer().PendingRequests.Contains(target_user_id))
 			{
 				// accept their request
-                HelperFunction_AcceptFriendRequest(requester_user_id, target_user_id);
+                await HelperFunction_AcceptFriendRequest(requester_user_id, target_user_id);
             }
             else
 			{
@@ -628,4 +635,4 @@ namespace GenOnlineService.Controllers
             }
         }
 	}
-}
+}
