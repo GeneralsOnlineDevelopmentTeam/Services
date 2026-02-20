@@ -1559,14 +1559,21 @@ namespace Database
 
 			public static async void CleanupPendingLogin(MySQLInstance m_Inst, string strGameCode)
 			{
-				strGameCode = strGameCode.ToUpper();
+				try
+				{
+					strGameCode = strGameCode.ToUpper();
 
-				await m_Inst.Query("DELETE FROM pending_logins WHERE code=@game_code LIMIT 1;",
-					new()
-					{
-						{ "@game_code", strGameCode}
-					}
-				);
+					await m_Inst.Query("DELETE FROM pending_logins WHERE code=@game_code LIMIT 1;",
+						new()
+						{
+							{ "@game_code", strGameCode}
+						}
+					);
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"Error in CleanupPendingLogin: {ex.Message}");
+				}
 			}
 
 
@@ -2070,7 +2077,6 @@ namespace Database
 
 		public async void KeepAlive()
 		{
-			//await _semaphore.WaitAsync();
 			try
 			{
 				double timeSinceLastQueryAuth = (DateTime.Now - m_LastQueryTime).TotalMilliseconds;
@@ -2079,9 +2085,9 @@ namespace Database
 					await Query("SELECT user_id FROM users LIMIT 1;", null).ConfigureAwait(false);
 				}
 			}
-			finally
+			catch (Exception ex)
 			{
-				//_semaphore.Release();
+				Console.WriteLine($"Error in KeepAlive: {ex.Message}");
 			}
 		}
 

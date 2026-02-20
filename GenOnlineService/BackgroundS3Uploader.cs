@@ -76,7 +76,14 @@ static class BackgroundS3Uploader
                     // queue the next thing
                     if (m_queueUploads.TryDequeue(out S3QueuedUploadEntry entry))
                     {
-                        DoUpload(entry);
+                        try
+                        {
+                            DoUpload(entry).GetAwaiter().GetResult();
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error in BackgroundS3Uploader: {ex.Message}");
+                        }
 						g_LastUpload = Environment.TickCount64;
 					}
                 }

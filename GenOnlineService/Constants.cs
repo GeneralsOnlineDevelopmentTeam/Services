@@ -1765,6 +1765,8 @@ namespace GenOnlineService
 
 		public static async void DeleteCredentialsForUser(Int64 userID)
 		{
+			try
+			{
 #if DEBUG
             await Task.Delay(1);
             return;
@@ -1837,6 +1839,11 @@ namespace GenOnlineService
 
 					}
 				}
+			}
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"Error in DeleteCredentialsForUser: {ex.Message}");
 			}
 		}
 	}

@@ -279,9 +279,14 @@ namespace GenOnlineService
 		public static DiscordBot? g_Discord = null;
 		static async void DoCleanup(bool bStartup)
 		{
-			await Database.Functions.Auth.Cleanup(GlobalDatabaseInstance.g_Database, bStartup);
-
-			// clean up on startup
+			try
+			{
+				await Database.Functions.Auth.Cleanup(GlobalDatabaseInstance.g_Database, bStartup);
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"Error in DoCleanup: {ex.Message}");
+			}
 		}
 
 		private static Task AdditionalValidation(TokenValidatedContext context)
@@ -851,27 +856,35 @@ namespace GenOnlineService
 			timerCleanup.AutoReset = false;
 			timerCleanup.Elapsed += async (sender, e) =>
 			{
-				await WebSocketManager.CheckForTimeouts();
-
-				int numLobbies = LobbyManager.GetNumLobbies();
-				await StatsTracker.Update(numLobbies, WebSocketManager.GetUserDataCache().Count);
-
-				timerCleanup.Start();
-
-				LobbyManager.Cleanup();
-
-				// disconnect test
-				/*
-				bool bDisc = false;
-				if (bDisc)
+				try
 				{
-					ChatSession? targetSession = GenOnlineService.WebSocketManager.GetSessionFromUser(2);
-					if (targetSession != null)
+					await WebSocketManager.CheckForTimeouts();
+
+					int numLobbies = LobbyManager.GetNumLobbies();
+					await StatsTracker.Update(numLobbies, WebSocketManager.GetUserDataCache().Count);
+
+					timerCleanup.Start();
+
+					LobbyManager.Cleanup();
+
+					// disconnect test
+					/*
+					bool bDisc = false;
+					if (bDisc)
 					{
-						await GenOnlineService.WebSocketManager.DeleteSession(targetSession);
+						ChatSession? targetSession = GenOnlineService.WebSocketManager.GetSessionFromUser(2);
+						if (targetSession != null)
+						{
+							await GenOnlineService.WebSocketManager.DeleteSession(targetSession);
+						}
 					}
+					*/
 				}
-				*/
+				catch (Exception ex)
+				{
+					Console.WriteLine($"Error in cleanup timer: {ex.Message}");
+					timerCleanup.Start();
+				}
 			};
 			timerCleanup.Start();
 
@@ -884,11 +897,19 @@ namespace GenOnlineService
 				timerTick.AutoReset = false;
 				timerTick.Elapsed += async (sender, e) =>
 				{
-					await LobbyManager.Tick();
+					try
+					{
+						await LobbyManager.Tick();
 
-					await WebSocketManager.Tick();
+						await WebSocketManager.Tick();
 
-					timerTick.Start();
+						timerTick.Start();
+					}
+					catch (Exception ex)
+					{
+						Console.WriteLine($"Error in lobby tick timer: {ex.Message}");
+						timerTick.Start();
+					}
 				};
 				timerTick.Start();
 			}
@@ -899,9 +920,17 @@ namespace GenOnlineService
 				timerTick.AutoReset = false;
 				timerTick.Elapsed += async (sender, e) =>
 				{
-					await MatchmakingManager.Tick();
+					try
+					{
+						await MatchmakingManager.Tick();
 
-					timerTick.Start();
+						timerTick.Start();
+					}
+					catch (Exception ex)
+					{
+						Console.WriteLine($"Error in matchmaking timer: {ex.Message}");
+						timerTick.Start();
+					}
 				};
 				timerTick.Start();
 			}
@@ -912,9 +941,17 @@ namespace GenOnlineService
 				timerTick.AutoReset = false;
 				timerTick.Elapsed += async (sender, e) =>
 				{
-					await WebSocketManager.TickRoomMemberList();
+					try
+					{
+						await WebSocketManager.TickRoomMemberList();
 
-					timerTick.Start();
+						timerTick.Start();
+					}
+					catch (Exception ex)
+					{
+						Console.WriteLine($"Error in network rooms timer: {ex.Message}");
+						timerTick.Start();
+					}
 				};
 				timerTick.Start();
 			}
@@ -925,8 +962,16 @@ namespace GenOnlineService
 				timerTick.AutoReset = false;
 				timerTick.Elapsed += async (sender, e) =>
 				{
-					// save daily stats
-					await DailyStatsManager.SaveToDB();
+					try
+					{
+						await DailyStatsManager.SaveToDB();
+						timerTick.Start();
+					}
+					catch (Exception ex)
+					{
+						Console.WriteLine($"Error in daily stats timer: {ex.Message}");
+						timerTick.Start();
+					}
 				};
 				timerTick.Start();
 			}
