@@ -103,34 +103,43 @@ namespace GenOnlineService.Controllers
 		[HttpGet]
 		public APIResult Monitor_ActiveUsers()
 		{
-			GET_ActiveUsers_Result result = new GET_ActiveUsers_Result();
-
-			string TimeSpanToHumanReadableString(TimeSpan timeSpan)
+			try
 			{
-				string humanReadable = $"{(timeSpan.Days > 0 ? $"{timeSpan.Days} days, " : "")}" +
-					   $"{(timeSpan.Hours > 0 ? $"{timeSpan.Hours} hours, " : "")}" +
-					   $"{(timeSpan.Minutes > 0 ? $"{timeSpan.Minutes} minutes, " : "")}" +
-					   $"{timeSpan.Seconds} seconds";
-				humanReadable = humanReadable.TrimEnd(',', ' ');
-				return humanReadable;
+				GET_ActiveUsers_Result result = new GET_ActiveUsers_Result();
+
+				string TimeSpanToHumanReadableString(TimeSpan timeSpan)
+				{
+					string humanReadable = $"{(timeSpan.Days > 0 ? $"{timeSpan.Days} days, " : "")}" +
+						   $"{(timeSpan.Hours > 0 ? $"{timeSpan.Hours} hours, " : "")}" +
+						   $"{(timeSpan.Minutes > 0 ? $"{timeSpan.Minutes} minutes, " : "")}" +
+						   $"{timeSpan.Seconds} seconds";
+					humanReadable = humanReadable.TrimEnd(',', ' ');
+					return humanReadable;
+				}
+
+				// TODO_QUICKMATCH: We chekc maps are big enough, but the reverse needs checked too - dont let 8 playrs join a 6-8 ffa if only map is defcon6 for example
+
+				var allData = WebSocketManager.GetUserDataCache();
+				foreach (var sessionData in allData)
+				{
+					GET_ActiveUsers_UserEntry userEntry = new();
+					userEntry.name = sessionData.Value.m_strDisplayName;
+					userEntry.status = UserPresence.DetermineUserStatus(sessionData.Value);
+					userEntry.client_id = sessionData.Value.m_client_id;
+					userEntry.duration = TimeSpanToHumanReadableString(sessionData.Value.GetDuration());
+
+					result.active_users.Add(userEntry);
+				}
+
+
+				return result;
 			}
-
-			// TODO_QUICKMATCH: We chekc maps are big enough, but the reverse needs checked too - dont let 8 playrs join a 6-8 ffa if only map is defcon6 for example
-
-			var allData = WebSocketManager.GetUserDataCache();
-			foreach (var sessionData in allData)
+			catch (Exception ex)
 			{
-				GET_ActiveUsers_UserEntry userEntry = new();
-				userEntry.name = sessionData.Value.m_strDisplayName;
-				userEntry.status = UserPresence.DetermineUserStatus(sessionData.Value);
-				userEntry.client_id = sessionData.Value.m_client_id;
-				userEntry.duration = TimeSpanToHumanReadableString(sessionData.Value.GetDuration());
-
-				result.active_users.Add(userEntry);
+				Console.WriteLine($"Error in Monitor_ActiveUsers: {ex.Message}");
+				Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+				return new GET_ActiveUsers_Result();
 			}
-
-
-			return result;
 		}
 
 		[Route("Database")]
@@ -192,14 +201,23 @@ namespace GenOnlineService.Controllers
 		[HttpGet]
 		public APIResult Monitor_Uptime()
 		{
-			GET_Uptime_Result result = new GET_Uptime_Result();
+			try
+			{
+				GET_Uptime_Result result = new GET_Uptime_Result();
 
-			result.start_time = Program.g_LastStartTime.ToString("yyyy-MM-dd HH:mm:ss");
+				result.start_time = Program.g_LastStartTime.ToString("yyyy-MM-dd HH:mm:ss");
 
-			TimeSpan difference = DateTime.Now.Subtract(Program.g_LastStartTime);
-			result.uptime = $"Days: {difference.Days}, Hours: {difference.Hours}, Minutes: {difference.Minutes}";
+				TimeSpan difference = DateTime.Now.Subtract(Program.g_LastStartTime);
+				result.uptime = $"Days: {difference.Days}, Hours: {difference.Hours}, Minutes: {difference.Minutes}";
 
-			return result;
+				return result;
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"Error in Monitor_Uptime: {ex.Message}");
+				Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+				return new GET_Uptime_Result();
+			}
 		}
 
 		[Route("VersionCheck")]

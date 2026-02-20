@@ -623,7 +623,17 @@ namespace GenOnlineService
 			UserWebSocketInstance websocketForUser = WebSocketManager.GetWebSocketForSession(this);
 			if (websocketForUser != null)
 			{
-				websocketForUser.SendAsync(bytesJSON, WebSocketMessageType.Text);
+				_ = Task.Run(async () =>
+				{
+					try
+					{
+						await websocketForUser.SendAsync(bytesJSON, WebSocketMessageType.Text);
+					}
+					catch (Exception ex)
+					{
+						Console.WriteLine($"Error sending websocket message: {ex.Message}");
+					}
+				});
 			}
 			else
 			{
@@ -653,7 +663,17 @@ namespace GenOnlineService
 				// start dequeing and sending
 				while (messagesSent < maxMessagesSendPerFrame && m_lstPendingWebsocketSends.TryDequeue(out byte[] packetData))
 				{
-					websocketForUser.SendAsync(packetData, WebSocketMessageType.Text);
+					_ = Task.Run(async () =>
+					{
+						try
+						{
+							await websocketForUser.SendAsync(packetData, WebSocketMessageType.Text);
+						}
+						catch (Exception ex)
+						{
+							Console.WriteLine($"Error sending queued websocket message: {ex.Message}");
+						}
+					});
 					++messagesSent;
 				}
 			}

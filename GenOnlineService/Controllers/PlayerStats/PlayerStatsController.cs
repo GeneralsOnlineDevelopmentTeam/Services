@@ -80,42 +80,51 @@ namespace GenOnlineService.Controllers
 		[Authorize(Roles = "Player,Monitor")]
 		public async Task<APIResult> Get(Int64 userID)
 		{
-			// TODO_ASP: Set error codes properly in all places (and use variable, not magic numbers)
-			RouteHandler_GET_PlayerStats_Result result = new RouteHandler_GET_PlayerStats_Result();
-			result.stats = new PlayerStats(userID, EloConfig.BaseRating, 0); // return 0s by default, incase client tries to use it
-
-			var options = new JsonSerializerOptions
+			try
 			{
-				PropertyNameCaseInsensitive = true
-			};
+				// TODO_ASP: Set error codes properly in all places (and use variable, not magic numbers)
+				RouteHandler_GET_PlayerStats_Result result = new RouteHandler_GET_PlayerStats_Result();
+				result.stats = new PlayerStats(userID, EloConfig.BaseRating, 0); // return 0s by default, incase client tries to use it
 
-			// get from cache
-			UserSession? userSession = WebSocketManager.GetDataFromUser(userID);
+				var options = new JsonSerializerOptions
+				{
+					PropertyNameCaseInsensitive = true
+				};
 
-			// if user is offline, hit DB, could be a friends list inspection for example
-			if (userSession == null)
-			{
-				PlayerStats playerStats = await Database.Functions.Auth.GetPlayerStats(GlobalDatabaseInstance.g_Database, userID);
+				// get from cache
+				UserSession? userSession = WebSocketManager.GetDataFromUser(userID);
 
-				if (playerStats == null)
+				// if user is offline, hit DB, could be a friends list inspection for example
+				if (userSession == null)
+				{
+					PlayerStats playerStats = await Database.Functions.Auth.GetPlayerStats(GlobalDatabaseInstance.g_Database, userID);
+
+					if (playerStats == null)
+					{
+						Response.StatusCode = (int)HttpStatusCode.NotFound;
+					}
+					else
+					{
+						result.stats = playerStats;
+					}
+
+					return result;
+				}
+				else if (userSession.GameStats == null) // if the session exists but no stats exist, this is a problem
 				{
 					Response.StatusCode = (int)HttpStatusCode.NotFound;
-				}
-				else
-				{
-					result.stats = playerStats;
+					return result;
 				}
 
+				result.stats = userSession.GameStats;
 				return result;
 			}
-			else if (userSession.GameStats == null) // if the session exists but no stats exist, this is a problem
+			catch (Exception ex)
 			{
-				Response.StatusCode = (int)HttpStatusCode.NotFound;
-				return result;
+				Console.WriteLine($"Error in PlayerStats Get: {ex.Message}");
+				Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+				return new RouteHandler_GET_PlayerStats_Result() { stats = new PlayerStats(userID, EloConfig.BaseRating, 0) };
 			}
-
-			result.stats = userSession.GameStats;
-			return result;
 		}
 
         // Bulk endpoint
@@ -123,39 +132,48 @@ namespace GenOnlineService.Controllers
         [Authorize(Roles = "Player,Monitor")]
         public async Task<APIResult> PostBatched()
         {
-            RouteHandler_GET_PlayerStatsBatch_Result result = new RouteHandler_GET_PlayerStatsBatch_Result();
-            result.stats = new List<PlayerStats>(); // return 0s by default, incase client tries to use it
-
-            var options = new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            };
-
-            using (var reader = new StreamReader(HttpContext.Request.Body))
+			try
 			{
-				string jsonData = await reader.ReadToEndAsync();
+				RouteHandler_GET_PlayerStatsBatch_Result result = new RouteHandler_GET_PlayerStatsBatch_Result();
+				result.stats = new List<PlayerStats>(); // return 0s by default, incase client tries to use it
 
-                RouteHandler_GET_PlayerStatsBatch_Input inputData = JsonSerializer.Deserialize<RouteHandler_GET_PlayerStatsBatch_Input>(jsonData, options);
+				var options = new JsonSerializerOptions
+				{
+					PropertyNameCaseInsensitive = true
+				};
 
-                // process each user
-                foreach (Int64 userID in inputData.user_ids)
-                {
-					// get from cache
-					UserSession? userSession = WebSocketManager.GetDataFromUser(userID);
+				using (var reader = new StreamReader(HttpContext.Request.Body))
+				{
+					string jsonData = await reader.ReadToEndAsync();
 
-					// NOTE: Batch is only supported for ONLINE users, DB will never be looked up
-					if (userSession != null)
-                    {
-                        if (userSession.GameStats != null)
-                        {
-                            result.stats.Add(userSession.GameStats);
+					RouteHandler_GET_PlayerStatsBatch_Input inputData = JsonSerializer.Deserialize<RouteHandler_GET_PlayerStatsBatch_Input>(jsonData, options);
 
-                        }
-                    }
-                }
-            }
+					// process each user
+					foreach (Int64 userID in inputData.user_ids)
+					{
+						// get from cache
+						UserSession? userSession = WebSocketManager.GetDataFromUser(userID);
 
-            return result;
+						// NOTE: Batch is only supported for ONLINE users, DB will never be looked up
+						if (userSession != null)
+						{
+							if (userSession.GameStats != null)
+							{
+								result.stats.Add(userSession.GameStats);
+
+							}
+						}
+					}
+				}
+
+				return result;
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"Error in PostBatched: {ex.Message}");
+				Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+				return new RouteHandler_GET_PlayerStatsBatch_Result() { stats = new List<PlayerStats>() };
+			}
         }
 
         [HttpPut]

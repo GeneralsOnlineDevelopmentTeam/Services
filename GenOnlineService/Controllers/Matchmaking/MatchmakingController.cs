@@ -100,17 +100,25 @@ namespace GenOnlineService.Controllers
 		[Authorize(Roles = "Player")]
 		public void Put_Widen()
 		{
-			// TODO_QUICKMATCH: What if a user widens after already being matched? We should probably tell them no
-			// widen the search
-			Int64 user_id = TokenHelper.GetUserID(this);
-			if (user_id != -1)
+			try
 			{
-				UserSession? playerSession = WebSocketManager.GetDataFromUser(user_id); ;
-
-				if (playerSession != null)
+				// TODO_QUICKMATCH: What if a user widens after already being matched? We should probably tell them no
+				// widen the search
+				Int64 user_id = TokenHelper.GetUserID(this);
+				if (user_id != -1)
 				{
-					MatchmakingManager.PlayerWidenSearch(playerSession);
+					UserSession? playerSession = WebSocketManager.GetDataFromUser(user_id); ;
+
+					if (playerSession != null)
+					{
+						MatchmakingManager.PlayerWidenSearch(playerSession);
+					}
 				}
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"Error in Put_Widen: {ex.Message}");
+				Response.StatusCode = (int)HttpStatusCode.InternalServerError;
 			}
 		}
 
@@ -118,15 +126,23 @@ namespace GenOnlineService.Controllers
 		[Authorize(Roles = "Player")]
 		public void Delete()
 		{
-			Int64 user_id = TokenHelper.GetUserID(this);
-			if (user_id != -1)
+			try
 			{
-				UserSession? playerSession = WebSocketManager.GetDataFromUser(user_id); ;
-
-				if (playerSession != null)
+				Int64 user_id = TokenHelper.GetUserID(this);
+				if (user_id != -1)
 				{
-					MatchmakingManager.DeregisterPlayer(playerSession);
+					UserSession? playerSession = WebSocketManager.GetDataFromUser(user_id); ;
+
+					if (playerSession != null)
+					{
+						MatchmakingManager.DeregisterPlayer(playerSession);
+					}
 				}
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"Error in Delete: {ex.Message}");
+				Response.StatusCode = (int)HttpStatusCode.InternalServerError;
 			}
 		}
 
@@ -145,12 +161,21 @@ namespace GenOnlineService.Controllers
 		[Authorize(Roles = "Player")]
 		public APIResult Get_Playlists()
 		{
-			RouteHandler_GET_Playlists_Result result = new RouteHandler_GET_Playlists_Result();
+			try
+			{
+				RouteHandler_GET_Playlists_Result result = new RouteHandler_GET_Playlists_Result();
 
-			Response.StatusCode = (int)HttpStatusCode.OK;
-			result.playlists = MatchmakingManager.GetPlaylists();
-			
-			return result;
+				Response.StatusCode = (int)HttpStatusCode.OK;
+				result.playlists = MatchmakingManager.GetPlaylists();
+				
+				return result;
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"Error in Get_Playlists: {ex.Message}");
+				Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+				return new RouteHandler_GET_Playlists_Result();
+			}
 		}
 	}
 }

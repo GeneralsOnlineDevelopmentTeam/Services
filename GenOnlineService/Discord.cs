@@ -131,9 +131,16 @@ public class DiscordBot
 
 	~DiscordBot()
 	{
-		if (discord != null)
+		try
 		{
-			discord.LogoutAsync();
+			if (discord != null)
+			{
+				discord.LogoutAsync().GetAwaiter().GetResult();
+			}
+		}
+		catch
+		{
+			// Finalizer must not throw
 		}
 	}
 
@@ -503,7 +510,7 @@ public class DiscordBot
 									}
 									else
 									{
-										PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !kick <user_id> (e.g. !kick 123)");
+										FireAndForgetAsync(() => PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !kick <user_id> (e.g. !kick 123)"));
 									}
 								}
 								else
@@ -564,7 +571,7 @@ public class DiscordBot
 									}
 									else
 									{
-										PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !kick <user_id> (e.g. !kick 123)");
+										FireAndForgetAsync(() => PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !kick <user_id> (e.g. !kick 123)"));
 									}
 								}
 								else

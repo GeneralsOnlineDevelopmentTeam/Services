@@ -468,6 +468,11 @@ namespace GenOnlineService
 #if !DEBUG
 			AppDomain.CurrentDomain.UnhandledException += GlobalExceptionHandler;
 #endif
+			TaskScheduler.UnobservedTaskException += (sender, e) =>
+			{
+				Console.WriteLine($"Unobserved task exception: {e.Exception.Message}");
+				e.SetObserved();
+			};
 
 			// Configure thread pool for better performance under load
 			ThreadPool.SetMinThreads(200, 200);
@@ -986,9 +991,18 @@ namespace GenOnlineService
 			g_tokenGenerator = new JwtTokenGenerator(builder.Configuration);
 
 			// load daily stats
-			// TODO_SOCIAL: await
 #pragma warning disable CS4014 // Because this call is not awaited, execution of the current method continues before the call is completed
-			DailyStatsManager.LoadFromDB();
+			_ = Task.Run(async () =>
+			{
+				try
+				{
+					await DailyStatsManager.LoadFromDB();
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"Error loading daily stats: {ex.Message}");
+				}
+			});
 #pragma warning restore CS4014 // Because this call is not awaited, execution of the current method continues before the call is completed
 
 
