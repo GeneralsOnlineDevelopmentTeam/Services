@@ -73,12 +73,14 @@ namespace GenOnlineService.Controllers
 		{
 			if (s_cachedRooms == null)
 			{
+				string strFileData = System.IO.File.ReadAllText(Path.Combine("data", "rooms.json"));
+				List<RoomData>? parsedRooms = JsonSerializer.Deserialize<List<RoomData>>(strFileData, options);
+				
 				lock (s_roomsLock)
 				{
 					if (s_cachedRooms == null)
 					{
-						string strFileData = System.IO.File.ReadAllText(Path.Combine("data", "rooms.json"));
-						s_cachedRooms = JsonSerializer.Deserialize<List<RoomData>>(strFileData, options);
+						s_cachedRooms = parsedRooms;
 					}
 				}
 			}

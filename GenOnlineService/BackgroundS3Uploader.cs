@@ -169,7 +169,9 @@ static class BackgroundS3Uploader
                 var config = new AmazonS3Config
                 {
                     ServiceURL = strS3Endpoint,
-                    ForcePathStyle = true // Required for R2
+                    ForcePathStyle = true, // Required for R2
+                    Timeout = TimeSpan.FromSeconds(30),
+                    MaxErrorRetry = 2
                 };
 
                 using var client = new AmazonS3Client(strS3AccessKey, strS3SecretKey, config);

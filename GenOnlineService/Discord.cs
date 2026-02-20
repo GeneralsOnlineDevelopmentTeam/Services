@@ -108,6 +108,8 @@ public class DiscordBot
 	private Dictionary<EDiscordChannelIDs, ulong> g_dictChannelIDs = new Dictionary<EDiscordChannelIDs, ulong>();
 	private Dictionary<EDiscordChannelIDs, ISocketMessageChannel> g_dictChannels = new Dictionary<EDiscordChannelIDs, ISocketMessageChannel>();
 
+	private static readonly TimeSpan DiscordOperationTimeout = TimeSpan.FromSeconds(10);
+
 	public DiscordBot()
 	{
 #if !DEBUG
@@ -328,11 +330,11 @@ public class DiscordBot
 
 							if (enumChannelID == EDiscordChannelIDs.DirectMessage)
 							{
-								PushDM(message.Author, strMessage);
+								_ = PushDM(message.Author, strMessage);
 							}
 							else
 							{
-								PushChannelMessage(enumChannelID, strMessage);
+								_ = PushChannelMessage(enumChannelID, strMessage);
 							}
 						}
 						else if (message.Content.ToLower() == "!lobbies")
@@ -342,11 +344,11 @@ public class DiscordBot
 
 							if (enumChannelID == EDiscordChannelIDs.DirectMessage)
 							{
-								PushDM(message.Author, strMessage);
+								_ = PushDM(message.Author, strMessage);
 							}
 							else
 							{
-								PushChannelMessage(enumChannelID, strMessage);
+								_ = PushChannelMessage(enumChannelID, strMessage);
 							}
 						}
 						else if (message.Content.ToLower() == "!uptime")
@@ -384,11 +386,11 @@ public class DiscordBot
 
 									if (enumChannelID == EDiscordChannelIDs.DirectMessage)
 									{
-										PushDM(message.Author, strMessage);
+										_ = PushDM(message.Author, strMessage);
 									}
 									else
 									{
-										PushChannelMessage(enumChannelID, strMessage);
+										_ = PushChannelMessage(enumChannelID, strMessage);
 									}
 								}
 							}
@@ -423,11 +425,11 @@ public class DiscordBot
 
 									if (enumChannelID == EDiscordChannelIDs.DirectMessage)
 									{
-										PushDM(message.Author, strMessage);
+										_ = PushDM(message.Author, strMessage);
 									}
 									else
 									{
-										PushChannelMessage(enumChannelID, strMessage);
+										_ = PushChannelMessage(enumChannelID, strMessage);
 									}
 								}
 							}
@@ -472,19 +474,19 @@ public class DiscordBot
 											
 											if (targetData != null)
 											{
-												PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"User {TargetUserID} ({targetData.m_strDisplayName}) has been kicked from the server.");
+												_ = PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"User {TargetUserID} ({targetData.m_strDisplayName}) has been kicked from the server.");
 
 												UserWebSocketInstance? oldWS = GenOnlineService.WebSocketManager.GetWebSocketForSession(targetData);
 												await GenOnlineService.WebSocketManager.DeleteSession(TargetUserID, oldWS, true);
 											}
 											else
 											{
-												PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"User {TargetUserID} is not active on the server.");
+												_ = PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"User {TargetUserID} is not active on the server.");
 											}
 										}
 										else
 										{
-											PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !kick <user_id> (e.g. !kick 123)");
+											_ = PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !kick <user_id> (e.g. !kick 123)");
 										}
 									}
 									else
@@ -494,7 +496,7 @@ public class DiscordBot
 								}
 								else
 								{
-									PushDM(message.Author, "You don't have access to staff commands.");
+									_ = PushDM(message.Author, "You don't have access to staff commands.");
 								}
 							}
 						}
@@ -537,7 +539,7 @@ public class DiscordBot
 										{
 											if (session.Value.m_strDisplayName.ToLower() == strname.ToLower())
 											{
-												PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"User {session.Value.m_strDisplayName} is user ID {session.Key}.");
+												_ = PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"User {session.Value.m_strDisplayName} is user ID {session.Key}.");
 												bFound = true;
 												break;
 											}
@@ -545,7 +547,7 @@ public class DiscordBot
 
 										if (!bFound)
 										{
-											PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"User {strname} is not active on the server.");
+											_ = PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"User {strname} is not active on the server.");
 										}
 									}
 									else
@@ -555,7 +557,7 @@ public class DiscordBot
 								}
 								else
 								{
-									PushDM(message.Author, "You don't have access to staff commands.");
+									_ = PushDM(message.Author, "You don't have access to staff commands.");
 								}
 							}
 						}
@@ -635,16 +637,16 @@ public class DiscordBot
 											}
 										}
 
-										PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"Announcement '{strMessage}' was delivered to {numDelivered} users");
+										_ = PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"Announcement '{strMessage}' was delivered to {numDelivered} users");
 									}
 									else
 									{
-										PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !announce <message> (e.g. !announce Hello)");
+										_ = PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !announce <message> (e.g. !announce Hello)");
 									}
 								}
 								else
 								{
-									PushDM(message.Author, "You don't have access to staff commands.");
+									_ = PushDM(message.Author, "You don't have access to staff commands.");
 								}
 							}
 						}
@@ -655,7 +657,7 @@ public class DiscordBot
 					}
 					else
 					{
-						PushDM(message.Author, "Too many commands. Please wait.");
+						_ = PushDM(message.Author, "Too many commands. Please wait.");
 					}
 				}
 				else
@@ -698,6 +700,7 @@ public class DiscordBot
 #if !DEBUG || USE_DISCORD_IN_DEBUG
 		DiscordSocketConfig conf = new();
 		conf.GatewayIntents = GatewayIntents.AllUnprivileged | GatewayIntents.DirectMessages | GatewayIntents.MessageContent;
+		conf.DefaultRetryMode = RetryMode.AlwaysRetry;
 		discord = new DiscordSocketClient(conf);
 
 		// event handlers
@@ -728,18 +731,19 @@ public class DiscordBot
 #endif
 	}
 
-	public void PushDM(SocketUser user, string strMessage)
+	public async Task PushDM(SocketUser user, string strMessage)
 	{
 		try
 		{
 			if (user != null)
 			{
-				user.SendMessageAsync(strMessage);
+				using var cts = new CancellationTokenSource(DiscordOperationTimeout);
+				await user.SendMessageAsync(strMessage).WaitAsync(cts.Token).ConfigureAwait(false);
 			}
 		}
 		catch
 		{
-			// User probably has some privacy settings that do not allow us to send DMs
+			// User probably has some privacy settings that do not allow us to send DMs, or timeout occurred
 		}
 	}
 
@@ -775,14 +779,15 @@ public class DiscordBot
 		return channel;
 	}
 
-	public void PushChannelMessage(EDiscordChannelIDs channelID, string strMessage)
+	public async Task PushChannelMessage(EDiscordChannelIDs channelID, string strMessage)
 	{
 		try
 		{
 			ISocketMessageChannel? channel = GetChannel(channelID);
 			if (channel != null)
 			{
-				channel.SendMessageAsync(strMessage);
+				using var cts = new CancellationTokenSource(DiscordOperationTimeout);
+				await channel.SendMessageAsync(strMessage).WaitAsync(cts.Token).ConfigureAwait(false);
 			}
 		}
 		catch
@@ -799,7 +804,7 @@ public class DiscordBot
 			{
 				if (channelToUse == (ulong)EDiscordChannelIDs.DirectMessage)
 				{
-					PushDM(user, strMessage);
+					await PushDM(user, strMessage).ConfigureAwait(false);
 				}
 				else
 				{

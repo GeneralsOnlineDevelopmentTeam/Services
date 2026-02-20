@@ -35,7 +35,6 @@ using System.Security.Claims;
 
 namespace GenOnlineService.Controllers.LoginWithToken
 {
-
 	public class POST_OID_Result : APIResult
 	{
 		public override Type GetReturnType()
@@ -82,6 +81,10 @@ namespace GenOnlineService.Controllers.LoginWithToken
 	[Route("env/{environment}/contract/{contract_version}/[controller]")]
 	public class ProvideMWToken : ControllerBase
 	{
+		private static readonly HttpClient s_httpClient = new HttpClient 
+		{ 
+			Timeout = TimeSpan.FromSeconds(10) 
+		};
 
 		public ProvideMWToken()
 		{
@@ -139,8 +142,7 @@ namespace GenOnlineService.Controllers.LoginWithToken
 		}
 
 		// get JWKS
-		using var http = new HttpClient();
-		var jwks = await http.GetFromJsonAsync<Jwks>(middleware_jwks_endpoint);
+		var jwks = await s_httpClient.GetFromJsonAsync<Jwks>(middleware_jwks_endpoint);
 
 		var key = jwks.Keys.FirstOrDefault(k => k.Kid == kid);
 		if (key == null)

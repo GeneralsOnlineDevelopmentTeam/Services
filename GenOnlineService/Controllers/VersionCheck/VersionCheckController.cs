@@ -110,6 +110,11 @@ namespace GenOnlineService.Controllers
 
 	class VersionHelper
 	{
+		private static readonly HttpClient s_httpClient = new HttpClient 
+		{ 
+			Timeout = TimeSpan.FromSeconds(10) 
+		};
+
 #if !DEBUG
 		public static APIResult Post_InternalHandler(string jsonData)
 #else
@@ -192,25 +197,22 @@ namespace GenOnlineService.Controllers
 
 							async Task<long> GetHTTPSize(string url)
 							{
-								using (System.Net.Http.HttpClient client = new System.Net.Http.HttpClient())
+								try
 								{
-									try
-									{
-										HttpRequestMessage request = new HttpRequestMessage(System.Net.Http.HttpMethod.Head, url);
-										HttpResponseMessage response = await client.SendAsync(request);
+									HttpRequestMessage request = new HttpRequestMessage(System.Net.Http.HttpMethod.Head, url);
+									HttpResponseMessage response = await s_httpClient.SendAsync(request);
 
-										if (response.IsSuccessStatusCode && response.Content.Headers.ContentLength.HasValue)
-										{
-											return response.Content.Headers.ContentLength.Value;
-										}
-									}
-									catch (HttpRequestException)
+									if (response.IsSuccessStatusCode && response.Content.Headers.ContentLength.HasValue)
 									{
-										// TODO: Log exception or handle error
+										return response.Content.Headers.ContentLength.Value;
 									}
-
-									return -1; // Return -1 if the size could not be determined
 								}
+								catch (HttpRequestException)
+								{
+									// TODO: Log exception or handle error
+								}
+
+								return -1; // Return -1 if the size could not be determined
 							}
 
 							result.patcher_size = await GetHTTPSize(result.patcher_path);
