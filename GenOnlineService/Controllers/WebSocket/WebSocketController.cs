@@ -56,7 +56,12 @@ namespace GenOnlineService.Controllers
 			}
 
 			// create a session
-			Int64 user_id = Convert.ToInt64(this.User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
+			var userIdClaim = this.User.FindFirst(ClaimTypes.NameIdentifier);
+			if (userIdClaim == null || !Int64.TryParse(userIdClaim.Value, out Int64 user_id))
+			{
+				HttpContext.Response.StatusCode = StatusCodes.Status401Unauthorized;
+				return;
+			}
 
 			var firstEntryClientID = this.User.FindFirst("client_id");
 

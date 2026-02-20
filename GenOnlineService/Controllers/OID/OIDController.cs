@@ -208,7 +208,7 @@ namespace GenOnlineService.Controllers.LoginWithToken
 				{
 					Response.StatusCode = (int)HttpStatusCode.Unauthorized;
 				}
-				else
+				else if (data != null && data.ContainsKey("mw_token"))
 				{
 					string mw_token = data["mw_token"].ToString();
 

@@ -172,18 +172,27 @@ namespace GenOnlineService.Controllers
 						}
 						else
 						{
-							var jsonPatchData = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(System.IO.File.ReadAllText(Path.Combine("data", "patchdata.json")), options);
-
-							if (jsonPatchData != null)
+							try
 							{
-								result.patcher_name = jsonPatchData["patcher_name"].ToString();
-								result.patcher_path = jsonPatchData["patcher_path"].ToString();
+								var jsonPatchData = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(System.IO.File.ReadAllText(Path.Combine("data", "patchdata.json")), options);
+
+								if (jsonPatchData != null && jsonPatchData.ContainsKey("patcher_name") && jsonPatchData.ContainsKey("patcher_path"))
+								{
+									result.patcher_name = jsonPatchData["patcher_name"].ToString();
+									result.patcher_path = jsonPatchData["patcher_path"].ToString();
 
 #if !DEBUG
 								string strPatcherPath = Path.Combine(Directory.GetCurrentDirectory(), "crcfiles", result.patcher_name);
 								//string strPatchPath = Path.Combine(Directory.GetCurrentDirectory(), "..", "..", "public_html", "updater", "v1.gopatch");
 
-								result.patcher_size = (UInt32)new FileInfo(strPatcherPath).Length;
+								if (File.Exists(strPatcherPath))
+								{
+									result.patcher_size = (UInt32)new FileInfo(strPatcherPath).Length;
+								}
+								else
+								{
+									result.result = EVersionCheckResult.Failed;
+								}
 #else
 							// large patch test
 #if LARGE_PATCH_TEST
@@ -221,9 +230,15 @@ namespace GenOnlineService.Controllers
 #endif
 
 								result.result = EVersionCheckResult.NeedsUpdate;
+								}
+								else
+								{
+									result.result = EVersionCheckResult.Failed;
+								}
 							}
-							else
+							catch (Exception ex)
 							{
+								Console.WriteLine($"Error loading patchdata.json: {ex.Message}");
 								result.result = EVersionCheckResult.Failed;
 							}
 						}

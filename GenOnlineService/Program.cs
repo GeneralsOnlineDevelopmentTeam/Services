@@ -255,7 +255,18 @@ namespace GenOnlineService
 				return -1;
 			}
 
-			return Convert.ToInt64(controller.User.Claims.First().Value);
+			var firstClaim = controller.User.Claims.FirstOrDefault();
+			if (firstClaim == null)
+			{
+				return -1;
+			}
+
+			if (!Int64.TryParse(firstClaim.Value, out Int64 userId))
+			{
+				return -1;
+			}
+
+			return userId;
 		}
 
 		public static string GetDisplayName(ControllerBase controller)
