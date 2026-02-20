@@ -325,9 +325,11 @@ namespace GenOnlineService
 			{
 				// TODO_SOCIAL: Move this to a class
 				// inform any friends who are online that this person just came online
+				if (sourceData != null)
+			{
 				WebSocketMessage_Social_FriendStatusChanged friendStatusChangedEvent = new();
 				friendStatusChangedEvent.msg_id = (int)EWebSocketMessageID.SOCIAL_FRIEND_ONLINE_STATUS_CHANGED;
-				friendStatusChangedEvent.display_name = sourceData.m_strDisplayName;
+				friendStatusChangedEvent.display_name = sourceData?.m_strDisplayName;
 				friendStatusChangedEvent.online = false;
 				byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(friendStatusChangedEvent));
 
@@ -812,7 +814,9 @@ namespace GenOnlineService
 
 			// TODO_SOCIAL: Move this to a class
 			// inform any friends who are online that this person just came online
-			WebSocketMessage_Social_FriendStatusChanged friendStatusChangedEvent = new();
+			if (sourceData != null)
+			{
+				WebSocketMessage_Social_FriendStatusChanged friendStatusChangedEvent = new();
 			friendStatusChangedEvent.msg_id = (int)EWebSocketMessageID.SOCIAL_FRIEND_ONLINE_STATUS_CHANGED;
 			friendStatusChangedEvent.display_name = strDisplayName;
 			friendStatusChangedEvent.online = true;
