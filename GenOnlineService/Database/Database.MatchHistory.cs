@@ -400,29 +400,32 @@ namespace Database
 		}
 
 
-		private static string ComputeRosterType(int playersSeen, Dictionary<int, int> playersPerTeam)
+		private static string ComputeRosterType(Dictionary<int, int> playersPerTeam)
 		{
-			// FFA check
-			bool isFFA = playersSeen > 2 &&
-						 playersPerTeam.All(kv => kv.Key == -1 || kv.Value == 1);
+			int noTeamCount = playersPerTeam.TryGetValue(-1, out int n) ? n : 0;
 
-			if (isFFA)
-				return $"{playersSeen} Player FFA";
+			var teamedGroups = playersPerTeam
+				.Where(kv => kv.Key != -1)
+				.Select(kv => kv.Value)
+				.OrderBy(c => c)
+				.ToList();
 
-			// Team roster type
-			string roster = "";
+			int activePlayers = noTeamCount + teamedGroups.Sum();
 
-			foreach (var kv in playersPerTeam)
+			if (activePlayers == 0)
 			{
-				int count = kv.Value;
-
-				if (string.IsNullOrEmpty(roster))
-					roster = count.ToString();
-				else
-					roster += $"v{count}";
+				return "Unknown";
 			}
 
-			return roster;
+			bool isFFA = activePlayers > 2 &&
+						 (noTeamCount == activePlayers || teamedGroups.All(c => c == 1));
+
+			if (isFFA)
+			{
+				return $"{activePlayers} Player FFA";
+			}
+
+			return string.Join("v", teamedGroups);
 		}
 
 
@@ -439,7 +442,6 @@ namespace Database
 				string?[] jsonSlots = new string?[8];
 
 				Dictionary<int, int> playersPerTeam = new();
-				int playersSeen = 0;
 
 				foreach (var member in lobby.Members)
 				{
@@ -468,16 +470,22 @@ namespace Database
 
 					jsonSlots[member.SlotIndex] = JsonSerializer.Serialize(model);
 
-					playersSeen++;
-
-					if (playersPerTeam.ContainsKey(model.team))
-						playersPerTeam[model.team]++;
-					else
-						playersPerTeam[model.team] = 1;
+					// Observers (side == -2) are not active players
+					if (model.side != -2)
+					{
+						if (playersPerTeam.ContainsKey(model.team))
+						{
+							playersPerTeam[model.team]++;
+						}
+						else
+						{
+							playersPerTeam[model.team] = 1;
+						}
+					}
 				}
 
 				// Determine roster type
-				string rosterType = ComputeRosterType(playersSeen, playersPerTeam);
+				string rosterType = ComputeRosterType(playersPerTeam);
 
 				// Build EF entity
 				var entity = new MatchHistoryEntry
