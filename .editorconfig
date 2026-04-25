@@ -1,0 +1,17 @@
+[*]
+end_of_line = lf
+
+[*.cs]
+# Indentation
+indent_style = space
+indent_size = 4
+
+# Spacing
+csharp_space_after_keywords_in_control_flow_statements = true
+csharp_space_between_parentheses = false
+csharp_space_around_binary_operators = before_and_after
+
+# New Lines
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_member_access_on_anonymous_types = true
