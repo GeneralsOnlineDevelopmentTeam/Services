@@ -61,8 +61,6 @@ namespace GenOnlineService.Controllers
 	public class LobbiesController : ControllerBase
 	{
 		private readonly ILogger<LobbiesController> _logger;
-		private static List<RoomData>? s_cachedRooms = null;
-		private static readonly object s_roomsLock = new object();
 
 		private readonly LobbyManager _lobbyManager;
 		private readonly IDbContextFactory<AppDbContext> _dbFactory;
@@ -73,24 +71,7 @@ namespace GenOnlineService.Controllers
 			_logger = logger;
 			_lobbyManager = lobbyManager;
 			_dbFactory = dbFactory;
-		}
-
-		// Cache rooms.json data to avoid disk I/O on every request
-		private static async Task<List<RoomData>?> GetCachedRooms(JsonSerializerOptions options)
-		{
-			if (s_cachedRooms == null)
-			{
-				lock (s_roomsLock)
-				{
-					if (s_cachedRooms == null)
-					{
-						string strFileData = System.IO.File.ReadAllText(Path.Combine("data", "rooms.json"));
-						s_cachedRooms = JsonSerializer.Deserialize<List<RoomData>>(strFileData, options);
-					}
-				}
-			}
-			return await Task.FromResult(s_cachedRooms);
-		}
+		}		
 
 		// FOR LATENCY ESTIMATIONS
 		// Convert degrees to radians
@@ -163,8 +144,7 @@ namespace GenOnlineService.Controllers
 
 						if (sourceData != null)
 						{
-							// Use cached rooms data
-							List<RoomData>? lstRooms = await GetCachedRooms(options);
+							var lstRooms = Constants.Rooms.Values;
 							if (lstRooms != null)
 							{
 								foreach (RoomData room in lstRooms)

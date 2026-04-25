@@ -25,54 +25,37 @@ using System.Text.Json;
 
 namespace GenOnlineService.Controllers
 {
-	public class RouteHandler_GET_Rooms_Result : APIResult
-	{
-		public override Type GetReturnType()
-		{
-			return this.GetType();
-		}
+    public class RouteHandler_GET_Rooms_Result : APIResult
+    {
+        public override Type GetReturnType()
+        {
+            return this.GetType();
+        }
 
-		public List<RoomData>? rooms { get; set; } = null;
-	}
+        public List<RoomData>? rooms { get; set; } = null;
+    }
 
-	[ApiController]
-	[Route("env/{environment}/contract/{contract_version}/[controller]")]
-	public class RoomsController : ControllerBase
-	{
-		private readonly ILogger<RoomsController> _logger;
+    [ApiController]
+    [Route("env/{environment}/contract/{contract_version}/[controller]")]
+    public class RoomsController : ControllerBase
+    {
+        private readonly ILogger<RoomsController> _logger;
 
-		public RoomsController(ILogger<RoomsController> logger)
-		{
-			_logger = logger;
-		}
+        public RoomsController(ILogger<RoomsController> logger)
+        {
+            _logger = logger;
+        }
 
-		[HttpGet(Name = "GetRooms")]
-		[Authorize(Roles = "GameClient,ChatClient,GameLauncher,Monitor")]
-		public async Task<APIResult> Get()
-		{
-			RouteHandler_GET_Rooms_Result result = new RouteHandler_GET_Rooms_Result();
+        [HttpGet(Name = "GetRooms")]
+        [Authorize(Roles = "GameClient,ChatClient,GameLauncher,Monitor")]
+        public Task<APIResult> Get()
+        {
+            APIResult result = new RouteHandler_GET_Rooms_Result()
+            {
+                rooms = Constants.Rooms.Values.ToList()
+            };
 
-			using (var reader = new StreamReader(HttpContext.Request.Body))
-			{
-				string jsonData = await reader.ReadToEndAsync();
-				var options = new JsonSerializerOptions
-				{
-					PropertyNameCaseInsensitive = true
-				};
-
-				try
-				{
-					string strFileData = await System.IO.File.ReadAllTextAsync(Path.Combine("data", "rooms.json"));
-					List<RoomData>? lstRooms = JsonSerializer.Deserialize<List<RoomData>>(strFileData, options);
-					result.rooms = lstRooms;
-				}
-				catch
-				{
-					return result;
-				}
-
-				return result;
-			}
-		}
-	}
+            return Task.FromResult(result);
+        }
+    }
 }

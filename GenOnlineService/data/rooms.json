@@ -2,7 +2,7 @@
 	{
 		"id": 0,
 		"name": "ALL GAMES",
-		"flags":  1
+		"flags": 1
 	},
 	{
 		"id": 1,
@@ -12,26 +12,43 @@
 	{
 		"id": 2,
 		"name": "1v1",
-		"flags": 0
+		"flags": 0,
+		"exclusionKey": "nvn"
 	},
 	{
 		"id": 3,
 		"name": "2v2",
-		"flags": 0
+		"flags": 0,
+		"exclusionKey": "nvn"
 	},
 	{
 		"id": 4,
 		"name": "No Rules",
-		"flags": 0
+		"flags": 0,
+		"exclusionKey": "rules"
 	},
 	{
 		"id": 5,
 		"name": "Pro Rules",
-		"flags": 0
+		"flags": 0,
+		"exclusionKey": "rules"
 	},
 	{
 		"id": 6,
 		"name": "Rise of the Reds (MOD)",
 		"flags": 0
+	},
+	{
+		"id": 7,
+		"name": "3v3",
+		"flags": 0,
+		"exclusionKey": "nvn"
+
+	},
+	{
+		"id": 8,
+		"name": "4v4",
+		"flags": 0,
+		"exclusionKey": "nvn"
 	}
 ]
