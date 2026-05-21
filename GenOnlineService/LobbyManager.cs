@@ -1298,6 +1298,7 @@ public async Task FinalizeACChecks()
 		public EPlayerType SlotState { get; private set; } = 0;
 		public UInt16 SlotIndex { get; private set; } = 0;
 		public string Region { get; private set; } = "Unknown";
+		public string Platform { get; private set; } = Platforms.Unknown;
 		public string MiddlewareUserID { get; private set; } = String.Empty;
 
 		[JsonIgnore] // cant serialize refs
@@ -1339,6 +1340,7 @@ public async Task FinalizeACChecks()
 
 			IsReady = false;
 			Region = owningSession == null ? "Unknown" : owningSession.GetFullContinentName();
+			Platform = owningSession == null ? Platforms.Unknown : owningSession.Platform;
 		}
 
 		public bool IsHuman() {  return SlotState == EPlayerType.SLOT_PLAYER; }

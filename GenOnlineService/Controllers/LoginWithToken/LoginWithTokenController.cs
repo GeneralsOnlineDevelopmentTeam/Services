@@ -143,6 +143,8 @@ namespace GenOnlineService.Controllers.LoginWithToken
 						string exe_crc = data.ContainsKey("exe_crc") ? data["exe_crc"].ToString() : "NONE";
 						Helpers.RegisterInitialPlayerExeCRC(user_id, exe_crc);
 
+						string platform = data.ContainsKey("platform") ? data["platform"].ToString() : Platforms.Unknown;
+
 						string strDisplayName = await Database.Users.GetDisplayName(db, user_id);
 						await SessionHelpers.SetUsedLoggedIn(user_id, clientID, sessionType);
 
@@ -152,8 +154,8 @@ namespace GenOnlineService.Controllers.LoginWithToken
 
 						// extend token
 						// TODO_TODAY_JWT: just get clientID from token
-						var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, clientID, sessionType, bIsAdmin);
-						var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, clientID, sessionType, false, out string refreshJti);
+						var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, clientID, sessionType, bIsAdmin, platform);
+						var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, clientID, sessionType, false, platform, out string refreshJti);
 
 						// rotation: only this refresh token is accepted from now on
 						await TokenRevocationManager.OnTokensIssued(user_id, sessionType, refreshJti);

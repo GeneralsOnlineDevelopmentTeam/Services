@@ -48,16 +48,18 @@ namespace GenOnlineService
 	}
 	public class RoomMember
 	{
-		public RoomMember(Int64 a_UserID, string strName, bool admin)
+		public RoomMember(Int64 a_UserID, string strName, bool admin, string platform)
 		{
 			UserID = a_UserID;
 			Name = strName;
 			IsAdmin = admin;
+			Platform = platform;
 		}
 
 		public Int64 UserID { get; set; } = -1;
 		public String Name { get; set; } = String.Empty;
 		public bool IsAdmin { get; set; } = false;
+		public String Platform { get; set; } = Platforms.Unknown;
 	}
 
 	public enum EPendingLoginState
@@ -188,13 +190,45 @@ namespace GenOnlineService
 		};
 	}
 
+	// The platform is self-reported by the client and echoed back to every other
+	// member of a lobby, so it is clamped to a known set rather than passed through.
+	public static class Platforms
+	{
+		public const string Unknown = "unknown";
+		public const string Windows = "windows";
+		public const string MacOS = "macos";
+
+		private static readonly HashSet<string> Known = new(StringComparer.OrdinalIgnoreCase)
+		{
+			Windows,
+			MacOS
+		};
+
+		public static string Normalize(string? platform)
+		{
+			if (String.IsNullOrWhiteSpace(platform))
+			{
+				return Unknown;
+			}
+
+			string trimmed = platform.Trim();
+
+			if (!Known.Contains(trimmed))
+			{
+				return Unknown;
+			}
+
+			return trimmed.ToLowerInvariant();
+		}
+	}
+
 
 
 	// TODO
 	static class WebSocketManager
 	{
 		public static int g_PeakConnectionCount = 0;
-		public static async Task<UserWebSocketInstance> CreateSession(AppDbContext _db, EUserSessionType sessionType, bool bIsReconnect, Int64 ownerID, KnownClients.EKnownClients client_id, string ipAddr, string strContinent, string strCountry, double dLatitude, double dLongitude, bool bIsAdmin)
+		public static async Task<UserWebSocketInstance> CreateSession(AppDbContext _db, EUserSessionType sessionType, bool bIsReconnect, Int64 ownerID, KnownClients.EKnownClients client_id, string ipAddr, string strContinent, string strCountry, double dLatitude, double dLongitude, bool bIsAdmin, string platform)
 		{
 			string strDisplayName = await Database.Users.GetDisplayName(_db, ownerID);
 
@@ -266,7 +300,7 @@ namespace GenOnlineService
 				// get stats
 				PlayerStats GameStats = await Database.UserStats.GetPlayerStats(_db, ownerID);
 
-				userCacheData = new UserSession(ownerID, sessionType, client_id, strContinent, strCountry, dLatitude, dLongitude);
+				userCacheData = new UserSession(ownerID, sessionType, client_id, strContinent, strCountry, dLatitude, dLongitude, platform);
 				m_dictUserSessions[sessionType][ownerID] = userCacheData;
 				
 				// TODO_SOCIAL: Move this to a class
@@ -781,7 +815,7 @@ namespace GenOnlineService
 									}
 									
 
-									memberListUpdate.members.Add(new RoomMember(sess.m_UserID, strDisplayName, sharedUserData.IsAdmin()));
+									memberListUpdate.members.Add(new RoomMember(sess.m_UserID, strDisplayName, sharedUserData.IsAdmin(), sess.Platform));
 
 									// also add to list of users who need this update, since they were in there
 									lstUsersToSend.Add(sess.m_UserID);
@@ -899,6 +933,7 @@ namespace GenOnlineService
 		private string m_strMiddlewareUserID = String.Empty;
 
 		public KnownClients.EKnownClients m_client_id = KnownClients.EKnownClients.unknown;
+		public string Platform { get; private set; } = Platforms.Unknown;
 		DateTime m_CreateTime = DateTime.Now;
 		public DateTime GetCreationTime()
 		{
@@ -936,7 +971,7 @@ namespace GenOnlineService
 			return DateTime.Now - m_CreateTime;
 		}
 
-		public UserSession(Int64 ownerID, EUserSessionType sessionType, KnownClients.EKnownClients client_id, string strContinent, string strCountry, double dLatitude, double dLongitude)
+		public UserSession(Int64 ownerID, EUserSessionType sessionType, KnownClients.EKnownClients client_id, string strContinent, string strCountry, double dLatitude, double dLongitude, string platform)
 		{
 			m_sessionType = sessionType;
 			m_client_id = client_id;
@@ -944,6 +979,7 @@ namespace GenOnlineService
 			m_strCountry = strCountry;
 			m_dLatitude = dLatitude;
 			m_dLongitude = dLongitude;
+			Platform = platform;
 
 			m_UserID = ownerID;
 

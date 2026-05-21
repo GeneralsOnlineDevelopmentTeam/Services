@@ -207,8 +207,10 @@ namespace GenOnlineService.Controllers
 											string exe_crc = data.ContainsKey("exe_crc") ? data["exe_crc"].ToString() : "NONE";
 											Helpers.RegisterInitialPlayerExeCRC(user_id, exe_crc);
 
-											var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, knownClientID, sessionType, bIsAdmin);
-											var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, knownClientID, sessionType, false, out string refreshJti);
+											string platform = data.ContainsKey("platform") ? data["platform"].ToString() : Platforms.Unknown;
+
+											var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, knownClientID, sessionType, bIsAdmin, platform);
+											var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, knownClientID, sessionType, false, platform, out string refreshJti);
 
 											// rotation: only this refresh token is accepted from now on
 											await TokenRevocationManager.OnTokensIssued(user_id, sessionType, refreshJti);
