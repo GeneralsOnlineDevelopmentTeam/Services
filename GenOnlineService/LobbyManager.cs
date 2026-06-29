@@ -1548,12 +1548,6 @@ namespace GenOnlineService
 					// make sure we have a winner
 					await Database.MatchHistory.DetermineLobbyWinnerIfNotPresent(db, lobby);
 
-					// if its a quickmatch, update our leaderboards
-					if (lobby.LobbyType == ELobbyType.QuickMatch)
-					{
-						await Database.MatchHistory.UpdateLeaderboardAndElo(db, lobby);
-					}
-
 					// Post match result to external leaderboard API for every lobby type.
 					// Only QuickMatch responses are expected to carry a ratings body.
 					await ExternalLeaderboardsClient.PostMatchResultAsync(db, lobby);

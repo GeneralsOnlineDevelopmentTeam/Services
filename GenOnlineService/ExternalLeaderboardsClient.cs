@@ -196,12 +196,12 @@ namespace GenOnlineService
                         var sharedData = WebSocketManager.GetSharedDataForUser(userId);
                         if (sharedData?.GameStats != null)
                         {
-                            // sharedData.GameStats.EloRating = newRating;
-                            // sharedData.GameStats.EloMatches = newMatches;
+                            sharedData.GameStats.EloRating = newRating;
+                            sharedData.GameStats.EloMatches = newMatches;
                         }
 
                         // Call SaveELOData to persist as fallback
-                        // await Database.Users.SaveELOData(db, userId, new EloData(newRating, newMatches));
+                        await Database.Users.SaveELOData(db, userId, new EloData(newRating, newMatches));
                     }
                 }
             }

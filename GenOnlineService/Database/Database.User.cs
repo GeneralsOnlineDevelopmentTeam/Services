@@ -577,8 +577,8 @@ namespace Database
 				if (apiElo != null)
 				{
 					// Persist retrieved rating to DB asynchronously for fallback
-					// await SaveELOData(db, userId, apiElo);
-					// return apiElo;
+					await SaveELOData(db, userId, apiElo);
+					return apiElo;
 				}
 			}
 			catch (Exception ex)
