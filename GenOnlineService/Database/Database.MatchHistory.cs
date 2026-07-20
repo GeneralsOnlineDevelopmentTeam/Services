@@ -460,8 +460,8 @@ namespace Database
 
 					jsonSlots[member.SlotIndex] = JsonSerializer.Serialize(model);
 
-					// Observers (side == -2) are not active players
-					if (model.side != -2)
+					// Observers are not active players
+					if (model.side != Constants.OBSERVER_SIDE_VALUE)
 					{
 						if (playersPerTeam.ContainsKey(model.team))
 						{
@@ -598,9 +598,9 @@ namespace Database
 				{
 					var model = kv.Value;
 
-					// Skip observer slots (side == -2) and AI/placeholder slots (user_id <= 0);
+					// Skip observer slots and AI/placeholder slots (user_id <= 0);
 					// they never quit the game and must not be selected as "last to leave = winner".
-					if (model.side == -2 || model.user_id <= 0)
+					if (model.side == Constants.OBSERVER_SIDE_VALUE || model.user_id <= 0)
 						continue;
 
 					DateTime abandonTime = DateTime.MinValue;
@@ -1028,9 +1028,9 @@ namespace Database
 					MatchdataMemberModel? model = JsonSerializer.Deserialize<MatchdataMemberModel?>(slots[i]!);
 					if (model != null)
 					{
-						// Exclude observer slots (side == -2) and AI/placeholder slots (user_id <= 0)
+						// Exclude observer slots and AI/placeholder slots (user_id <= 0)
 						// from ELO calculations — only real human players are ranked.
-						if (model.Value.side == -2 || model.Value.user_id <= 0)
+						if (model.Value.side == Constants.OBSERVER_SIDE_VALUE || model.Value.user_id <= 0)
 							continue;
 
 						list.Add(model.Value);

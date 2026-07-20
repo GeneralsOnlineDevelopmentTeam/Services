@@ -43,6 +43,8 @@ namespace GenOnlineService
 		public const int GENERALS_ONLINE_SERVICE_VERSION = 1;
 
 		public const UInt16 g_DefaultCameraMaxHeight = 310;
+
+		public const int OBSERVER_SIDE_VALUE = 1;
 	}
 	public class RoomMember
 	{
