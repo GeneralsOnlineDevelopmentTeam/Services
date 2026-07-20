@@ -277,22 +277,6 @@ namespace Database
 };
 
 
-		private static Expression<Func<SetPropertyCalls<MatchHistoryEntry>, SetPropertyCalls<MatchHistoryEntry>>>
-	BuildWinnerSetter(int slotIndex, string updatedJson)
-		{
-			return slotIndex switch
-			{
-				0 => s => s.SetProperty(m => m.MemberSlot0, updatedJson),
-				1 => s => s.SetProperty(m => m.MemberSlot1, updatedJson),
-				2 => s => s.SetProperty(m => m.MemberSlot2, updatedJson),
-				3 => s => s.SetProperty(m => m.MemberSlot3, updatedJson),
-				4 => s => s.SetProperty(m => m.MemberSlot4, updatedJson),
-				5 => s => s.SetProperty(m => m.MemberSlot5, updatedJson),
-				6 => s => s.SetProperty(m => m.MemberSlot6, updatedJson),
-				7 => s => s.SetProperty(m => m.MemberSlot7, updatedJson),
-				_ => throw new ArgumentOutOfRangeException(nameof(slotIndex))
-			};
-		}
 
 
 		private static async Task<string?> _getMemberSlot(AppDbContext db, long matchId, int slotIndex)
@@ -549,38 +533,65 @@ namespace Database
 					}
 				}
 
-				// 3. Check if a winner already exists
-				bool hasWinner = false;
-				int winnerTeam = -1;
-
+				// 3. Build winner groups from active, non-observer members.
+                //    Teamless players are treated individually using synthetic keys.
+				Dictionary<int, List<int>> winGroups = new();
 				foreach (var kv in members)
 				{
-					if (kv.Value.won)
+					var model = kv.Value;
+					if (model.side == Constants.OBSERVER_SIDE_VALUE || !model.won)
+						continue;
+
+					int groupKey = model.team != -1 ? model.team : -1000 - kv.Key;
+					if (!winGroups.TryGetValue(groupKey, out var slotList))
 					{
-						hasWinner = true;
-						winnerTeam = kv.Value.team;
-						break;
+						slotList = new List<int>();
+						winGroups[groupKey] = slotList;
+					}
+					slotList.Add(kv.Key);
+				}
+
+				// 4. Compare winner groups by report count.
+				//    A unique maximum wins; ties or no winner groups fall back to
+                //    the abandoned timestamp-based resolution.
+				int? conclusiveWinningTeam = null;
+				int conclusiveWinningSlot = -1;
+				if (winGroups.Count > 0)
+				{
+					int maxCount = winGroups.Values.Max(g => g.Count);
+					var topGroups = winGroups.Where(g => g.Value.Count == maxCount).ToList();
+					if (topGroups.Count == 1)
+					{
+						var winningGroup = topGroups[0];
+						int teamKey = winningGroup.Key;
+						if (teamKey > -1000)
+						{
+							conclusiveWinningTeam = teamKey;
+						}
+						else
+						{
+							conclusiveWinningSlot = winningGroup.Value[0];
+						}
 					}
 				}
 
-				// 4. If winner exists, propagate to teammates and return
-				if (hasWinner)
+				// 5. If conclusively determined, propagate the win to the team 
+				//    and explicitly award a loss to everyone else.
+				if (conclusiveWinningTeam != null || conclusiveWinningSlot != -1)
 				{
-					if (winnerTeam != -1)
+					foreach (var kv in members)
 					{
-						foreach (var kv in members)
-						{
-							if (kv.Value.team == winnerTeam)
-							{
-								await UpdateMatchHistoryMakeWinner(db, lobby.MatchID, kv.Key);
-							}
-						}
+						bool isWinner = conclusiveWinningTeam != null
+							? kv.Value.team == conclusiveWinningTeam.Value
+							: kv.Key == conclusiveWinningSlot;
+
+						await UpdateMatchHistorySetWinFlag(db, lobby.MatchID, kv.Key, isWinner);
 					}
 
 					return;
 				}
 
-				// 5. No winner — determine who quit last (= winner) using the most accurate timing available.
+				// 6. No winner — determine who quit last (= winner) using the most accurate timing available.
 				//    Prefer TimePlayerAbandonedIngame (recorded the instant each player's WS dropped while
 				//    in-game) over TimeMemberLeft (recorded when the player was structurally removed from the
 				//    lobby, which can happen much later, or earlier due to a fresh-session reconnect, skewing
@@ -630,7 +641,14 @@ namespace Database
 
 				if (lastPlayerNullable == null)
 				{
-					Console.WriteLine($"[WinnerDet] Match={lobby.MatchID}: no valid abandon timestamps found — skipping winner assignment.");
+					Console.WriteLine($"[WinnerDet] Match={lobby.MatchID}: no valid abandon timestamps found — fully inconclusive, clearing won flags.");
+					foreach (var kv in members)
+					{
+						if (kv.Value.side == Constants.OBSERVER_SIDE_VALUE)
+							continue;
+
+						await UpdateMatchHistorySetWinFlag(db, lobby.MatchID, kv.Key, false);
+					}
 					return;
 				}
 
@@ -638,17 +656,18 @@ namespace Database
 				int winningTeam = lastPlayer.team;
 				Console.WriteLine($"[WinnerDet] Match={lobby.MatchID}: winner selected → user={lastPlayer.user_id} slot={lastSlot} team={winningTeam} at={latestLeave:O}");
 
-				// 6. Mark last player + teammates as winners
+				// 7. Mark last player + teammates as winners, explicitly clear everyone else.
 				foreach (var kv in members)
 				{
 					var model = kv.Value;
+					if (model.side == Constants.OBSERVER_SIDE_VALUE)
+						continue;
 
-					if (model.user_id == lastPlayer.user_id ||
-						(winningTeam != -1 && model.team == winningTeam))
-					{
-						Console.WriteLine($"[WinnerDet] Match={lobby.MatchID}: marking slot={kv.Key} user={model.user_id} as WINNER.");
-						await UpdateMatchHistoryMakeWinner(db, lobby.MatchID, kv.Key);
-					}
+					bool isWinner = model.user_id == lastPlayer.user_id ||
+						(winningTeam != -1 && model.team == winningTeam);
+
+					Console.WriteLine($"[WinnerDet] Match={lobby.MatchID}: marking slot={kv.Key} user={model.user_id} as {(isWinner ? "WINNER" : "loser")}.");
+					await UpdateMatchHistorySetWinFlag(db, lobby.MatchID, kv.Key, isWinner);
 				}
 			}
 			catch (Exception ex)
@@ -658,10 +677,11 @@ namespace Database
 			}
 		}
 
-		public static async Task UpdateMatchHistoryMakeWinner(
+		public static async Task UpdateMatchHistorySetWinFlag(
 	AppDbContext db,
 	ulong matchId,
-	int slotIndex)
+	int slotIndex,
+	bool won)
 		{
 			if (matchId == 0 || slotIndex < 0 || slotIndex > 7)
 				return;
@@ -680,13 +700,13 @@ namespace Database
 
 				// 3. Update winner flag
 				MatchdataMemberModel model = modelNullable.Value;
-				model.won = true;
+				model.won = won;
 
 				// 4. Serialize back
 				string updatedJson = JsonSerializer.Serialize(model);
 
 				// 5. Build setter expression
-				var setter = BuildWinnerSetter(slotIndex, updatedJson);
+				var setter = BuildSetter(slotIndex, updatedJson);
 
 				// 6. Execute update (single SQL UPDATE)
 				await db.MatchHistory
@@ -695,7 +715,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] UpdateMatchHistoryMakeWinner failed: {ex.Message}");
+				Console.WriteLine($"[ERROR] UpdateMatchHistorySetWinFlag failed: {ex.Message}");
 				SentrySdk.CaptureException(ex);
 			}
 		}
