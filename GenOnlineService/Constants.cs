@@ -1211,7 +1211,11 @@ namespace GenOnlineService
 					{
 						try
 						{
-							cts.Dispose();
+							// Disarm the pending CancelAfter timer before disposing to prevent a race condition
+						// where the timer fires concurrently with Dispose(), causing ObjectDisposedException
+						// in CancellationTokenSource.ExecuteCallbackHandlers.
+						cts.CancelAfter(Timeout.InfiniteTimeSpan);
+						cts.Dispose();
 						}
 						catch (ObjectDisposedException)
 						{
