@@ -43,6 +43,8 @@ namespace GenOnlineService
 		public const int GENERALS_ONLINE_SERVICE_VERSION = 1;
 
 		public const UInt16 g_DefaultCameraMaxHeight = 310;
+
+		public const int OBSERVER_SIDE_VALUE = 1;
 	}
 	public class RoomMember
 	{
@@ -1211,7 +1213,11 @@ namespace GenOnlineService
 					{
 						try
 						{
-							cts.Dispose();
+							// Disarm the pending CancelAfter timer before disposing to prevent a race condition
+						// where the timer fires concurrently with Dispose(), causing ObjectDisposedException
+						// in CancellationTokenSource.ExecuteCallbackHandlers.
+						cts.CancelAfter(Timeout.InfiniteTimeSpan);
+						cts.Dispose();
 						}
 						catch (ObjectDisposedException)
 						{
