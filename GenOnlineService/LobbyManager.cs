@@ -284,7 +284,7 @@ namespace GenOnlineService
 		public Dictionary<Int64, DateTime> TimeMemberLeft { get; private set; } = new();
 
 		// Records the first time each player's in-game WebSocket connection dropped (i.e., when they first "quit"
-		// while the match was in progress). Only the first disconnect is stored — reconnects do not reset it.
+		// while the match was in progress). Only the first disconnect is stored ï¿½ reconnects do not reset it.
 		// Used by DetermineLobbyWinnerIfNotPresent to find who abandoned first (= loser) vs last (= winner).
 		[JsonIgnore]
 		public Dictionary<Int64, DateTime> TimePlayerAbandonedIngame { get; private set; } = new();
@@ -1411,6 +1411,11 @@ namespace GenOnlineService
 			}
 
 			return listLobbies;
+		}
+
+		public List<Lobby> GetAllLobbies()
+		{
+			return m_dictLobbies.Values.ToList();
 		}
 
 		public Lobby? GetLobby(Int64 lobbyID)

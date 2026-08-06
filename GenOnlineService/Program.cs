@@ -727,6 +727,23 @@ namespace GenOnlineService
 				g_Discord = new DiscordBot();
 			}
 
+			// Relay startup check — same principle as Discord: a misconfigured optional
+			// integration must not take the server down. If the relay is explicitly enabled but
+			// not fully configured, log a loud warning and continue; the livestream endpoints
+			// will refuse with 503 via RelayClient.IsEnabled() rather than crashing at startup.
+			var relaySettings = Program.g_Config.GetSection("Relay");
+			if (relaySettings.GetValue<bool>("enabled"))
+			{
+				string? relayBaseUrl = relaySettings.GetValue<string>("base_url");
+				string? relayApiKey = relaySettings.GetValue<string>("api_key");
+				string? relayIngressKey = relaySettings.GetValue<string>("ingress_api_key");
+				if (string.IsNullOrEmpty(relayBaseUrl) || string.IsNullOrEmpty(relayApiKey) || string.IsNullOrEmpty(relayIngressKey))
+				{
+					Console.WriteLine($"[WARNING] Relay is enabled in config but base_url, api_key and/or ingress_api_key are missing — " +
+						$"livestream endpoints will return 503 until the Relay section is completed.");
+				}
+			}
+
 			builder.Services.AddSingleton<LobbyManager>();
 
 			var rateLimitingSettings = Program.g_Config.GetSection("RateLimiting");

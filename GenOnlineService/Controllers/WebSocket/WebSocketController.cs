@@ -47,8 +47,25 @@ namespace GenOnlineService.Controllers
 			AllowOutOfOrderMetadataProperties = true
 		};
 
-		// GeoIP DB is designed to be reused; opening per request is expensive
-		private static readonly DatabaseReader GeoIpReader = new("data/GeoLite2-City.mmdb");
+		// GeoIP DB is designed to be reused; opening per request is expensive. The database is
+		// gitignored and absent in fresh/CI clones, so a missing file must not brick the whole
+		// WS controller (static-init TypeInitializationException would reject every message).
+		// The IP-lookup call site already has hardcoded fallback values, so null just means
+		// "use the fallbacks".
+		private static readonly DatabaseReader? GeoIpReader = TryOpenGeoIp();
+
+		private static DatabaseReader? TryOpenGeoIp()
+		{
+			try
+			{
+				return new DatabaseReader("data/GeoLite2-City.mmdb");
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[WS] GeoIP DB unavailable ({ex.Message}); using fallback coordinates");
+				return null;
+			}
+		}
 
 		private struct WSMessageEnvelope
 		{
@@ -86,19 +103,22 @@ namespace GenOnlineService.Controllers
 
 			try
 			{
-				var city = GeoIpReader.City(ipAddress);
-
-				ipContinent = city.Continent.Code;
-				ipCountry = city.Country.IsoCode;
-
-				if (city.Location.Longitude != null)
+				if (GeoIpReader != null)
 				{
-					dLongitude = (double)city.Location.Longitude;
-				}
+					var city = GeoIpReader.City(ipAddress);
 
-				if (city.Location.Latitude != null)
-				{
-					dLatitude = (double)city.Location.Latitude;
+					ipContinent = city.Continent.Code;
+					ipCountry = city.Country.IsoCode;
+
+					if (city.Location.Longitude != null)
+					{
+						dLongitude = (double)city.Location.Longitude;
+					}
+
+					if (city.Location.Latitude != null)
+					{
+						dLatitude = (double)city.Location.Latitude;
+					}
 				}
 			}
 			catch
@@ -174,7 +194,7 @@ namespace GenOnlineService.Controllers
 				}
 				catch (OperationCanceledException)
 				{
-					// No message received in 30s — send a keep-alive pong and continue waiting
+					// No message received in 30s ï¿½ send a keep-alive pong and continue waiting
 					wsSess.SendPong();
 					continue;
 				}
