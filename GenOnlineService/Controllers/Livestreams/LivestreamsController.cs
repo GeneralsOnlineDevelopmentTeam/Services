@@ -58,7 +58,6 @@ namespace GenOnlineService.Controllers
 
 		public bool success { get; set; } = false;
 		public string url { get; set; } = String.Empty;
-		public Dictionary<Int64, string> member_urls { get; set; } = new();
 		public string detail { get; set; } = String.Empty;
 	}
 
@@ -134,9 +133,13 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
+			// Note: AllowObservers is deliberately not consulted. That flag governs in-game
+			// observer slots — players joining the match itself — which is a different feature
+			// from a livestream. A livestream is gated by exactly one thing: whether the host
+			// started one, which is what IsStreaming records.
 			foreach (Lobby lobby in _lobbyManager.GetAllLobbies())
 			{
-				if (lobby.State != ELobbyState.INGAME || !lobby.AllowObservers || !lobby.IsStreaming)
+				if (lobby.State != ELobbyState.INGAME || !lobby.IsStreaming)
 				{
 					continue;
 				}
@@ -187,25 +190,38 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
-			// The host reports the relay stream delay in seconds when starting the stream.
+			// Every streaming client registers itself and receives its own single-use stream
+			// token, so this runs once per source rather than minting the whole lobby's tokens
+			// up front (a relay credential is short-lived and single-use — minting one for a
+			// member who has not asked for it just burns a token that expires unused).
+			bool isHost = lobby.Owner == user_id;
+
+			// The stream delay is the host's spoiler window, so only the host may set it. A
+			// non-host member registering their own source sends no delay, and the relay keeps
+			// whatever the host already established for the session.
 			int? delaySeconds = null;
-			using (var reader = new StreamReader(HttpContext.Request.Body))
+			if (isHost)
 			{
-				string jsonData = await reader.ReadToEndAsync();
-				if (!String.IsNullOrEmpty(jsonData))
+				using (var reader = new StreamReader(HttpContext.Request.Body))
 				{
-					var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-					var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(jsonData, options);
-					if (data != null && data.TryGetValue("delay_seconds", out JsonElement delayEl) &&
-						delayEl.ValueKind == JsonValueKind.Number &&
-						delayEl.TryGetInt32(out int parsedDelay))
+					string jsonData = await reader.ReadToEndAsync();
+					if (!String.IsNullOrEmpty(jsonData))
 					{
-						delaySeconds = Math.Max(0, parsedDelay);
+						var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+						var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(jsonData, options);
+						if (data != null && data.TryGetValue("delay_seconds", out JsonElement delayEl) &&
+							delayEl.ValueKind == JsonValueKind.Number &&
+							delayEl.TryGetInt32(out int parsedDelay))
+						{
+							delaySeconds = Math.Max(0, parsedDelay);
+						}
 					}
 				}
 			}
 
-			RelayLivestreamResponse? livestream = await RelayClient.CreateLivestreamAsync(lobby.LobbyID, user_id, delaySeconds);
+			// owner_user_id is the lobby's owner, not the caller: any member may open the relay
+			// session by registering first, and the relay must record the same owner either way.
+			RelayLivestreamResponse? livestream = await RelayClient.CreateLivestreamAsync(lobby.LobbyID, lobby.Owner, delaySeconds);
 			if (livestream == null || String.IsNullOrEmpty(livestream.base_url))
 			{
 				Response.StatusCode = (int)HttpStatusCode.BadGateway;
@@ -213,48 +229,23 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
-			Dictionary<Int64, string> memberUrls = new Dictionary<Int64, string>();
-			string? requesterUrl = null;
-
-			foreach (LobbyMember member in lobby.Members)
+			RelayTokenResponse? tokenResponse = await RelayClient.CreateStreamTokenAsync(lobby.LobbyID, user_id);
+			if (tokenResponse == null || String.IsNullOrEmpty(tokenResponse.url))
 			{
-				if (!member.IsHuman())
-				{
-					continue;
-				}
-
-				RelayTokenResponse? tokenResponse = await RelayClient.CreateStreamTokenAsync(lobby.LobbyID, member.UserID);
-				if (tokenResponse == null || String.IsNullOrEmpty(tokenResponse.url))
-				{
-					Console.WriteLine($"[ERROR] Relay stream token mint failed for lobby {lobby.LobbyID} user {member.UserID}");
-					continue;
-				}
-
-				memberUrls[member.UserID] = tokenResponse.url;
-
-				if (member.UserID == user_id)
-				{
-					requesterUrl = tokenResponse.url;
-				}
-			}
-
-			if (requesterUrl == null)
-			{
+				Console.WriteLine($"[ERROR] Relay stream token mint failed for lobby {lobby.LobbyID} user {user_id}");
 				Response.StatusCode = (int)HttpStatusCode.BadGateway;
 				result.detail = "Relay failed to mint a stream token for you.";
 				return result;
 			}
 
-			// Refresh the lobby lists in the network room so the in-progress game shows up in the livestreams menu.
-			await WebSocketManager.SendNewOrDeletedLobbyToAllNetworkRoomMembers(lobby.NetworkRoomID);
-
-			// A fresh relay session was just created — mark this lobby as actively streaming
-			// so it shows up in /livestreams and is accepted by /observe.
-			lobby.SetStreaming(true, delaySeconds, 0);
+			// Registering does NOT make the lobby live. The relay session exists now, but nothing
+			// has been streamed into it yet — an observer admitted at this point would connect
+			// and watch nothing. The relay reports is_live once it holds the host's replay
+			// header (see Observers below), and that is what puts the lobby in the menu.
+			lobby.SetStreamDelay(delaySeconds);
 
 			result.success = true;
-			result.url = requesterUrl;
-			result.member_urls = memberUrls;
+			result.url = tokenResponse.url;
 			return result;
 		}
 
@@ -274,8 +265,10 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
+			// As in Get: watching a livestream is not the same as taking an in-game observer
+			// slot, so AllowObservers has no say here. IsStreaming below is the gate.
 			Lobby? lobby = _lobbyManager.GetLobby(lobby_id);
-			if (lobby == null || lobby.State != ELobbyState.INGAME || !lobby.AllowObservers)
+			if (lobby == null || lobby.State != ELobbyState.INGAME)
 			{
 				Response.StatusCode = (int)HttpStatusCode.NotFound;
 				result.detail = "No watchable live game found for that lobby_id.";
@@ -350,10 +343,12 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
-			// The relay (the authority on who is watching and stream liveness) reports the
-			// current livestream state. is_live=false deregisters the stream so the lobby
-			// drops out of /livestreams and /observe rejects — even though GO's own lobby
-			// object may still be INGAME (the match can continue without a stream).
+			// The relay (the authority on who is watching and on stream liveness) reports the
+			// current livestream state. is_live=true means it holds the host's replay header and
+			// the stream is watchable, which is what registers the stream here; is_live=false
+			// deregisters it so the lobby drops out of /livestreams and /observe rejects — even
+			// though GO's own lobby object may still be INGAME (a match can continue with nobody
+			// streaming it).
 			foreach (POST_Livestreams_Observers_Entry update in updates)
 			{
 				if (!Int64.TryParse(update.lobby_id, out Int64 entryLobby))
@@ -369,9 +364,14 @@ namespace GenOnlineService.Controllers
 
 				if (update.is_live)
 				{
-					if (observedLobby.IsStreaming)
+					bool wasStreaming = observedLobby.IsStreaming;
+					observedLobby.SetStreaming(true, observerCount: Math.Max(0, update.observer_count));
+
+					if (!wasStreaming)
 					{
-						observedLobby.SetStreaming(true, observerCount: Math.Max(0, update.observer_count));
+						// The stream just became watchable. Refresh the lobby lists in the
+						// network room so the in-progress game appears in the livestreams menu.
+						await WebSocketManager.SendNewOrDeletedLobbyToAllNetworkRoomMembers(observedLobby.NetworkRoomID);
 					}
 				}
 				else

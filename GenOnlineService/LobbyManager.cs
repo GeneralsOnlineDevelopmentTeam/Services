@@ -1050,16 +1050,24 @@ namespace GenOnlineService
             }
 		}
 
-		public void SetStreaming(bool isStreaming, int? delaySeconds = null, int? observerCount = null)
+		// Liveness and observer count both come from the relay, which is the only party that can
+		// see whether a stream has data and who is watching it.
+		public void SetStreaming(bool isStreaming, int? observerCount = null)
 		{
 			IsStreaming = isStreaming;
-			if (delaySeconds.HasValue)
-			{
-				StreamDelaySeconds = delaySeconds;
-			}
 			if (observerCount.HasValue)
 			{
 				ObserverCount = observerCount.Value;
+			}
+		}
+
+		// The delay is set separately, at registration, because it is known before the stream is
+		// live and is reported by the host rather than observed by the relay.
+		public void SetStreamDelay(int? delaySeconds)
+		{
+			if (delaySeconds.HasValue)
+			{
+				StreamDelaySeconds = delaySeconds;
 			}
 		}
 

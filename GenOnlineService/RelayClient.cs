@@ -2,6 +2,7 @@ using System;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -37,9 +38,13 @@ namespace GenOnlineService
 
 	public static class RelayClient
 	{
+		// Every relay call sits inside a request a player is waiting on (they have just pressed
+		// "stream" or "watch"), so the budget is tight on purpose: a relay that is not answering
+		// in a couple of seconds is not going to answer usefully, and the player is better served
+		// by a prompt failure than by a client that appears to hang.
 		private static readonly HttpClient s_httpClient = new HttpClient
 		{
-			Timeout = TimeSpan.FromSeconds(10)
+			Timeout = TimeSpan.FromSeconds(5)
 		};
 
 		/// <summary>Whether the relay feature is enabled. Off by default — the relay config is
@@ -87,7 +92,17 @@ namespace GenOnlineService
 			IConfigurationSection configSection = Program.g_Config.GetSection("Relay");
 			string? expectedKey = configSection.GetValue<string>("ingress_api_key");
 
-			return !string.IsNullOrEmpty(expectedKey) && suppliedKey == expectedKey;
+			if (string.IsNullOrEmpty(expectedKey))
+			{
+				return false;
+			}
+
+			// Fixed-time compare: this endpoint is reachable by anyone, and an ordinary string
+			// comparison leaks how many leading bytes of the key were right. The relay does the
+			// same on its side with hmac.compare_digest.
+			return CryptographicOperations.FixedTimeEquals(
+				Encoding.UTF8.GetBytes(suppliedKey),
+				Encoding.UTF8.GetBytes(expectedKey));
 		}
 
 		private static void GetRelayConfig(out string baseUrl, out string apiKey)
@@ -121,14 +136,18 @@ namespace GenOnlineService
 
 		private static Polly.Retry.AsyncRetryPolicy BuildRetryPolicy(string description)
 		{
-			// Configure Polly wait-and-retry policy with exponential backoff on HTTP/Socket errors
+			// Wait-and-retry with a deliberately short budget. These calls are made while a
+			// player waits on the response, so the whole policy has to fit inside a request
+			// they will sit through: two retries at 400ms and 800ms, which covers a dropped
+			// connection or a relay restart without turning a sick relay into a minute-long
+			// hang. Anything slower than this is a failure worth surfacing.
 			return Policy
 				.Handle<HttpRequestException>()
 				.Or<SocketException>()
 				.Or<TaskCanceledException>()
-				.WaitAndRetryAsync(3, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)), (exception, timeSpan, retryCount, context) =>
+				.WaitAndRetryAsync(2, retryAttempt => TimeSpan.FromMilliseconds(200 * Math.Pow(2, retryAttempt)), (exception, timeSpan, retryCount, context) =>
 				{
-					Console.WriteLine($"[WARNING] Relay {description} call failed (attempt {retryCount}). Retrying in {timeSpan.TotalSeconds}s. Error: {exception.Message}");
+					Console.WriteLine($"[WARNING] Relay {description} call failed (attempt {retryCount}). Retrying in {timeSpan.TotalMilliseconds}ms. Error: {exception.Message}");
 				});
 		}
 
@@ -228,6 +247,36 @@ namespace GenOnlineService
 			}
 		}
 
+		// The relay answers "no such live session" with {"detail": {"code": "stream_ended", ...}}.
+		// Anything else 404ing on that path is a routing problem, not an ended stream.
+		private static bool IsStreamEndedBody(string responseBody)
+		{
+			if (String.IsNullOrEmpty(responseBody))
+			{
+				return false;
+			}
+
+			try
+			{
+				using (JsonDocument document = JsonDocument.Parse(responseBody))
+				{
+					if (document.RootElement.ValueKind == JsonValueKind.Object &&
+						document.RootElement.TryGetProperty("detail", out JsonElement detail) &&
+						detail.ValueKind == JsonValueKind.Object &&
+						detail.TryGetProperty("code", out JsonElement code) &&
+						code.ValueKind == JsonValueKind.String)
+					{
+						return code.GetString() == "stream_ended";
+					}
+				}
+			}
+			catch (JsonException)
+			{
+			}
+
+			return false;
+		}
+
 		public static async Task<RelayWatchTicketResult> CreateWatchTicketAsync(long lobbyId, long userId)
 		{
 			try
@@ -241,11 +290,22 @@ namespace GenOnlineService
 						return new RelayWatchTicketResult { Status = RelayWatchTicketStatus.Failure };
 					}
 
-					// 404 means the relay session is gone — the stream ended. Everything else
-					// non-success is a relay failure.
+					// A 404 means the relay session is gone — the stream ended — but only when it
+					// carries the relay's own marker. A bare 404 came from something else on the
+					// path (wrong base_url, a reverse proxy that mishandled the prefix) and must
+					// not be reported to the player as "the stream ended", because the stream is
+					// very likely fine and the deployment is not.
 					if ((int)response.StatusCode == 404)
 					{
-						return new RelayWatchTicketResult { Status = RelayWatchTicketStatus.StreamEnded };
+						string notFoundBody = await response.Content.ReadAsStringAsync();
+						if (IsStreamEndedBody(notFoundBody))
+						{
+							return new RelayWatchTicketResult { Status = RelayWatchTicketStatus.StreamEnded };
+						}
+
+						Console.WriteLine($"[ERROR] Relay CreateWatchTicket for lobby {lobbyId} got a 404 that did not come from the relay's livestream handler. " +
+							$"Check Relay.base_url and any reverse-proxy path prefix. Body: {notFoundBody}");
+						return new RelayWatchTicketResult { Status = RelayWatchTicketStatus.Failure };
 					}
 
 					if (!response.IsSuccessStatusCode)
