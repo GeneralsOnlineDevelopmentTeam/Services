@@ -257,6 +257,14 @@ namespace GenOnlineService
 		public string Password { get; private set; } = String.Empty;
 
 		public bool AllowObservers { get; private set; } = false;
+
+		// Livestream state, owned by the relay session. IsStreaming is true while the relay has
+		// a live stream for this lobby; StreamDelaySeconds is the host-reported relay delay; and
+		// ObserverCount is how many spectators are currently watching.
+		public bool IsStreaming { get; private set; } = false;
+		public int? StreamDelaySeconds { get; private set; } = null;
+		public int ObserverCount { get; private set; } = 0;
+
 		public UInt32 ExeCRC { get; private set; } = 0;
 		public UInt32 IniCRC { get; private set; } = 0;
 
@@ -1040,6 +1048,19 @@ namespace GenOnlineService
 			{
                 LobbyJoinability = newJoinability;
             }
+		}
+
+		public void SetStreaming(bool isStreaming, int? delaySeconds = null, int? observerCount = null)
+		{
+			IsStreaming = isStreaming;
+			if (delaySeconds.HasValue)
+			{
+				StreamDelaySeconds = delaySeconds;
+			}
+			if (observerCount.HasValue)
+			{
+				ObserverCount = observerCount.Value;
+			}
 		}
 
 		public void UpdateMaxCameraHeight(UInt16 maxCamHeight)

@@ -74,6 +74,22 @@ namespace GenOnlineService
 				   !string.IsNullOrEmpty(sectionIngressKey);
 		}
 
+		/// <summary>Whether a key supplied on an inbound relay call (X-Relay-Key) matches the
+		/// configured ingress key. The relay authenticates to GO with this credential
+		/// (Relay.ingress_api_key), distinct from the api_key GO sends to the relay.</summary>
+		public static bool ValidateIngressKey(string? suppliedKey)
+		{
+			if (string.IsNullOrEmpty(suppliedKey) || Program.g_Config == null)
+			{
+				return false;
+			}
+
+			IConfigurationSection configSection = Program.g_Config.GetSection("Relay");
+			string? expectedKey = configSection.GetValue<string>("ingress_api_key");
+
+			return !string.IsNullOrEmpty(expectedKey) && suppliedKey == expectedKey;
+		}
+
 		private static void GetRelayConfig(out string baseUrl, out string apiKey)
 		{
 			baseUrl = String.Empty;
@@ -116,46 +132,11 @@ namespace GenOnlineService
 				});
 		}
 
-		private static async Task<HttpResponseMessage> SendWithRetryAsync(HttpMethod method, string path, string? payloadJson, string description)
-		{
-			GetRelayConfig(out string baseUrl, out string apiKey);
-
-			string requestUrl = baseUrl + path;
-
-			var retryPolicy = BuildRetryPolicy(description);
-
-			HttpResponseMessage? response = null;
-
-			await retryPolicy.ExecuteAsync(async () =>
-			{
-				using (var request = new HttpRequestMessage(method, requestUrl))
-				{
-					request.Headers.TryAddWithoutValidation("X-Relay-Key", apiKey);
-					request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-					if (payloadJson != null)
-					{
-						request.Content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
-					}
-
-					response = await s_httpClient.SendAsync(request);
-
-					// Explicitly verify response success inside execution block to ensure retry triggers on HTTP error statuses
-					response.EnsureSuccessStatusCode();
-				}
-			});
-
-			if (response == null)
-			{
-				throw new Exception(String.Format("Relay {0} call returned no response", description));
-			}
-
-			return response;
-		}
-
-		// Like SendWithRetryAsync but does not throw on non-success statuses, so callers can
-		// distinguish a relay "stream ended" (404) from a relay failure (5xx / network).
-		private static async Task<HttpResponseMessage?> SendRawAsync(HttpMethod method, string path, string? payloadJson, string description)
+		// Sends a relay request with the shared retry policy and auth header. When throwOnError is
+		// true, non-success statuses raise inside the retry block (so they are retried) and any
+		// failure surfaces as null. When false, non-success statuses are returned as-is — the
+		// caller must interpret them (e.g. a relay 404 "stream ended" is valid, not a failure).
+		private static async Task<HttpResponseMessage?> SendAsync(HttpMethod method, string path, string? payloadJson, string description, bool throwOnError)
 		{
 			GetRelayConfig(out string baseUrl, out string apiKey);
 
@@ -179,9 +160,14 @@ namespace GenOnlineService
 							request.Content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
 						}
 
-						// No EnsureSuccessStatusCode: a 404 ("stream ended") is a valid, expected
-						// outcome that must not trigger retries or collapse into a generic failure.
 						response = await s_httpClient.SendAsync(request);
+
+						// Explicitly verify response success inside execution block so the retry
+						// policy also triggers on HTTP error statuses.
+						if (throwOnError)
+						{
+							response.EnsureSuccessStatusCode();
+						}
 					}
 				});
 			}
@@ -194,14 +180,19 @@ namespace GenOnlineService
 			return response;
 		}
 
-		public static async Task<RelayLivestreamResponse?> CreateLivestreamAsync(long lobbyId, long ownerUserId)
+		public static async Task<RelayLivestreamResponse?> CreateLivestreamAsync(long lobbyId, long ownerUserId, int? delaySeconds = null)
 		{
 			try
 			{
-				string payloadJson = JsonSerializer.Serialize(new { lobby_id = lobbyId, owner_user_id = ownerUserId });
+				string payloadJson = JsonSerializer.Serialize(new { lobby_id = lobbyId, owner_user_id = ownerUserId, delay_seconds = delaySeconds });
 
-				using (var response = await SendWithRetryAsync(HttpMethod.Post, "/internal/livestreams", payloadJson, "CreateLivestream"))
+				using (var response = await SendAsync(HttpMethod.Post, "/internal/livestreams", payloadJson, "CreateLivestream", true))
 				{
+					if (response == null)
+					{
+						return null;
+					}
+
 					string responseBody = await response.Content.ReadAsStringAsync();
 					return JsonSerializer.Deserialize<RelayLivestreamResponse>(responseBody);
 				}
@@ -219,8 +210,13 @@ namespace GenOnlineService
 			{
 				string payloadJson = JsonSerializer.Serialize(new { lobby_id = lobbyId, user_id = userId });
 
-				using (var response = await SendWithRetryAsync(HttpMethod.Post, "/internal/stream_tokens", payloadJson, "CreateStreamToken"))
+				using (var response = await SendAsync(HttpMethod.Post, "/internal/stream_tokens", payloadJson, "CreateStreamToken", true))
 				{
+					if (response == null)
+					{
+						return null;
+					}
+
 					string responseBody = await response.Content.ReadAsStringAsync();
 					return JsonSerializer.Deserialize<RelayTokenResponse>(responseBody);
 				}
@@ -238,7 +234,7 @@ namespace GenOnlineService
 			{
 				string payloadJson = JsonSerializer.Serialize(new { lobby_id = lobbyId, user_id = userId });
 
-				using (var response = await SendRawAsync(HttpMethod.Post, "/internal/watch_tickets", payloadJson, "CreateWatchTicket"))
+				using (var response = await SendAsync(HttpMethod.Post, "/internal/watch_tickets", payloadJson, "CreateWatchTicket", false))
 				{
 					if (response == null)
 					{

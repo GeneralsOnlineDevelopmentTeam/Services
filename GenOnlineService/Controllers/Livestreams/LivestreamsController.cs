@@ -18,13 +18,13 @@
 
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Text.Json;
-using Microsoft.Extensions.Configuration;
 
 namespace GenOnlineService.Controllers
 {
@@ -45,6 +45,7 @@ namespace GenOnlineService.Controllers
 		public string map_name { get; set; } = String.Empty;
 		public List<string> players { get; set; } = new();
 		public int? delay_seconds { get; set; } = null;
+		public int observer_count { get; set; } = 0;
 		public int? age_seconds { get; set; } = null;
 	}
 
@@ -72,7 +73,7 @@ namespace GenOnlineService.Controllers
 		public string detail { get; set; } = String.Empty;
 	}
 
-	public class POST_Livestreams_Ended_Result : APIResult
+	public class POST_Livestreams_Observers_Result : APIResult
 	{
 		public override Type GetReturnType()
 		{
@@ -83,18 +84,37 @@ namespace GenOnlineService.Controllers
 		public string detail { get; set; } = String.Empty;
 	}
 
+	public class POST_Livestreams_Observers_Entry
+	{
+		public string lobby_id { get; set; } = String.Empty;
+		public int observer_count { get; set; } = 0;
+		public bool is_live { get; set; } = true;
+	}
+
+	// The relay is optional: when it is not configured (Relay.enabled off / missing keys) the
+	// livestream POST endpoints must refuse loudly rather than pretending a stream was set up.
+	// Applied per-endpoint so the GET /livestreams menu can keep its deliberate empty-list
+	// behaviour when the feature is not deployed.
+	public class RequireRelayAttribute : ActionFilterAttribute
+	{
+		public override void OnActionExecuting(ActionExecutingContext context)
+		{
+			if (!RelayClient.IsEnabled())
+			{
+				context.Result = new ObjectResult(new { detail = "Live streaming is not enabled on this server." })
+				{
+					StatusCode = (int)HttpStatusCode.ServiceUnavailable
+				};
+			}
+		}
+	}
+
 	[ApiController]
 	[Authorize(Roles = "GameClient")]
 	[Route("env/{environment}/contract/{contract_version}/[controller]")]
 		public class LivestreamsController : ControllerBase
 	{
 		private readonly LobbyManager _lobbyManager;
-
-		// Lobbies whose relay session has ended (the relay notified GO via POST /Livestreams/ended
-		// that all sources left / the session was reaped). The relay owns stream liveness, so this
-		// is the signal that removes a lobby from /livestreams and rejects /observe — even though
-		// GO's own lobby may still be INGAME. Cleared when a fresh /register re-creates the session.
-		private static readonly System.Collections.Concurrent.ConcurrentDictionary<Int64, byte> s_endedStreams = new();
 
 		public LivestreamsController(LobbyManager lobbyManager)
 		{
@@ -116,14 +136,7 @@ namespace GenOnlineService.Controllers
 
 			foreach (Lobby lobby in _lobbyManager.GetAllLobbies())
 			{
-				if (lobby.State != ELobbyState.INGAME || !lobby.AllowObservers)
-				{
-					continue;
-				}
-
-				// The relay reported this stream ended — drop it from the menu even though GO's
-				// lobby object is still INGAME.
-				if (s_endedStreams.ContainsKey(lobby.LobbyID))
+				if (lobby.State != ELobbyState.INGAME || !lobby.AllowObservers || !lobby.IsStreaming)
 				{
 					continue;
 				}
@@ -133,7 +146,8 @@ namespace GenOnlineService.Controllers
 				entry.name = lobby.Name;
 				entry.map_name = lobby.MapName;
 				entry.players = lobby.Members.Where(member => member.IsHuman()).Select(member => member.DisplayName).ToList();
-				entry.delay_seconds = null;
+				entry.delay_seconds = lobby.StreamDelaySeconds;
+				entry.observer_count = lobby.ObserverCount;
 				entry.age_seconds = Math.Max(0, (int)(DateTime.UtcNow - lobby.TimeCreated).TotalSeconds);
 
 				result.livestreams.Add(entry);
@@ -143,17 +157,10 @@ namespace GenOnlineService.Controllers
 		}
 
 		[HttpPost("register", Name = "RegisterLivestream")]
+		[RequireRelay]
 		public async Task<APIResult> Register()
 		{
 			POST_Livestreams_Register_Result result = new POST_Livestreams_Register_Result();
-
-			// The feature is off: refuse loudly rather than pretending a stream was set up.
-			if (!RelayClient.IsEnabled())
-			{
-				Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
-				result.detail = "Live streaming is not enabled on this server.";
-				return result;
-			}
 
 			Int64 user_id = TokenHelper.GetUserID(this);
 			EUserSessionType sessionType = TokenHelper.GetSessionType(this);
@@ -180,7 +187,25 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
-			RelayLivestreamResponse? livestream = await RelayClient.CreateLivestreamAsync(lobby.LobbyID, user_id);
+			// The host reports the relay stream delay in seconds when starting the stream.
+			int? delaySeconds = null;
+			using (var reader = new StreamReader(HttpContext.Request.Body))
+			{
+				string jsonData = await reader.ReadToEndAsync();
+				if (!String.IsNullOrEmpty(jsonData))
+				{
+					var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+					var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(jsonData, options);
+					if (data != null && data.TryGetValue("delay_seconds", out JsonElement delayEl) &&
+						delayEl.ValueKind == JsonValueKind.Number &&
+						delayEl.TryGetInt32(out int parsedDelay))
+					{
+						delaySeconds = Math.Max(0, parsedDelay);
+					}
+				}
+			}
+
+			RelayLivestreamResponse? livestream = await RelayClient.CreateLivestreamAsync(lobby.LobbyID, user_id, delaySeconds);
 			if (livestream == null || String.IsNullOrEmpty(livestream.base_url))
 			{
 				Response.StatusCode = (int)HttpStatusCode.BadGateway;
@@ -223,9 +248,9 @@ namespace GenOnlineService.Controllers
 			// Refresh the lobby lists in the network room so the in-progress game shows up in the livestreams menu.
 			await WebSocketManager.SendNewOrDeletedLobbyToAllNetworkRoomMembers(lobby.NetworkRoomID);
 
-			// A fresh relay session was just created, so this lobby's stream is live again —
-			// clear any earlier "stream ended" state from a previous session.
-			s_endedStreams.TryRemove(lobby.LobbyID, out _);
+			// A fresh relay session was just created — mark this lobby as actively streaming
+			// so it shows up in /livestreams and is accepted by /observe.
+			lobby.SetStreaming(true, delaySeconds, 0);
 
 			result.success = true;
 			result.url = requesterUrl;
@@ -234,17 +259,10 @@ namespace GenOnlineService.Controllers
 		}
 
 		[HttpPost("observe/{lobby_id}", Name = "ObserveLivestream")]
+		[RequireRelay]
 		public async Task<APIResult> Observe(Int64 lobby_id)
 		{
 			POST_Livestreams_Observe_Result result = new POST_Livestreams_Observe_Result();
-
-			// The feature is off: refuse loudly rather than handing out a broken watch URL.
-			if (!RelayClient.IsEnabled())
-			{
-				Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
-				result.detail = "Live streaming is not enabled on this server.";
-				return result;
-			}
 
 			Int64 user_id = TokenHelper.GetUserID(this);
 			EUserSessionType sessionType = TokenHelper.GetSessionType(this);
@@ -264,8 +282,8 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
-			// The relay already told us this stream ended — reject before another relay round-trip.
-			if (s_endedStreams.ContainsKey(lobby.LobbyID))
+			// No active relay stream for this lobby — reject before another relay round-trip.
+			if (!lobby.IsStreaming)
 			{
 				Response.StatusCode = (int)HttpStatusCode.NotFound;
 				result.detail = "That livestream has ended.";
@@ -276,10 +294,10 @@ namespace GenOnlineService.Controllers
 			if (ticket.Status == RelayWatchTicketStatus.StreamEnded)
 			{
 				// The relay session for this lobby is gone (all sources left / reaped): the
-				// stream is over even though GO's lobby is still INGAME. Tell the client
-				// "stream ended" (404) rather than a confusing 502, and remember it so the
-				// lobby drops out of /livestreams.
-				s_endedStreams[lobby.LobbyID] = 0;
+				// stream is over even though GO's lobby is still INGAME. Deregister it so the
+				// lobby drops out of /livestreams on the next refresh, and tell the client
+				// "stream ended" (404) rather than a confusing 502.
+				lobby.SetStreaming(false);
 				Response.StatusCode = (int)HttpStatusCode.NotFound;
 				result.detail = "That livestream has ended.";
 				return result;
@@ -297,80 +315,70 @@ namespace GenOnlineService.Controllers
 			return result;
 		}
 
-		[HttpPost("ended", Name = "LivestreamEnded")]
-		// The relay calls this (not a game client) and authenticates with its own credential
+		[HttpPost("observers", Name = "LivestreamObservers")]
+		[RequireRelay]
+		// The relay calls this (not a game client) with its own credential
 		// (Relay.ingress_api_key), so it must bypass the class-level GameClient JWT requirement.
-		// [AllowAnonymous] opts this one route out; the key is validated manually below.
 		[AllowAnonymous]
-		public async Task<APIResult> Ended()
+		public async Task<APIResult> Observers([FromHeader(Name = "X-Relay-Key")] string? relayKey)
 		{
-			POST_Livestreams_Ended_Result result = new POST_Livestreams_Ended_Result();
+			POST_Livestreams_Observers_Result result = new POST_Livestreams_Observers_Result();
 
-			// The relay's credential is distinct from GO's key (Relay.api_key) that GO sends to
-			// the relay. Missing/mismatched -> 401, matching the relay's /internal/* gate.
-			if (!RelayClient.IsEnabled())
-			{
-				Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
-				result.detail = "Relay integration is not enabled on this server.";
-				return result;
-			}
-
-			IConfigurationSection relaySettings = Program.g_Config.GetSection("Relay");
-			string? expectedKey = relaySettings.GetValue<string>("ingress_api_key");
-			string? suppliedKey = Request.Headers["X-Relay-Key"].FirstOrDefault();
-
-			if (string.IsNullOrEmpty(expectedKey) || suppliedKey != expectedKey)
+			if (!RelayClient.ValidateIngressKey(relayKey))
 			{
 				Response.StatusCode = (int)HttpStatusCode.Unauthorized;
 				result.detail = "Invalid or missing relay key.";
 				return result;
 			}
 
-			Int64 lobby_id = -1;
-			string reason = String.Empty;
+			// The relay batches all lobbies whose livestream state changed into one request as an
+			// array of {lobby_id, observer_count, is_live} entries, always containing at least one
+			// update. is_live=false means the relay closed the stream (it owns stream liveness),
+			// so the lobby is deregistered.
+			List<POST_Livestreams_Observers_Entry>? updates = null;
 			using (var reader = new StreamReader(HttpContext.Request.Body))
 			{
 				string jsonData = await reader.ReadToEndAsync();
 				var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-				var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(jsonData, options);
-				if (data != null)
-				{
-					if (data.TryGetValue("lobby_id", out JsonElement lobbyEl))
-					{
-						// The relay sends lobby_id as a decimal string; accept either for safety.
-						if (lobbyEl.ValueKind == JsonValueKind.Number &&
-							lobbyEl.TryGetInt64(out long parsedLobby))
-						{
-							lobby_id = parsedLobby;
-						}
-						else if (lobbyEl.ValueKind == JsonValueKind.String &&
-							lobbyEl.GetString() != null &&
-							Int64.TryParse(lobbyEl.GetString(), out long parsedStringLobby))
-						{
-							lobby_id = parsedStringLobby;
-						}
-					}
-					if (data.TryGetValue("reason", out JsonElement reasonEl) &&
-						reasonEl.ValueKind == JsonValueKind.String)
-					{
-						reason = reasonEl.GetString() ?? String.Empty;
-					}
-				}
+				updates = JsonSerializer.Deserialize<List<POST_Livestreams_Observers_Entry>>(jsonData, options);
 			}
 
-			if (lobby_id == -1)
+			if (updates == null || updates.Count == 0)
 			{
 				Response.StatusCode = (int)HttpStatusCode.BadRequest;
-				result.detail = "lobby_id required.";
+				result.detail = "livestream state updates must be an array.";
 				return result;
 			}
 
-			// The relay (the authority on stream liveness) says this stream is over. Record it
-			// so the lobby drops out of /livestreams and /observe rejects — even though GO's
-			// own lobby object may still be INGAME (the match can continue without a stream).
-			s_endedStreams[lobby_id] = 0;
+			// The relay (the authority on who is watching and stream liveness) reports the
+			// current livestream state. is_live=false deregisters the stream so the lobby
+			// drops out of /livestreams and /observe rejects — even though GO's own lobby
+			// object may still be INGAME (the match can continue without a stream).
+			foreach (POST_Livestreams_Observers_Entry update in updates)
+			{
+				if (!Int64.TryParse(update.lobby_id, out Int64 entryLobby))
+				{
+					continue;
+				}
 
-			Console.WriteLine($"[Livestream] Relay reported lobby {lobby_id} ended (reason: {reason}).");
+				Lobby? observedLobby = _lobbyManager.GetLobby(entryLobby);
+				if (observedLobby == null)
+				{
+					continue;
+				}
+
+				if (update.is_live)
+				{
+					if (observedLobby.IsStreaming)
+					{
+						observedLobby.SetStreaming(true, observerCount: Math.Max(0, update.observer_count));
+					}
+				}
+				else
+				{
+					observedLobby.SetStreaming(false, observerCount: 0);
+				}
+			}
 
 			result.received = true;
 			return result;
