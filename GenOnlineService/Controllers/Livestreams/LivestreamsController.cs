@@ -196,10 +196,12 @@ namespace GenOnlineService.Controllers
 			// member who has not asked for it just burns a token that expires unused).
 			bool isHost = lobby.Owner == user_id;
 
-			// The stream delay is the host's spoiler window, so only the host may set it. A
-			// non-host member registering their own source sends no delay, and the relay keeps
-			// whatever the host already established for the session.
-			int? delaySeconds = null;
+			// The stream delay is the host's spoiler window, so only the host may set it in the
+			// payload. But the delay is a lobby property the host chose in the game-setup
+			// screen, so when the first registrant is a member (the host's own streaming is
+			// off), the session must still be created with the host's delay rather than the
+			// relay default — members' streams stay behind the host's spoiler window.
+			int? delaySeconds = lobby.StreamDelaySeconds;
 			if (isHost)
 			{
 				using (var reader = new StreamReader(HttpContext.Request.Body))

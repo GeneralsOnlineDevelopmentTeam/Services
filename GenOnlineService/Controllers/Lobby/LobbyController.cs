@@ -134,7 +134,8 @@ namespace GenOnlineService.Controllers
 		AI_START_POS = 16,
 		MAX_CAMERA_HEIGHT = 17,
         JOINABILITY = 18,
-		HOST_ACTION_BULK_SLOT_UPDATE = 19
+		HOST_ACTION_BULK_SLOT_UPDATE = 19,
+		LOBBY_STREAM_DELAY = 20
     };
 
 	public class RouteHandler_PUT_Lobby_Result : APIResult
@@ -381,7 +382,8 @@ namespace GenOnlineService.Controllers
 			[ELobbyUpdateField.AI_START_POS] = ELobbyUpdatePermissions.LobbyOwner,
 			[ELobbyUpdateField.MAX_CAMERA_HEIGHT] = ELobbyUpdatePermissions.LobbyOwner,
 			[ELobbyUpdateField.JOINABILITY] = ELobbyUpdatePermissions.LobbyOwner,
-			[ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE] = ELobbyUpdatePermissions.LobbyOwner
+			[ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE] = ELobbyUpdatePermissions.LobbyOwner,
+			[ELobbyUpdateField.LOBBY_STREAM_DELAY] = ELobbyUpdatePermissions.LobbyOwner
 		};
 
 
@@ -527,6 +529,20 @@ namespace GenOnlineService.Controllers
 
 										await using var db = await _dbFactory.CreateDbContextAsync();
 										await lobby.UpdateLimitSuperweapons(db, bLimitSuperweapons);
+									}
+								}
+								else if (field == ELobbyUpdateField.LOBBY_STREAM_DELAY)
+								{
+									// The host's live-stream broadcast delay, a lobby property:
+									// stored here, broadcast to members (they display it
+									// read-only), and reported to the relay at stream
+									// registration via StreamDelaySeconds.
+									if (data.ContainsKey("delay_seconds"))
+									{
+										int delaySeconds = data["delay_seconds"].GetInt32();
+										delaySeconds = Math.Clamp(delaySeconds, 0, 600);
+										lobby.SetStreamDelay(delaySeconds);
+										lobby.DirtyRetransmit();
 									}
 								}
 								else if (field == ELobbyUpdateField.HOST_ACTION_FORCE_START)
