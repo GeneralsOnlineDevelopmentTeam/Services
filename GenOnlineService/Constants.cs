@@ -2470,7 +2470,12 @@ namespace GenOnlineService
         SOCIAL_CANT_ADD_FRIEND_LIST_FULL = 38,
 		PROBE_RESP = 39,
 		AC_REGISTER_PLAYER = 40,
-		AC_DEREGISTER_PLAYER = 41
+		AC_DEREGISTER_PLAYER = 41,
+		LOBBY_OBSERVER_SUBSCRIBE = 42,
+		LOBBY_OBSERVER_UNSUBSCRIBE = 43,
+		LOBBY_OBSERVER_LOBBY_CHANGED = 44,
+		LOBBY_OBSERVER_GAME_STARTING = 45,
+		LOBBY_OBSERVER_STREAM_LIVE = 46
 	};
 
 	public static class UserPresence
@@ -2566,6 +2571,13 @@ namespace GenOnlineService
 	public class WebSocketMessage_StartMatch : WebSocketMessage
 	{
 		public string screenshot_url { get; set; } = String.Empty;
+	}
+
+	// Inbound (subscribe/unsubscribe) and outbound (lobby-changed / game-starting /
+	// stream-live) share one shape: a lobby id and the msg_id distinguishing the event.
+	public class WebSocketMessage_LobbyObserverEvent : WebSocketMessage
+	{
+		public Int64 lobby_id { get; set; } = -1;
 	}
 
 	public abstract class WebSocketMessage

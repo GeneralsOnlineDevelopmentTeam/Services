@@ -265,6 +265,14 @@ namespace GenOnlineService
 		public int? StreamDelaySeconds { get; private set; } = null;
 		public int ObserverCount { get; private set; } = 0;
 
+		// Pre-game observers: clients parked in the read-only lobby view, subscribed over the
+		// websocket. Distinct from ObserverCount, which is live-stream watchers reported by the
+		// relay — these are watchers waiting for the match to start. Keyed by UserSession so a
+		// closed websocket can be swept from every lobby at once.
+		[JsonIgnore]
+		public ConcurrentDictionary<UserSession, byte> PendingObservers { get; } = new();
+		public int PendingObserverCount => PendingObservers.Count;
+
 		public UInt32 ExeCRC { get; private set; } = 0;
 		public UInt32 IniCRC { get; private set; } = 0;
 
@@ -547,6 +555,21 @@ namespace GenOnlineService
 							Console.WriteLine("[DIRTY LOBBY] Sending WS lobby update for lobby {0}", LobbyID);
 							sess.QueueWebsocketSend(bytesJSON);
 						}
+					}
+				}
+
+				// Ping pending observers too — they are not lobby members, so they get no
+				// LOBBY_CURRENT_LOBBY_UPDATE, and they refetch GET /Lobby/{id} on the ping.
+				if (PendingObservers.Count > 0)
+				{
+					WebSocketMessage_LobbyObserverEvent observerPing = new WebSocketMessage_LobbyObserverEvent();
+					observerPing.msg_id = (int)EWebSocketMessageID.LOBBY_OBSERVER_LOBBY_CHANGED;
+					observerPing.lobby_id = LobbyID;
+					byte[] observerBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(observerPing));
+
+					foreach (UserSession sess in PendingObservers.Keys)
+					{
+						sess.QueueWebsocketSend(observerBytes);
 					}
 				}
 
@@ -1552,6 +1575,16 @@ namespace GenOnlineService
 			}
 		}
 
+		// A closed websocket means the client is gone (or reconnecting elsewhere) — its
+		// read-only observer subscriptions are dead too. Called from the ws disconnect path.
+		public void RemovePendingObserver(UserSession session)
+		{
+			foreach (Lobby lobbyInst in m_dictLobbies.Values)
+			{
+				lobbyInst.PendingObservers.TryRemove(session, out _);
+			}
+		}
+
 		public async Task<bool> DeleteLobby(Lobby lobby)
 		{
 			try
@@ -1572,6 +1605,23 @@ namespace GenOnlineService
 				// delete
 				bool bRemoved = m_dictLobbies.Remove(lobby.LobbyID, out _);
 				await WebSocketManager.SendNewOrDeletedLobbyToAllNetworkRoomMembers(lobby.NetworkRoomID);
+
+				// Pending observers get one last lobby-changed ping; their next GET /Lobby/{id}
+				// refetch 404s and they leave the read-only lobby view cleanly.
+				if (lobby.PendingObservers.Count > 0)
+				{
+					WebSocketMessage_LobbyObserverEvent observerEvent = new WebSocketMessage_LobbyObserverEvent();
+					observerEvent.msg_id = (int)EWebSocketMessageID.LOBBY_OBSERVER_LOBBY_CHANGED;
+					observerEvent.lobby_id = lobby.LobbyID;
+					byte[] observerBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(observerEvent));
+
+					foreach (UserSession sess in lobby.PendingObservers.Keys)
+					{
+						sess.QueueWebsocketSend(observerBytes);
+					}
+
+					lobby.PendingObservers.Clear();
+				}
 
 				// only do this once
 				if (bRemoved)

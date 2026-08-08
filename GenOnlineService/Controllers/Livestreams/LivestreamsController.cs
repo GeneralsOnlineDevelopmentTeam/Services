@@ -24,6 +24,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Text;
 using System.Text.Json;
 
 namespace GenOnlineService.Controllers
@@ -47,6 +48,9 @@ namespace GenOnlineService.Controllers
 		public int? delay_seconds { get; set; } = null;
 		public int observer_count { get; set; } = 0;
 		public int? age_seconds { get; set; } = null;
+		public int state { get; set; } = 1;
+		public bool passworded { get; set; } = false;
+		public int pending_observer_count { get; set; } = 0;
 	}
 
 	public class POST_Livestreams_Register_Result : APIResult
@@ -137,9 +141,16 @@ namespace GenOnlineService.Controllers
 			// observer slots — players joining the match itself — which is a different feature
 			// from a livestream. A livestream is gated by exactly one thing: whether the host
 			// started one, which is what IsStreaming records.
+			//
+			// The list is the Watch Live screen's one source for everything: live streams
+			// (INGAME + streaming) first, then every pre-game lobby the client can enter as a
+			// read-only observer. A pre-game lobby is never "streaming" yet — the entry's
+			// state flag tells the client which action applies (CONNECT vs OBSERVE).
 			foreach (Lobby lobby in _lobbyManager.GetAllLobbies())
 			{
-				if (lobby.State != ELobbyState.INGAME || !lobby.IsStreaming)
+				bool isPregame = lobby.State == ELobbyState.GAME_SETUP;
+				bool isLive = lobby.State == ELobbyState.INGAME && lobby.IsStreaming;
+				if (!isPregame && !isLive)
 				{
 					continue;
 				}
@@ -152,6 +163,9 @@ namespace GenOnlineService.Controllers
 				entry.delay_seconds = lobby.StreamDelaySeconds;
 				entry.observer_count = lobby.ObserverCount;
 				entry.age_seconds = Math.Max(0, (int)(DateTime.UtcNow - lobby.TimeCreated).TotalSeconds);
+				entry.state = isLive ? 1 : 0;
+				entry.passworded = lobby.IsPassworded;
+				entry.pending_observer_count = lobby.PendingObserverCount;
 
 				result.livestreams.Add(entry);
 			}
@@ -367,12 +381,33 @@ namespace GenOnlineService.Controllers
 				if (update.is_live)
 				{
 					bool wasStreaming = observedLobby.IsStreaming;
-					observedLobby.SetStreaming(true, observerCount: Math.Max(0, update.observer_count));
+
+					// On the first transition, seed the observer count with the pre-game
+					// watchers who were parked in the lobby view: they join within moments, so
+					// without the seed the count would dip to ~0 then climb. The relay's own
+					// periodic reporting takes over from here.
+					int seededObserverCount = Math.Max(0, update.observer_count) + observedLobby.PendingObserverCount;
+					observedLobby.SetStreaming(true, observerCount: seededObserverCount);
 
 					if (!wasStreaming)
 					{
-						// The stream just became watchable. Refresh the lobby lists in the
-						// network room so the in-progress game appears in the livestreams menu.
+						// The stream just became watchable. Tell the read-only observers so
+						// they can fetch a watch ticket and join immediately.
+						if (observedLobby.PendingObservers.Count > 0)
+						{
+							WebSocketMessage_LobbyObserverEvent observerEvent = new WebSocketMessage_LobbyObserverEvent();
+							observerEvent.msg_id = (int)EWebSocketMessageID.LOBBY_OBSERVER_STREAM_LIVE;
+							observerEvent.lobby_id = observedLobby.LobbyID;
+							byte[] observerBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(observerEvent));
+
+							foreach (UserSession sess in observedLobby.PendingObservers.Keys)
+							{
+								sess.QueueWebsocketSend(observerBytes);
+							}
+						}
+
+						// Refresh the lobby lists in the network room so the in-progress game
+						// appears in the livestreams menu.
 						await WebSocketManager.SendNewOrDeletedLobbyToAllNetworkRoomMembers(observedLobby.NetworkRoomID);
 					}
 				}

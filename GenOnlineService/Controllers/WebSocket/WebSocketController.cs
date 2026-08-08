@@ -236,6 +236,15 @@ namespace GenOnlineService.Controllers
 			// close the session
 			if (wsSess != null)
 			{
+				// Sweep this session's read-only observer subscriptions before the session is
+				// torn down — a closed websocket is a client that stopped watching, and the
+				// pending-observer count must not keep counting it.
+				UserSession? closingSession = WebSocketManager.GetSessionFromUser(user_id, wsSess.m_SessionType);
+				if (closingSession != null)
+				{
+					_lobbyManager.RemovePendingObserver(closingSession);
+				}
+
 				await WebSocketManager.DeleteSession(user_id, wsSess.m_SessionType, wsSess, false);
 			}
 
@@ -718,6 +727,39 @@ namespace GenOnlineService.Controllers
 						}
 					}
 				}
+				else if (msgID == EWebSocketMessageID.LOBBY_OBSERVER_SUBSCRIBE)
+				{
+					// A client entering the read-only pre-game lobby view registers as a
+					// pending observer: it gets lobby-changed / game-starting / stream-live
+					// pushes and counts towards PendingObserverCount. No membership, no
+					// password, no lobby-state gate — watching a lobby is a read-only act.
+					WebSocketMessage_LobbyObserverEvent? subscribeMsg =
+						JsonSerializer.Deserialize<WebSocketMessage_LobbyObserverEvent>(payload, JsonOpts);
+
+					if (subscribeMsg != null)
+					{
+						Lobby? observerLobby = _lobbyManager.GetLobby(subscribeMsg.lobby_id);
+						if (observerLobby != null && observerLobby.PendingObservers.TryAdd(sourceUserSession, 0))
+						{
+							Console.WriteLine("[OBSERVER] User {0} subscribed to pre-game lobby {1}", sourceUserSession.m_UserID, observerLobby.LobbyID);
+						}
+					}
+				}
+				else if (msgID == EWebSocketMessageID.LOBBY_OBSERVER_UNSUBSCRIBE)
+				{
+					WebSocketMessage_LobbyObserverEvent? unsubscribeMsg =
+						JsonSerializer.Deserialize<WebSocketMessage_LobbyObserverEvent>(payload, JsonOpts);
+
+					if (unsubscribeMsg != null)
+					{
+						Lobby? observerLobby = _lobbyManager.GetLobby(unsubscribeMsg.lobby_id);
+						if (observerLobby != null)
+						{
+							observerLobby.PendingObservers.TryRemove(sourceUserSession, out _);
+							Console.WriteLine("[OBSERVER] User {0} unsubscribed from pre-game lobby {1}", sourceUserSession.m_UserID, observerLobby.LobbyID);
+						}
+					}
+				}
 				else if (msgID == EWebSocketMessageID.START_GAME_COUNTDOWN_STARTED)
 				{
 					// must be in a lobby
@@ -786,6 +828,21 @@ namespace GenOnlineService.Controllers
 									sess.QueueWebsocketSend(bytesJSON);
 								}
 							}
+						}
+					}
+
+					// The match is starting: tell the read-only observers parked in the lobby
+					// view so they can run their countdown and get ready to join.
+					if (lobbyInfo.PendingObservers.Count > 0)
+					{
+						WebSocketMessage_LobbyObserverEvent observerEvent = new WebSocketMessage_LobbyObserverEvent();
+						observerEvent.msg_id = (int)EWebSocketMessageID.LOBBY_OBSERVER_GAME_STARTING;
+						observerEvent.lobby_id = lobbyInfo.LobbyID;
+						byte[] observerBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(observerEvent));
+
+						foreach (UserSession sess in lobbyInfo.PendingObservers.Keys)
+						{
+							sess.QueueWebsocketSend(observerBytes);
 						}
 					}
 				}
