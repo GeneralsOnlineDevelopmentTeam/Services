@@ -129,7 +129,16 @@ namespace GenOnlineService
                     .Handle<HttpRequestException>()
                     .Or<SocketException>()
                     .Or<TaskCanceledException>()
-                    .WaitAndRetryAsync(3, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)), (exception, timeSpan, retryCount, context) =>
+                    .WaitAndRetryAsync(new[]
+                    {
+                        TimeSpan.FromSeconds(2),
+                        TimeSpan.FromSeconds(4),
+                        TimeSpan.FromSeconds(15),
+                        TimeSpan.FromSeconds(30),
+                        TimeSpan.FromMinutes(1),
+                        TimeSpan.FromMinutes(2),
+                        TimeSpan.FromMinutes(2)
+                    }, (exception, timeSpan, retryCount, context) =>
                     {
                         Console.WriteLine($"[WARNING] External Match ingest POST failed (attempt {retryCount}). Retrying in {timeSpan.TotalSeconds}s. Error: {exception.Message}");
                     });
