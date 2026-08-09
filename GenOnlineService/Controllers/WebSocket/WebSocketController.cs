@@ -742,6 +742,9 @@ namespace GenOnlineService.Controllers
 						if (observerLobby != null && observerLobby.PendingObservers.TryAdd(sourceUserSession, 0))
 						{
 							Console.WriteLine("[OBSERVER] User {0} subscribed to pre-game lobby {1}", sourceUserSession.m_UserID, observerLobby.LobbyID);
+							// The pending-observer count is part of the lobby JSON, so members
+							// get the usual refetch ping when it changes.
+							observerLobby.DirtyRetransmit();
 						}
 					}
 				}
@@ -753,10 +756,10 @@ namespace GenOnlineService.Controllers
 					if (unsubscribeMsg != null)
 					{
 						Lobby? observerLobby = _lobbyManager.GetLobby(unsubscribeMsg.lobby_id);
-						if (observerLobby != null)
+						if (observerLobby != null && observerLobby.PendingObservers.TryRemove(sourceUserSession, out _))
 						{
-							observerLobby.PendingObservers.TryRemove(sourceUserSession, out _);
 							Console.WriteLine("[OBSERVER] User {0} unsubscribed from pre-game lobby {1}", sourceUserSession.m_UserID, observerLobby.LobbyID);
+							observerLobby.DirtyRetransmit();
 						}
 					}
 				}
