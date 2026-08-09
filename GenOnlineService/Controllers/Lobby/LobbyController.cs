@@ -727,6 +727,12 @@ namespace GenOnlineService.Controllers
 										lobby.DirtyRetransmit();
 									}
 								}
+
+								// A recognized field was processed (unknown fields throw on the
+								// permission-table lookup above and fall into the catch, which
+								// keeps success=false). Clients use this flag to distinguish
+								// "stored and broadcast" from "silently ignored".
+								result.success = true;
                             }
                         }
 
