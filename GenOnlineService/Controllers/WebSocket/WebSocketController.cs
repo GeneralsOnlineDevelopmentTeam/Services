@@ -786,6 +786,11 @@ namespace GenOnlineService.Controllers
 					// lock slots
 					lobbyInfo.CloseOpenSlots();
 
+					// The countdown is now a lobby property: observers mirror it through the
+					// ordinary lobby-changed refetch (LOBBY_CURRENT_LOBBY_UPDATE-style ping),
+					// and the eager GAME_STARTING forward below is just the instant cue.
+					lobbyInfo.SetCountdownStarted(true);
+
 					// The host's match-start countdown is running: tell the read-only
 					// observers parked in the lobby view NOW, so their countdown runs in sync
 					// with the lobby's instead of starting only when the match is already
@@ -826,6 +831,11 @@ namespace GenOnlineService.Controllers
 
 					// start match + create placeholder match
 					await lobbyInfo.UpdateState(ELobbyState.INGAME);
+
+					// The countdown is over: the match is starting. Observers still in their
+					// countdown/waiting phase keep it (their refetch now sees INGAME), so this
+					// clear cannot be mistaken for a cancel.
+					lobbyInfo.SetCountdownStarted(false);
 
 					// simple websocket msg, has no data, so dont even read anything
 

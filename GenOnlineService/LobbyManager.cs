@@ -265,6 +265,21 @@ namespace GenOnlineService
 		public int? StreamDelaySeconds { get; private set; } = null;
 		public int ObserverCount { get; private set; } = 0;
 
+		// True while the host's match-start countdown is running. Broadcast as part of the
+		// lobby JSON so members and read-only observers can mirror it through the ordinary
+		// lobby-changed refetch — no separate countdown messages needed. Cleared by any lobby
+		// field update or member leave (the things that cancel the host's countdown) and when
+		// the match actually starts.
+		public bool CountdownStarted { get; private set; } = false;
+
+		public void SetCountdownStarted(bool started)
+		{
+			if (CountdownStarted == started)
+				return;
+			CountdownStarted = started;
+			DirtyRetransmit();
+		}
+
 		// Pre-game observers: clients parked in the read-only lobby view, subscribed over the
 		// websocket. Distinct from ObserverCount, which is live-stream watchers reported by the
 		// relay — these are watchers waiting for the match to start. Keyed by UserSession so a
@@ -829,6 +844,11 @@ namespace GenOnlineService
 			}
 
 			await OnAfterPlayerLeft(UserID);
+
+			// Any departure cancels the host's match-start countdown client-side, so the
+			// broadcast countdown state must follow or observers would keep waiting for a
+			// match that is no longer starting.
+			CountdownStarted = false;
 
 			DirtyRetransmit();
 		}

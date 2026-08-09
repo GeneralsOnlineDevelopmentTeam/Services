@@ -733,6 +733,11 @@ namespace GenOnlineService.Controllers
 								// keeps success=false). Clients use this flag to distinguish
 								// "stored and broadcast" from "silently ignored".
 								result.success = true;
+
+								// Any lobby field update cancels the host's match-start
+								// countdown client-side (that is why the host changed the
+								// field), so the broadcast countdown state follows.
+								lobby.SetCountdownStarted(false);
                             }
                         }
 
