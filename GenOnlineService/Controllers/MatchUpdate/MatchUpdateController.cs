@@ -70,7 +70,9 @@ namespace GenOnlineService.Controllers
 		bool is_limit_superweapons,
 		bool is_tracking_stats,
 		bool allow_observers,
-		UInt16 max_camera_height
+		UInt16 max_camera_height,
+		UInt32 exe_crc,
+		UInt32 ini_crc
 		)
 		{
 			this.match_id = match_id;
@@ -89,6 +91,8 @@ namespace GenOnlineService.Controllers
 			this.is_tracking_stats = is_tracking_stats;
 			this.allow_observers = allow_observers;
 			this.max_camera_height = max_camera_height;
+			this.exe_crc = exe_crc;
+			this.ini_crc = ini_crc;
 		}
 
 		public Int64 match_id { get; set; } = -1;
@@ -108,6 +112,8 @@ namespace GenOnlineService.Controllers
 		public bool is_tracking_stats { get; set; } = false;
 		public bool allow_observers { get; set; } = false;
 		public UInt16 max_camera_height { get; set; } = 0;
+		public UInt32 exe_crc { get; set; } = 0;
+		public UInt32 ini_crc { get; set; } = 0;
 
 		public List<MatchdataMemberModel?> members { get; private set; } = new();
 	}

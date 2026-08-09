@@ -110,6 +110,8 @@ CREATE TABLE IF NOT EXISTS `match_history` (
   `track_stats` tinyint(1) NOT NULL,
   `allow_observers` tinyint(1) NOT NULL,
   `max_cam_height` smallint(6) unsigned NOT NULL,
+  `exe_crc` int(10) unsigned NOT NULL DEFAULT 0,
+  `ini_crc` int(10) unsigned NOT NULL DEFAULT 0,
   `map_path` varchar(128) DEFAULT NULL,
   `member_slot_0` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`member_slot_0`)),
   `member_slot_1` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`member_slot_1`)),

@@ -47,6 +47,8 @@ public class MatchHistoryEntry
 	public bool TrackStats { get; set; }
 	public bool AllowObservers { get; set; }
 	public ushort MaxCamHeight { get; set; }
+	public uint ExeCRC { get; set; }
+	public uint IniCRC { get; set; }
 	public string? MapPath { get; set; }
 
 	// JSON slots
@@ -125,6 +127,14 @@ public class MatchHistoryConfiguration : IEntityTypeConfiguration<MatchHistoryEn
 		entity.Property(e => e.MaxCamHeight)
 			.HasColumnName("max_cam_height")
 			.HasColumnType("smallint unsigned");
+
+		entity.Property(e => e.ExeCRC)
+			.HasColumnName("exe_crc")
+			.HasColumnType("int unsigned");
+
+		entity.Property(e => e.IniCRC)
+			.HasColumnName("ini_crc")
+			.HasColumnType("int unsigned");
 
 		entity.Property(e => e.MapPath)
 			.HasColumnName("map_path")
@@ -476,6 +486,8 @@ namespace Database
 					TrackStats = lobby.IsTrackingStats,
 					AllowObservers = lobby.AllowObservers,
 					MaxCamHeight = lobby.MaximumCameraHeight,
+					ExeCRC = lobby.ExeCRC,
+					IniCRC = lobby.IniCRC,
 
 					MemberSlot0 = jsonSlots[0],
 					MemberSlot1 = jsonSlots[1],
@@ -750,6 +762,8 @@ namespace Database
 						m.TrackStats,
 						m.AllowObservers,
 						m.MaxCamHeight,
+						m.ExeCRC,
+						m.IniCRC,
 						m.MemberSlot0,
 						m.MemberSlot1,
 						m.MemberSlot2,
@@ -779,7 +793,9 @@ namespace Database
 						row.LimitSuperweapons,
 						row.TrackStats,
 						row.AllowObservers,
-						row.MaxCamHeight
+						row.MaxCamHeight,
+						row.ExeCRC,
+						row.IniCRC
 					);
 
 					AddMemberIfNotNull(entry, row.MemberSlot0);
@@ -831,7 +847,9 @@ namespace Database
 						row.LimitSuperweapons,
 						row.TrackStats,
 						row.AllowObservers,
-						row.MaxCamHeight
+						row.MaxCamHeight,
+						row.ExeCRC,
+						row.IniCRC
 					);
 
 					AddMemberIfNotNull(entry, row.MemberSlot0);
@@ -926,7 +944,9 @@ namespace Database
 				row.LimitSuperweapons,
 				row.TrackStats,
 				row.AllowObservers,
-				row.MaxCamHeight
+				row.MaxCamHeight,
+				row.ExeCRC,
+				row.IniCRC
 			);
 
 			AddMemberIfNotNull(entry, row.MemberSlot0);
