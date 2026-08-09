@@ -334,8 +334,8 @@ namespace GenOnlineService.Controllers
 								DailyStatsManager.RegisterOutcome(army, won);
 
 								// give them back signed URLs they need
-								result.screenshot_url = await S3CredentialManager.GetPresignedURL(EMetadataFileType.FILE_TYPE_SCREENSHOT, EScreenshotType.SCREENSHOT_TYPE_SCORESCREEN, match_id, user_id, slotIndexInLobby, LobbyCreationTime);
-								result.replay_url = await S3CredentialManager.GetPresignedURL(EMetadataFileType.FILE_TYPE_REPLAY, EScreenshotType.NONE, match_id, user_id, slotIndexInLobby, LobbyCreationTime);
+								result.screenshot_url = await S3CredentialManager.GetPresignedURL(EMetadataFileType.FILE_TYPE_SCREENSHOT, EScreenshotType.SCREENSHOT_TYPE_SCORESCREEN, match_id, user_id, slotIndexInLobby, LobbyCreationTime) ?? String.Empty;
+								result.replay_url = await S3CredentialManager.GetPresignedURL(EMetadataFileType.FILE_TYPE_REPLAY, EScreenshotType.NONE, match_id, user_id, slotIndexInLobby, LobbyCreationTime) ?? String.Empty;
 
 								// store in DB
 								await using var db = await _dbFactory.CreateDbContextAsync();
