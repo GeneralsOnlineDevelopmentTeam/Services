@@ -785,6 +785,24 @@ namespace GenOnlineService.Controllers
 
 					// lock slots
 					lobbyInfo.CloseOpenSlots();
+
+					// The host's match-start countdown is running: tell the read-only
+					// observers parked in the lobby view NOW, so their countdown runs in sync
+					// with the lobby's instead of starting only when the match is already
+					// transitioning (the START_GAME forward below stays as a fallback for
+					// observers that subscribed too late to catch this one).
+					if (lobbyInfo.PendingObservers.Count > 0)
+					{
+						WebSocketMessage_LobbyObserverEvent observerEvent = new WebSocketMessage_LobbyObserverEvent();
+						observerEvent.msg_id = (int)EWebSocketMessageID.LOBBY_OBSERVER_GAME_STARTING;
+						observerEvent.lobby_id = lobbyInfo.LobbyID;
+						byte[] observerBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(observerEvent));
+
+						foreach (UserSession sess in lobbyInfo.PendingObservers.Keys)
+						{
+							sess.QueueWebsocketSend(observerBytes);
+						}
+					}
 				}
 				else if (msgID == EWebSocketMessageID.START_GAME)
 				{
