@@ -299,6 +299,35 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
+			// A livestream inherits its lobby's password (see plans/live-watch-password.md).
+			// The read-only pre-game lobby view stays password-free; this is the formal
+			// admission gate, mirroring PUT /Lobby/{lobbyID} — missing and wrong both give
+			// 401, and the check runs before the ticket mint so a bad password never burns
+			// a relay ticket.
+			string? strProvidedPassword = null;
+			using (var reader = new StreamReader(HttpContext.Request.Body))
+			{
+				string jsonData = await reader.ReadToEndAsync();
+				if (!String.IsNullOrWhiteSpace(jsonData))
+				{
+					try
+					{
+						var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+						var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(jsonData, options);
+						if (data != null && data.ContainsKey("password") && data["password"].ValueKind == JsonValueKind.String)
+							strProvidedPassword = data["password"].GetString();
+					}
+					catch { /* unreadable body = no password supplied; the gate below decides */ }
+				}
+			}
+
+			if (lobby.IsPassworded && strProvidedPassword != lobby.Password)
+			{
+				Response.StatusCode = (int)HttpStatusCode.Unauthorized;
+				result.detail = "This livestream is password protected.";
+				return result;
+			}
+
 			RelayWatchTicketResult ticket = await RelayClient.CreateWatchTicketAsync(lobby.LobbyID, user_id);
 			if (ticket.Status == RelayWatchTicketStatus.StreamEnded)
 			{
