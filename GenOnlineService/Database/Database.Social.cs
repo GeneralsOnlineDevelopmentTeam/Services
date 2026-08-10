@@ -100,6 +100,13 @@ namespace Database
 				  .Where(f => f.UserId1 == userId || f.UserId2 == userId)
 		);
 
+		private static readonly Func<AppDbContext, long, Task<int>> _countFriends =
+		EF.CompileAsyncQuery(
+			(AppDbContext db, long userId) =>
+				db.Friends
+				  .Count(f => f.UserId1 == userId || f.UserId2 == userId)
+		);
+
 		private static readonly Func<AppDbContext, long, IAsyncEnumerable<long>> _getBlocked =
 		EF.CompileAsyncQuery(
 			(AppDbContext db, long userId) =>
@@ -136,6 +143,23 @@ namespace Database
 			}
 
 			return result;
+		}
+
+
+		public static async Task<int> CountFriends(AppDbContext db, long userId)
+		{
+			try
+			{
+				return await _countFriends(db, userId);
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[ERROR] CountFriends failed: {ex.Message}");
+				SentrySdk.CaptureException(ex);
+
+				// Treat an unreadable count as full so the friends limit is never bypassed.
+				return int.MaxValue;
+			}
 		}
 
 
