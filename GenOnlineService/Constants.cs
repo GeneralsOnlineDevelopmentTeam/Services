@@ -2029,9 +2029,24 @@ namespace GenOnlineService
 	public static class S3CredentialManager
 	{
 		private static AmazonS3Client m_s3client = null;
+		private static bool s_uploadsEnabled = false;
 
 		public static void Initialize()
 		{
+			if (Program.g_Config == null)
+			{
+				throw new Exception("Config not loaded");
+			}
+
+			s_uploadsEnabled = Program.g_Config.GetSection("MatchData").GetValue<bool?>("upload_match_data") ?? false;
+
+			// When uploads are disabled, the S3 settings are intentionally optional.
+			if (!s_uploadsEnabled)
+			{
+				Console.WriteLine("MatchData: upload_match_data is false, replay and screenshot uploads are disabled.");
+				return;
+			}
+
 			GetS3Config(out int TTL, out string access_key, out string secret_key, out string bucket_name, out string client_endpoint);
 
 			var config = new AmazonS3Config
@@ -2103,6 +2118,11 @@ namespace GenOnlineService
 
 		public static async Task<string?> GetPresignedURL(EMetadataFileType fileType, EScreenshotType screenshotTypeIfScreenshot, UInt64 matchID, Int64 userID, int slotIndex, DateTime matchStartTime)
 		{
+			if (!s_uploadsEnabled || m_s3client == null)
+			{
+				return null;
+			}
+
 			GetS3Config(out int TTL, out string access_key, out string secret_key, out string bucket_name, out string client_endpoint);
 			TimeSpan expiresIn = TimeSpan.FromMinutes(TTL);
 

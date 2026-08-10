@@ -189,11 +189,10 @@ namespace GenOnlineService.Controllers
 									}
 
 									// full login (known clients)
-									if (Enum.TryParse(typeof(KnownClients.EKnownClients), clientID, ignoreCase: true, out object knownClientIDObj))
+									// Enum.TryParse also accepts "unknown" and arbitrary numeric strings, neither of which is mapped.
+									if (Enum.TryParse(clientID, ignoreCase: true, out KnownClients.EKnownClients knownClientID)
+										&& KnownClients.KnownClientSessionTypes.TryGetValue(knownClientID, out EUserSessionType sessionType))
 									{
-										KnownClients.EKnownClients knownClientID = (KnownClients.EKnownClients)knownClientIDObj;
-										EUserSessionType sessionType = KnownClients.KnownClientSessionTypes[knownClientID];
-
 										// Game clients should register the user device
 										if (sessionType == EUserSessionType.GameClient)
 										{
