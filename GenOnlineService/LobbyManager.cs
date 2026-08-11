@@ -37,6 +37,32 @@ using System.Xml.Linq;
 
 namespace GenOnlineService
 {
+	internal static class FullMeshCheckProtocol
+	{
+		// TODO: Remove the zero-valued response compatibility path when legacy
+		// clients are no longer supported.
+		internal static bool IsLegacyResponse(WebSocketMessage_FullMeshConnectivityCheckResponseFromUser response)
+		{
+			return response.mesh_check_id == 0 && response.attempt == 0;
+		}
+
+		internal static bool MatchesCurrentAttempt(
+			WebSocketMessage_FullMeshConnectivityCheckResponseFromUser response,
+			Int64 currentCheckID,
+			int currentAttempt)
+		{
+			return IsLegacyResponse(response)
+				? currentAttempt == 1
+				: response.mesh_check_id == currentCheckID && response.attempt == currentAttempt;
+		}
+
+		internal static bool ShouldRetry(bool meshComplete, bool hasLegacyResponse, int currentAttempt, int maxAttempts)
+		{
+			// TODO: Remove legacy retry suppression together with the legacy response path.
+			return !meshComplete && !hasLegacyResponse && currentAttempt < maxAttempts;
+		}
+	}
+
 	public class Lobby
 	{
 		public Int64 LobbyID { get; private set; } = -1;
@@ -251,10 +277,11 @@ namespace GenOnlineService
 		{
 			lock (m_FullMeshCheckLock)
 			{
-				bool bLegacyResponse = response.mesh_check_id == 0 && response.attempt == 0;
-				bool bMatchesCurrentAttempt = bLegacyResponse
-					? FullMeshCheckAttempt == 1
-					: response.mesh_check_id == FullMeshCheckID && response.attempt == FullMeshCheckAttempt;
+				bool bLegacyResponse = FullMeshCheckProtocol.IsLegacyResponse(response);
+				bool bMatchesCurrentAttempt = FullMeshCheckProtocol.MatchesCurrentAttempt(
+					response,
+					FullMeshCheckID,
+					FullMeshCheckAttempt);
 
 				LobbyMember? sourceMember = GetMemberFromUserID(sourceUser);
 				if (PendingFullMeshConnectivityChecks
@@ -385,9 +412,11 @@ namespace GenOnlineService
 
 					bool bMeshComplete = bDisableMeshCheck || lstMissingConnections.Count == 0;
 
-					bool bAllMembersReportedCurrentAttempt = FullMeshConnectivityChecks.Count == totalMapEntriesExpected;
-					bool bCanSafelyRetry = bAllMembersReportedCurrentAttempt && !m_bCurrentAttemptHasLegacyResponse;
-					if (!bMeshComplete && bCanSafelyRetry && FullMeshCheckAttempt < MaxFullMeshCheckAttempts)
+					if (FullMeshCheckProtocol.ShouldRetry(
+						bMeshComplete,
+						m_bCurrentAttemptHasLegacyResponse,
+						FullMeshCheckAttempt,
+						MaxFullMeshCheckAttempts))
 					{
 						++FullMeshCheckAttempt;
 						RestartSignallingForMissingConnections(lstMissingConnections);
@@ -1155,14 +1184,30 @@ public async Task FinalizeACChecks()
 
 		public async Task RemoveMember(LobbyMember member)
 		{
+			// Matchmaking cancellation and the client's explicit lobby leave can arrive concurrently.
+			// Claim the slot once so teardown, host migration, and destruction callbacks stay idempotent.
+			await g_SlotLock.WaitAsync();
+			try
+			{
+				if (member.SlotIndex < 0
+					|| member.SlotIndex >= Members.Length
+					|| !ReferenceEquals(Members[member.SlotIndex], member))
+				{
+					return;
+				}
+
+				LobbyMember placeholderMember = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, -1, -1, -1, EPlayerType.SLOT_OPEN, member.SlotIndex, true);
+				Members[member.SlotIndex] = placeholderMember;
+				TimeMemberLeft[member.UserID] = DateTime.UtcNow;
+			}
+			finally
+			{
+				g_SlotLock.Release();
+			}
+
 			// TODO_LOBBY: Optimize this
 			Int64 UserID = member.UserID;
-
 			Console.WriteLine("User {0} left lobby {1}", UserID, LobbyID);
-
-			LobbyMember placeholderMember = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, -1, -1, -1, EPlayerType.SLOT_OPEN, member.SlotIndex, true);
-			Members[member.SlotIndex] = placeholderMember;
-			TimeMemberLeft[UserID] = DateTime.UtcNow;
 
 			// AC dergister
 			WebSocketMessage_ACDeregisterPlayer remotePlayerAcMsg = new WebSocketMessage_ACDeregisterPlayer();

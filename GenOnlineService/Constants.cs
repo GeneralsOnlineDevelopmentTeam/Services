@@ -1181,6 +1181,8 @@ namespace GenOnlineService
 		// Matchmaking data
 		public UInt16 MatchmakingPlaylistID = 0;
 		public ConcurrentList<int> MatchmakingMapIndicies = new();
+		internal bool IsRegisteredForMatchmaking { get; set; } = false;
+		internal SemaphoreSlim MatchmakingStateLock { get; } = new(1, 1);
 
 		// NOTE: These are not set on login, only when in quickmatch!
 		public UInt32 ExeCRC = 0;
@@ -1660,7 +1662,7 @@ namespace GenOnlineService
 			// remove from any matchmaking
 			if (userData != null)
 			{
-				MatchmakingManager.DeregisterPlayer(userData);
+				await MatchmakingManager.DeregisterPlayer(userData);
 			}
 
 			// TODO: Client needs to handle this... itll start returning 404
