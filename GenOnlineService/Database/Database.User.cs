@@ -497,24 +497,6 @@ namespace Database
 				  .Select(u => u.UserPriority)
 				  .FirstOrDefault());
 
-		private static readonly Func<AppDbContext, Task<long?>> _getMaxUserIdQuery =
-			EF.CompileAsyncQuery((AppDbContext db) =>
-				db.Users.Max(u => (long?)u.ID));
-
-		public static async Task<long> GetMaxUserID(AppDbContext db)
-		{
-			try
-			{
-				return await _getMaxUserIdQuery(db) ?? 0;
-			}
-			catch (Exception ex)
-			{
-				Console.WriteLine($"[ERROR] GetMaxUserID failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
-				return 0;
-			}
-		}
-
 		public static async Task<EUserPriority> GetUserPriority(AppDbContext db, long userId)
 		{
 			try

@@ -118,14 +118,20 @@ namespace GenOnlineService.Controllers
 								return result;
 							}
 #if DEBUG
-							// Dev/test login: every CheckLogin attempt gets a fresh user above the
-							// table's current max, so multiple test clients can hold distinct
-							// sessions on the same service instance at the same time. Skips the
-							// pending_login table; the display name is the sequential id, which
-							// stays short and is easy to spot in menus.
+							// Dev/test login: every CheckLogin attempt gets a fresh, unique random
+							// user so multiple test clients can hold distinct sessions on the same
+							// service instance at the same time. Skips the pending_login table.
 							EPendingLoginState state = EPendingLoginState.LoginSuccess;
-							UInt32 user_id = (UInt32)(await Database.Users.GetMaxUserID(db) + 1);
-							string strDisplayName = String.Format("dev_{0}", user_id);
+							UInt32 user_id = 0;
+							string strDisplayName = String.Empty;
+
+							byte[] randBytes = new byte[4];
+							using (RandomNumberGenerator rng = RandomNumberGenerator.Create())
+							{
+								rng.GetBytes(randBytes);
+							}
+							user_id = BitConverter.ToUInt32(randBytes, 0) & 0x7FFFFFFF;
+							strDisplayName = String.Format("dev_{0}", user_id);
 
 							// make user
 							await Database.Users.CreateUserIfNotExists_DevAccount(db, user_id, strDisplayName);
