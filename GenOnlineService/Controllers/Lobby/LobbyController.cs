@@ -840,6 +840,19 @@ namespace GenOnlineService.Controllers
 									string strDisplayName = await Database.Users.GetDisplayName(db, user_id);
 									bool bJoinedSuccessfully = await _lobbyManager.JoinLobby(db, lobby, playerSession, strDisplayName, userPreferredPort, bHasMap);
 
+									// The joiner's livestream privilege rides on the member (from
+									// the JWT); a priority Player joining marks the lobby for
+									// the Watch Live browser (sorted to the top).
+									if (bJoinedSuccessfully)
+									{
+										EUserPriority userPriority = TokenHelper.GetUserPriority(this);
+										lobby.GetMemberFromUserID(user_id)?.SetPriority(userPriority);
+										if (userPriority == EUserPriority.Player)
+										{
+											lobby.SetPriority(true);
+										}
+									}
+
 									result.success = bJoinedSuccessfully;
 
 									if (!bJoinedSuccessfully) // this basically means full, didnt find a slot in correct state

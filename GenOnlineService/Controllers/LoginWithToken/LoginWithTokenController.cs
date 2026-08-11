@@ -142,13 +142,14 @@ namespace GenOnlineService.Controllers.LoginWithToken
 						await SessionHelpers.SetUsedLoggedIn(user_id, clientID, sessionType);
 
 						bool bIsAdmin = await Database.Users.IsUserAdmin(db, user_id);
+						EUserPriority userPriority = await Database.Users.GetUserPriority(db, user_id);
 
 						result.result = EPendingLoginState.LoginSuccess;
 
 						// extend token
 						// TODO_TODAY_JWT: just get clientID from token
-						var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, clientID, sessionType, bIsAdmin);
-						var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, clientID, sessionType, false);
+						var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, clientID, sessionType, bIsAdmin, userPriority);
+						var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, clientID, sessionType, false, EUserPriority.None);
 						result.session_token = sessiontoken;
 						result.refresh_token = refreshtoken;
 

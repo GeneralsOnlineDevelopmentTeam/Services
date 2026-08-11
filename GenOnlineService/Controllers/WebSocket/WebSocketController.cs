@@ -862,13 +862,17 @@ namespace GenOnlineService.Controllers
 						}
 					}
 
-					// The match is starting: tell the read-only observers parked in the lobby
-					// view so they can run their countdown and get ready to join.
+					// The match has started: tell the read-only observers parked in the lobby
+					// view to queue their join now. Their watch-ticket request is then held
+					// by GO's broadcast-delay gate (423 + countdown) until the match has run
+					// for the host's delay — the delay rides along so the client can show
+					// the wait from the start.
 					if (lobbyInfo.PendingObservers.Count > 0)
 					{
 						WebSocketMessage_LobbyObserverEvent observerEvent = new WebSocketMessage_LobbyObserverEvent();
-						observerEvent.msg_id = (int)EWebSocketMessageID.LOBBY_OBSERVER_GAME_STARTING;
+						observerEvent.msg_id = (int)EWebSocketMessageID.LOBBY_OBSERVER_GAME_STARTED;
 						observerEvent.lobby_id = lobbyInfo.LobbyID;
+						observerEvent.delay_seconds = lobbyInfo.StreamDelaySeconds;
 						byte[] observerBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(observerEvent));
 
 						foreach (UserSession sess in lobbyInfo.PendingObservers.Keys)

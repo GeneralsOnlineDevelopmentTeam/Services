@@ -119,6 +119,75 @@ namespace GenOnlineService
 			return s_cachedApiKeys.Contains(strKey);
 		}
 	}
+
+	// Shared-key credential for the World Series bot (config WsBot:api_key, presented as
+	// "Authorization: Discord <key>"). Fixed-time compare so a wrong key does not leak how
+	// many leading bytes were right.
+	public static class WsBotKeyValidator
+	{
+		public static bool ValidateKey(string? suppliedKey)
+		{
+			if (string.IsNullOrEmpty(suppliedKey) || Program.g_Config == null)
+			{
+				return false;
+			}
+
+			string? expectedKey = Program.g_Config.GetSection("WsBot").GetValue<string>("api_key");
+			if (string.IsNullOrEmpty(expectedKey))
+			{
+				return false;
+			}
+
+			return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+				Encoding.UTF8.GetBytes(suppliedKey),
+				Encoding.UTF8.GetBytes(expectedKey));
+		}
+	}
+
+	// Authenticates the World Series Discord bot against the shared WsBot:api_key, mirroring
+	// the Basic handler pattern (scheme name in the Authorization header). The bot is not a
+	// player, so it gets its own scheme + role instead of a game-client JWT.
+	public class DiscordAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+	{
+		public DiscordAuthenticationHandler(
+			IOptionsMonitor<AuthenticationSchemeOptions> options,
+			ILoggerFactory logger,
+			UrlEncoder encoder,
+			TimeProvider timeProvider)
+			: base(options, logger, encoder) { }
+
+		protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+		{
+			if (!Request.Headers.ContainsKey("Authorization"))
+				return Task.FromResult(AuthenticateResult.Fail("Missing Authorization Header"));
+
+			try
+			{
+				string? authHeader = Request.Headers["Authorization"].FirstOrDefault();
+				if (authHeader == null || !authHeader.StartsWith("Discord ", StringComparison.OrdinalIgnoreCase))
+				{
+					return Task.FromResult(AuthenticateResult.Fail("Invalid Authorization Header"));
+				}
+
+				string suppliedKey = authHeader.Substring("Discord ".Length).Trim();
+				if (!WsBotKeyValidator.ValidateKey(suppliedKey))
+				{
+					return Task.FromResult(AuthenticateResult.Fail("Invalid Discord key"));
+				}
+
+				var claims = new[] { new Claim(ClaimTypes.Name, "wsbot"), new Claim(ClaimTypes.Role, "WsBot") };
+				var identity = new ClaimsIdentity(claims, Scheme.Name);
+				var principal = new ClaimsPrincipal(identity);
+				var ticket = new AuthenticationTicket(principal, Scheme.Name);
+
+				return Task.FromResult(AuthenticateResult.Success(ticket));
+			}
+			catch
+			{
+				return Task.FromResult(AuthenticateResult.Fail("Invalid Authorization Header"));
+			}
+		}
+	}
 	public static class CertHelpers
 	{
 		public static X509Certificate2 LoadPemWithPrivateKey(string certPath, string keyPath)
@@ -277,6 +346,20 @@ namespace GenOnlineService
 		public static bool IsAdmin(ControllerBase controller)
 		{
 			return controller.User.IsInRole("Admin");
+		}
+
+		// The caller's livestream privilege from the JWT, minted at login from
+		// users.user_priority and signed — a client cannot forge it. Absent/malformed claim
+		// = None (no privilege).
+		public static EUserPriority GetUserPriority(ControllerBase controller)
+		{
+			var claim = controller.User.FindFirst("priority");
+			if (claim != null && Int32.TryParse(claim.Value, out int value))
+			{
+				return (EUserPriority)value;
+			}
+
+			return EUserPriority.None;
 		}
 
 		public static KnownClients.EKnownClients GetClientID(ControllerBase controller)
@@ -554,7 +637,7 @@ namespace GenOnlineService
 				Refresh
 			}
 
-			public string GenerateToken(string displayname, Int64 userID, string ipAddr, ETokenType tokenType, KnownClients.EKnownClients knownClientID, EUserSessionType sessionType, bool bIsAdmin)
+			public string GenerateToken(string displayname, Int64 userID, string ipAddr, ETokenType tokenType, KnownClients.EKnownClients knownClientID, EUserSessionType sessionType, bool bIsAdmin, EUserPriority userPriority)
 			{
 				var jwtSettings = _configuration.GetSection("JwtSettings");
 
@@ -608,6 +691,12 @@ namespace GenOnlineService
 					claims.Add(new Claim(ClaimTypes.Role, "Admin"));
 				}
 
+				// Livestream privilege (users.user_priority): carried as an int claim so the
+				// observe/join gates can read the exact value (Player vs Viewer) from the
+				// token. Signed like every other claim — a client cannot alter it without
+				// breaking the HMAC signature, so it is server-trusted, never client-input.
+				claims.Add(new Claim("priority", ((int)userPriority).ToString()));
+
 
 				var token = new JwtSecurityToken(
 					issuer: jwtSettings["Issuer"],
@@ -616,6 +705,12 @@ namespace GenOnlineService
 					expires: DateTime.Now.AddMinutes(Convert.ToDouble(tokenType == ETokenType.Session ? jwtSettings["ExpiresInMinutes_Session"] : jwtSettings["ExpiresInMinutes_Refresh"])),
 					signingCredentials: credentials
 				);
+
+				// Every mint logged with its expiry (never the token itself — it is a bearer
+				// credential and stateless: it lives only in the client's memory and request
+				// headers, never in a database). Lets a deployed instance be observed for
+				// refresh behaviour by timestamp alone.
+				Console.WriteLine($"[JWT] Minted {tokenType} token for user {userID} (expires {token.ValidTo:HH:mm:ss})");
 
 				return new JwtSecurityTokenHandler().WriteToken(token);
 			}
@@ -822,6 +917,10 @@ namespace GenOnlineService
 					ValidateAudience = true,
 					ValidateLifetime = true,
 					ValidateIssuerSigningKey = true,
+					// The default clock skew is 5 minutes — that extends a session token's
+					// life a third of its 15-minute lifetime. Tighten it so expiry means
+					// expiry (1 s covers server/client clock drift).
+					ClockSkew = TimeSpan.FromSeconds(1),
 					ValidIssuer = jwtSettings["Issuer"],
 					ValidAudience = jwtSettings["Audience"],
 					IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(strKey))
@@ -831,7 +930,8 @@ namespace GenOnlineService
 				{
 					OnTokenValidated = AdditionalValidation
 				};
-			}).AddScheme<AuthenticationSchemeOptions, BasicAuthenticationHandler>("Basic", null);
+			}).AddScheme<AuthenticationSchemeOptions, BasicAuthenticationHandler>("Basic", null)
+			.AddScheme<AuthenticationSchemeOptions, DiscordAuthenticationHandler>("Discord", null);
 
 			builder.Services.AddAuthorization(options =>
 			{

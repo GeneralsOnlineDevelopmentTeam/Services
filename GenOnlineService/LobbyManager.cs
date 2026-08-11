@@ -258,12 +258,44 @@ namespace GenOnlineService
 
 		public bool AllowObservers { get; private set; } = false;
 
+		// Host decision at lobby creation: may this game be watched live at all? When off,
+		// the lobby is hidden from Watch Live's pre-game list and the pre-game observer view
+		// shows no stream controls — the game is simply not watchable, no matter which
+		// player has their own streamer role enabled.
+		public bool AllowStreamers { get; private set; } = false;
+
+		public void SetAllowStreamers(bool allowed)
+		{
+			if (AllowStreamers == allowed)
+				return;
+			AllowStreamers = allowed;
+			DirtyRetransmit();
+		}
+
 		// Livestream state, owned by the relay session. IsStreaming is true while the relay has
 		// a live stream for this lobby; StreamDelaySeconds is the host-reported relay delay; and
 		// ObserverCount is how many spectators are currently watching.
 		public bool IsStreaming { get; private set; } = false;
 		public int? StreamDelaySeconds { get; private set; } = null;
 		public int ObserverCount { get; private set; } = 0;
+
+		// The moment the match started (the INGAME transition). The clock for the
+		// broadcast-delay admission gate: normal viewers' watch tickets are held until
+		// TimeMatchStarted + StreamDelaySeconds, i.e. "held for the delay since the match
+		// started" — GO learns this moment from its own state transition, not from the
+		// relay's liveness report.
+		public DateTime? TimeMatchStarted { get; private set; } = null;
+
+		// Priority-player match: latched TRUE when a user with user_priority = Player creates
+		// or joins the lobby. Sorts the lobby to the top of the Watch Live browser. Not
+		// broadcast — the client has no use for it (GO decides everything from the flag).
+		[JsonIgnore]
+		public bool IsPriority { get; private set; } = false;
+
+		public void SetPriority(bool priority)
+		{
+			IsPriority = priority;
+		}
 
 		// True while the host's match-start countdown is running. Broadcast as part of the
 		// lobby JSON so members and read-only observers can mirror it through the ordinary
@@ -850,6 +882,28 @@ namespace GenOnlineService
 			// match that is no longer starting.
 			CountdownStarted = false;
 
+			// A priority Player leaving may demote the lobby: if no priority Player remains,
+			// the Watch Live sort returns it to the normal group. Each member carries its
+			// grant from the JWT (set at create/join), so this is a pure in-memory scan — no
+			// DB lookup. The leaver's slot is already a placeholder by now, so it cannot vote.
+			if (IsPriority)
+			{
+				bool stillHasPriorityPlayer = false;
+				foreach (LobbyMember memberEntry in Members)
+				{
+					if (memberEntry.IsHuman() && memberEntry.Priority == EUserPriority.Player)
+					{
+						stillHasPriorityPlayer = true;
+						break;
+					}
+				}
+
+				if (!stillHasPriorityPlayer)
+				{
+					IsPriority = false;
+				}
+			}
+
 			DirtyRetransmit();
 		}
 
@@ -1040,7 +1094,17 @@ namespace GenOnlineService
 
 		public async Task UpdateState(ELobbyState state)
 		{
+			bool wasIngame = State == ELobbyState.INGAME;
 			State = state;
+
+			// The match-start moment, latched on the transition INTO INGAME. Every start path
+			// lands here (the host's START_GAME websocket and the matchmaking quickmatch
+			// start), so this is the single place GO learns "the lobby started". A repeated
+			// INGAME update must not reset it.
+			if (state == ELobbyState.INGAME && !wasIngame)
+			{
+				TimeMatchStarted = DateTime.UtcNow;
+			}
 
 			// if start, init our AC probe
 			if (state == ELobbyState.INGAME)
@@ -1180,6 +1244,17 @@ namespace GenOnlineService
 		public UInt16 SlotIndex { get; private set; } = 0;
 		public string Region { get; private set; } = "Unknown";
 		public string MiddlewareUserID { get; private set; } = String.Empty;
+
+		// Livestream privilege grant, carried from the member's JWT at create/join. Used to
+		// recompute the lobby's priority latch on leave without a DB lookup. Also rides the
+		// lobby JSON (the client ignores it; the relay allow-lists member keys, so it never
+		// reaches observers).
+		public EUserPriority Priority { get; private set; } = EUserPriority.None;
+
+		public void SetPriority(EUserPriority priority)
+		{
+			Priority = priority;
+		}
 
 		[JsonIgnore] // cant serialize refs
 		private WeakReference<Lobby?> CurrentLobby = new(null);
@@ -1348,7 +1423,7 @@ namespace GenOnlineService
 		}
 
 		public async Task<Int64> CreateLobby(AppDbContext _db, UserSession owningSession, string strOwnerDisplayName, string strName, string strMapName, string strMapPath, bool bMapOfficial, int maxPlayers, string HostIPAddr,
-			UInt16 hostPreferredPort, bool bVanillaTeams, bool bTrackStats, UInt32 default_starting_cash, bool bPassworded, String strPassword, Int16 parentNetworkRoom, bool bAllowObservers,
+			UInt16 hostPreferredPort, bool bVanillaTeams, bool bTrackStats, UInt32 default_starting_cash, bool bPassworded, String strPassword, Int16 parentNetworkRoom, bool bAllowObservers, bool bAllowStreamers,
 			UInt16 maxCamHeight, UInt32 exe_crc, UInt32 ini_crc, ELobbyType lobbyType, EKnownAnticheatID anticheatID)
 		{
 			Console.WriteLine("Created lobby");
@@ -1379,6 +1454,7 @@ namespace GenOnlineService
 			}
 
 			Lobby newLobby = new Lobby(newLobbyID, owningSession, strName, ELobbyState.GAME_SETUP, strMapName, strMapPath, bVanillaTeams, starting_cash, bLimitSuperweapons, bTrackStats, bPassworded, strPassword, bMapOfficial, rng_seed, parentNetworkRoom, bAllowObservers, maxCamHeight, exe_crc, ini_crc, maxPlayers, lobbyType, anticheatID);
+			newLobby.SetAllowStreamers(bAllowStreamers);
 			m_dictLobbies[newLobbyID] = newLobby;
 
 			

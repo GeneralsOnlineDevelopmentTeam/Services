@@ -22,6 +22,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System;
 using System.Collections.Concurrent;
+using System.IO;
+using System.Net;
 using System.Net.WebSockets;
 using System.Security.Claims;
 using System.Text;
@@ -39,8 +41,60 @@ namespace GenOnlineService.Controllers
 		public bool success { get; set; } = false;
 	}
 
+	public class POST_User_SetPriority_Result : APIResult
+	{
+		public override Type GetReturnType()
+		{
+			return typeof(POST_User_SetPriority_Result);
+		}
+
+		public bool success { get; set; } = false;
+		public string detail { get; set; } = String.Empty;
+		public Int64 user_id { get; set; } = -1;
+		public string display_name { get; set; } = String.Empty;
+		public int previous_priority { get; set; } = 0;
+	}
+
+	public class POST_User_LookupUser_Result : APIResult
+	{
+		public override Type GetReturnType()
+		{
+			return typeof(POST_User_LookupUser_Result);
+		}
+
+		public bool success { get; set; } = false;
+		public string detail { get; set; } = String.Empty;
+		public List<UserLookupEntry> users { get; set; } = new List<UserLookupEntry>();
+	}
+
+	public class POST_User_SetPriorityBatch_Result : APIResult
+	{
+		public override Type GetReturnType()
+		{
+			return typeof(POST_User_SetPriorityBatch_Result);
+		}
+
+		public bool success { get; set; } = false;
+		public string detail { get; set; } = String.Empty;
+		public int updated { get; set; } = 0;
+		public List<PriorityBatchError> errors { get; set; } = new List<PriorityBatchError>();
+	}
+
+	public class PriorityBatchError
+	{
+		public Int64 user_id { get; set; } = -1;
+		public string detail { get; set; } = String.Empty;
+	}
+
+	public class UserLookupEntry
+	{
+		public Int64 user_id { get; set; } = -1;
+		public string display_name { get; set; } = String.Empty;
+		public int priority { get; set; } = 0;
+		public EAccountType account_type { get; set; } = EAccountType.Unknown;
+	}
+
 	[ApiController]
-	[Authorize(Roles = "GameClient,ChatClient,GameLauncher")]
 	[Route("env/{environment}/contract/{contract_version}/[controller]")]
 	public class UsersController : ControllerBase
 	{
@@ -110,6 +164,272 @@ namespace GenOnlineService.Controllers
 				}
 			}
 
+
+			return result;
+		}
+
+		// ---- World Series bot API (the bot owns the event timetable in its own store and
+		// calls these to apply/restore user_priority at the right times). Authenticated with
+		// the "Discord" scheme: "Authorization: Discord <WsBot:api_key>" — the bot is not a
+		// player, so no game-client JWT is involved.
+
+		// Body: { "user_id": 12345, "priority": 2 }  (priority 0..2 per EUserPriority)
+		// previous_priority lets the bot restore the user's prior value after the event
+		// window (the bot stores it and calls SetPriority again with it).
+		[Authorize(AuthenticationSchemes = "Discord")]
+		[HttpPost("SetPriority")]
+		public async Task<APIResult> SetPriority()
+		{
+			POST_User_SetPriority_Result result = new POST_User_SetPriority_Result();
+
+			using (var reader = new StreamReader(HttpContext.Request.Body))
+			{
+				string jsonData = await reader.ReadToEndAsync();
+				var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+				Dictionary<string, JsonElement>? data = null;
+				try
+				{
+					data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(jsonData, options);
+				}
+				catch
+				{
+					data = null;
+				}
+
+				if (data == null ||
+					!data.TryGetValue("user_id", out JsonElement userIdEl) ||
+					userIdEl.ValueKind != JsonValueKind.Number ||
+					!userIdEl.TryGetInt64(out Int64 userId) ||
+					!data.TryGetValue("priority", out JsonElement priorityEl) ||
+					!priorityEl.TryGetInt32(out int priority))
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					result.detail = "Body must be { \"user_id\": <int>, \"priority\": <0|1|2> }.";
+					return result;
+				}
+
+				await using var db = await _dbFactory.CreateDbContextAsync();
+
+				User? user = await Database.Users.GetUserById(db, userId);
+				if (user == null)
+				{
+					Response.StatusCode = (int)HttpStatusCode.NotFound;
+					result.detail = $"User {userId} does not exist.";
+					return result;
+				}
+
+				if (priority < (int)EUserPriority.None || priority > (int)EUserPriority.Viewer)
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					result.detail = $"Priority must be {(int)EUserPriority.None}, {(int)EUserPriority.Player} or {(int)EUserPriority.Viewer}.";
+					return result;
+				}
+
+				int previous = (int)await Database.Users.GetUserPriority(db, userId);
+				if (await Database.Users.SetUserPriority(db, userId, priority))
+				{
+					result.success = true;
+					result.user_id = userId;
+					result.display_name = user.DisplayName ?? String.Empty;
+					result.previous_priority = previous;
+				}
+				else
+				{
+					Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+					result.detail = "Failed to update user_priority.";
+				}
+			}
+
+			return result;
+		}
+
+		// Body: [ { "user_id": 12345, "priority": 2 }, ... ]  (priority 0..2 per EUserPriority)
+		// The event bot registers its streamers up front, so the whole roster is applied in
+		// one call when the window opens (priority 2) and cleared in one call after it
+		// (priority 0). Updates are grouped by priority into bulk UPDATE ... WHERE user_id IN
+		// (...) statements; invalid entries are reported per-user, valid ones all apply.
+		[Authorize(AuthenticationSchemes = "Discord")]
+		[HttpPost("SetPriorityBatch")]
+		public async Task<APIResult> SetPriorityBatch()
+		{
+			POST_User_SetPriorityBatch_Result result = new POST_User_SetPriorityBatch_Result();
+
+			using (var reader = new StreamReader(HttpContext.Request.Body))
+			{
+				string jsonData = await reader.ReadToEndAsync();
+				var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+				List<Dictionary<string, JsonElement>>? entries = null;
+				try
+				{
+					entries = JsonSerializer.Deserialize<List<Dictionary<string, JsonElement>>>(jsonData, options);
+				}
+				catch
+				{
+					entries = null;
+				}
+
+				if (entries == null || entries.Count == 0)
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					result.detail = "Body must be a non-empty array of { \"user_id\": <int>, \"priority\": <0|1|2> }.";
+					return result;
+				}
+
+				await using var db = await _dbFactory.CreateDbContextAsync();
+
+				Dictionary<Int64, int> validById = new Dictionary<Int64, int>();
+				foreach (Dictionary<string, JsonElement> entry in entries)
+				{
+					if (!entry.TryGetValue("user_id", out JsonElement userIdEl) ||
+						userIdEl.ValueKind != JsonValueKind.Number ||
+						!userIdEl.TryGetInt64(out Int64 userId) ||
+						!entry.TryGetValue("priority", out JsonElement priorityEl) ||
+						!priorityEl.TryGetInt32(out int priority))
+					{
+						result.errors.Add(new PriorityBatchError { user_id = -1, detail = "entry must be { \"user_id\": <int>, \"priority\": <0|1|2> }" });
+						continue;
+					}
+
+					if (priority < (int)EUserPriority.None || priority > (int)EUserPriority.Viewer)
+					{
+						result.errors.Add(new PriorityBatchError { user_id = userId, detail = $"priority must be {(int)EUserPriority.None}, {(int)EUserPriority.Player} or {(int)EUserPriority.Viewer}" });
+						continue;
+					}
+
+					validById[userId] = priority;
+				}
+
+				// One UPDATE per distinct priority: UPDATE users SET user_priority = @p
+				// WHERE user_id IN (...). Nonexistent ids simply match nothing.
+				foreach (IGrouping<int, KeyValuePair<Int64, int>> priorityGroup in validById.GroupBy(e => e.Value))
+				{
+					List<Int64> ids = priorityGroup.Select(e => e.Key).ToList();
+					int updated = await db.Users
+						.Where(u => ids.Contains(u.ID))
+						.ExecuteUpdateAsync(setters => setters.SetProperty(u => u.UserPriority, priorityGroup.Key));
+
+					result.updated += updated;
+
+					// Report ids that did not exist so the bot can skip them when restoring.
+					if (updated < ids.Count)
+					{
+						List<Int64> foundIds = await db.Users.AsNoTracking()
+							.Where(u => ids.Contains(u.ID))
+							.Select(u => u.ID)
+							.ToListAsync();
+						foreach (Int64 id in ids.Where(id => !foundIds.Contains(id)))
+						{
+							result.errors.Add(new PriorityBatchError { user_id = id, detail = "user does not exist" });
+						}
+					}
+				}
+
+				result.success = true;
+			}
+
+			return result;
+		}
+
+		// Body (one of):
+		//   { "user_id": 12345 }              exact user-id match
+		//   { "display_name": "x64" }         exact display-name match
+		//   { "discord_id": 1234567890 }      users.discord_id (website Discord login)
+		//   { "search_parts": ["bob", "x64"]} partial AND search, max 10 rows
+		// All lookups are EF Core parameterised — arbitrary input cannot reach SQL.
+		[Authorize(AuthenticationSchemes = "Discord")]
+		[HttpPost("LookupUser")]
+		public async Task<APIResult> LookupUser()
+		{
+			POST_User_LookupUser_Result result = new POST_User_LookupUser_Result();
+
+			using (var reader = new StreamReader(HttpContext.Request.Body))
+			{
+				string jsonData = await reader.ReadToEndAsync();
+				var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+				Dictionary<string, JsonElement>? data = null;
+				try
+				{
+					data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(jsonData, options);
+				}
+				catch
+				{
+					data = null;
+				}
+
+				if (data == null)
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					result.detail = "Body must be { \"display_name\" } or { \"user_id\" } or { \"discord_id\" } or { \"search_parts\" }.";
+					return result;
+				}
+
+				await using var db = await _dbFactory.CreateDbContextAsync();
+
+				List<User> users = new List<User>();
+
+				if (data.TryGetValue("display_name", out JsonElement displayNameEl) &&
+					displayNameEl.ValueKind == JsonValueKind.String)
+				{
+					User? exact = await Database.Users.GetUserByDisplayName(db, displayNameEl.GetString() ?? String.Empty);
+					if (exact != null)
+					{
+						users.Add(exact);
+					}
+				}
+				else if (data.TryGetValue("user_id", out JsonElement userIdEl) &&
+					userIdEl.TryGetInt64(out Int64 lookupUserId))
+				{
+					User? byId = await Database.Users.GetUserById(db, lookupUserId);
+					if (byId != null)
+					{
+						users.Add(byId);
+					}
+				}
+				else if (data.TryGetValue("discord_id", out JsonElement discordIdEl) &&
+					discordIdEl.TryGetInt64(out Int64 discordId))
+				{
+					User? byDiscord = await Database.Users.GetUserByDiscordID(db, discordId);
+					if (byDiscord != null)
+					{
+						users.Add(byDiscord);
+					}
+				}
+				else if (data.TryGetValue("search_parts", out JsonElement searchPartsEl) &&
+					searchPartsEl.ValueKind == JsonValueKind.Array)
+				{
+					List<string> parts = new List<string>();
+					foreach (JsonElement partEl in searchPartsEl.EnumerateArray())
+					{
+						if (partEl.ValueKind == JsonValueKind.String)
+						{
+							parts.Add(partEl.GetString() ?? String.Empty);
+						}
+					}
+
+					if (parts.Count > 0)
+					{
+						users = await Database.Users.SearchUsersByDisplayName(db, parts, 10);
+					}
+				}
+				else
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					result.detail = "Body must be { \"display_name\" } or { \"user_id\" } or { \"discord_id\" } or { \"search_parts\" }.";
+					return result;
+				}
+
+				result.success = true;
+				foreach (User user in users)
+				{
+					result.users.Add(new UserLookupEntry
+					{
+						user_id = user.ID,
+						display_name = user.DisplayName ?? String.Empty,
+						priority = user.UserPriority,
+						account_type = user.AccountType
+					});
+				}
+			}
 
 			return result;
 		}

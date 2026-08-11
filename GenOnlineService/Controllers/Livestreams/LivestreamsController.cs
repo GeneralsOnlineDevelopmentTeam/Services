@@ -16,9 +16,11 @@
 **    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+using Database;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.EntityFrameworkCore;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -51,6 +53,14 @@ namespace GenOnlineService.Controllers
 		public int state { get; set; } = 1;
 		public bool passworded { get; set; } = false;
 		public int pending_observer_count { get; set; } = 0;
+
+		// Highest EUserPriority among the lobby's human members (0/1/2). The client
+		// highlights rows with value 1 (a priority Player is in the match).
+		public int user_priority { get; set; } = 0;
+
+		// Priority-player match (lobby latched when a users.user_priority = Player creates or
+		// joins): sorts the row to the top of the Watch Live browser.
+		public bool priority { get; set; } = false;
 	}
 
 	public class POST_Livestreams_Register_Result : APIResult
@@ -74,6 +84,13 @@ namespace GenOnlineService.Controllers
 
 		public string url { get; set; } = String.Empty;
 		public string detail { get; set; } = String.Empty;
+
+		// 423 (delay gate): seconds left before this viewer's ticket may be minted.
+		public int? delay_remaining_seconds { get; set; } = null;
+
+		// 200: GO owns the broadcast delay (the ticket was only minted after it elapsed), so
+		// the client must not hold playback itself.
+		public bool server_held { get; set; } = false;
 	}
 
 	public class POST_Livestreams_Observers_Result : APIResult
@@ -118,14 +135,16 @@ namespace GenOnlineService.Controllers
 		public class LivestreamsController : ControllerBase
 	{
 		private readonly LobbyManager _lobbyManager;
+		private readonly IDbContextFactory<AppDbContext> _dbFactory;
 
-		public LivestreamsController(LobbyManager lobbyManager)
+		public LivestreamsController(LobbyManager lobbyManager, IDbContextFactory<AppDbContext> dbFactory)
 		{
 			_lobbyManager = lobbyManager;
+			_dbFactory = dbFactory;
 		}
 
 		[HttpGet(Name = "GetLivestreams")]
-		public APIResult Get()
+		public async Task<APIResult> Get()
 		{
 			GET_Livestreams_Result result = new GET_Livestreams_Result();
 
@@ -145,11 +164,19 @@ namespace GenOnlineService.Controllers
 			// The list is the Watch Live screen's one source for everything: live streams
 			// (INGAME + streaming) first, then every pre-game lobby the client can enter as a
 			// read-only observer. A pre-game lobby is never "streaming" yet — the entry's
-			// state flag tells the client which action applies (CONNECT vs OBSERVE).
+			// state flag tells the client which action applies (OBSERVE either way).
 			foreach (Lobby lobby in _lobbyManager.GetAllLobbies())
 			{
 				bool isPregame = lobby.State == ELobbyState.GAME_SETUP;
 				bool isLive = lobby.State == ELobbyState.INGAME && lobby.IsStreaming;
+				// A pre-game lobby is only watchable when the host allowed streamers at
+				// creation: without that, no stream can ever come, and parking observers on
+				// it would only lead to an endless wait. Live rows are already streaming, so
+				// they are always listed.
+				if (isPregame && !lobby.AllowStreamers)
+				{
+					continue;
+				}
 				if (!isPregame && !isLive)
 				{
 					continue;
@@ -166,9 +193,18 @@ namespace GenOnlineService.Controllers
 				entry.state = isLive ? 1 : 0;
 				entry.passworded = lobby.IsPassworded;
 				entry.pending_observer_count = lobby.PendingObserverCount;
+				entry.priority = lobby.IsPriority;
 
 				result.livestreams.Add(entry);
 			}
+
+			// Watch Live order: priority-player matches first, then live before pre-game —
+			// priority live → priority pre-game → normal live → normal pre-game. Stable, so
+			// equal rows keep their insertion order.
+			result.livestreams = result.livestreams
+				.OrderByDescending(e => e.priority)
+				.ThenByDescending(e => e.state)
+				.ToList();
 
 			return result;
 		}
@@ -299,6 +335,23 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
+			// Privileged watchers (admin, or user_priority = Viewer) skip the password and the
+			// broadcast-delay gates entirely: their ticket mints instantly. The claim is the
+			// fast path, but it is minted at login, so a privilege applied mid-session (the
+			// World Series bot's timed grants, Discord !setpriority) is re-read live from the
+			// DB — a grant must not wait for a re-login. The DB value can only add privilege,
+			// never take it away from the signed claim.
+			bool isPriority = TokenHelper.IsAdmin(this) || TokenHelper.GetUserPriority(this) == EUserPriority.Viewer;
+			if (!isPriority)
+			{
+				await using var db = await _dbFactory.CreateDbContextAsync();
+
+				if (await Database.Users.GetUserPriority(db, user_id) == EUserPriority.Viewer)
+				{
+					isPriority = true;
+				}
+			}
+
 			// A livestream inherits its lobby's password (see plans/live-watch-password.md).
 			// The read-only pre-game lobby view stays password-free; this is the formal
 			// admission gate, mirroring PUT /Lobby/{lobbyID} — missing and wrong both give
@@ -321,11 +374,30 @@ namespace GenOnlineService.Controllers
 				}
 			}
 
-			if (lobby.IsPassworded && strProvidedPassword != lobby.Password)
+			if (!isPriority && lobby.IsPassworded && strProvidedPassword != lobby.Password)
 			{
 				Response.StatusCode = (int)HttpStatusCode.Unauthorized;
 				result.detail = "This livestream is password protected.";
 				return result;
+			}
+
+			// Broadcast-delay admission gate (plans/live-observer-server-delay.md): a normal
+			// viewer is held until the match has been running for the host's delay. The clock
+			// is the match-start transition (TimeMatchStarted), known to GO itself — not the
+			// relay's liveness report. A match older than the delay — or a zero-delay lobby —
+			// mints instantly. 423 so the held viewer's retry keeps working without burning a
+			// relay ticket (nothing was minted).
+			if (!isPriority && lobby.StreamDelaySeconds > 0 && lobby.TimeMatchStarted != null)
+			{
+				int remainingSeconds = lobby.StreamDelaySeconds.Value -
+					(int)(DateTime.UtcNow - lobby.TimeMatchStarted.Value).TotalSeconds;
+				if (remainingSeconds > 0)
+				{
+					Response.StatusCode = (int)HttpStatusCode.Locked;
+					result.detail = "This stream starts after its broadcast delay.";
+					result.delay_remaining_seconds = remainingSeconds;
+					return result;
+				}
 			}
 
 			RelayWatchTicketResult ticket = await RelayClient.CreateWatchTicketAsync(lobby.LobbyID, user_id);
@@ -350,6 +422,7 @@ namespace GenOnlineService.Controllers
 			}
 
 			result.url = ticket.Token.url;
+			result.server_held = true;
 			return result;
 		}
 

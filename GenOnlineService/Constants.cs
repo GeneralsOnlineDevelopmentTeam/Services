@@ -1348,6 +1348,17 @@ namespace GenOnlineService
 		DevAccount = 3
 	}
 
+	// Per-user livestream privilege (users.user_priority):
+	//   None   = nothing
+	//   Player = the user's matches are highlighted in the Watch Live browser
+	//   Viewer = the user skips the livestream password + broadcast-delay gates
+	public enum EUserPriority
+	{
+		None = 0,
+		Player = 1,
+		Viewer = 2
+	}
+
 	public class PlayerStats
 	{
 		const int numGeneralsEntries = 15;
@@ -2475,7 +2486,8 @@ namespace GenOnlineService
 		LOBBY_OBSERVER_UNSUBSCRIBE = 43,
 		LOBBY_OBSERVER_LOBBY_CHANGED = 44,
 		LOBBY_OBSERVER_GAME_STARTING = 45,
-		LOBBY_OBSERVER_STREAM_LIVE = 46
+		LOBBY_OBSERVER_STREAM_LIVE = 46,
+		LOBBY_OBSERVER_GAME_STARTED = 47
 	};
 
 	public static class UserPresence
@@ -2574,10 +2586,13 @@ namespace GenOnlineService
 	}
 
 	// Inbound (subscribe/unsubscribe) and outbound (lobby-changed / game-starting /
-	// stream-live) share one shape: a lobby id and the msg_id distinguishing the event.
+	// stream-live / game-started) share one shape: a lobby id and the msg_id distinguishing
+	// the event. GAME_STARTED also carries the host's broadcast delay so waiting observers
+	// can time their watch-key request.
 	public class WebSocketMessage_LobbyObserverEvent : WebSocketMessage
 	{
 		public Int64 lobby_id { get; set; } = -1;
+		public int? delay_seconds { get; set; } = null;
 	}
 
 	public abstract class WebSocketMessage

@@ -77,6 +77,10 @@ public class User
 	public bool IsAdmin { get; set; } = false;
 	public bool IsBanned { get; set; } = false;
 
+	// Livestream privilege: 0 none / 1 player (highlight their matches) / 2 viewer (skip
+	// the password + broadcast-delay gates). See EUserPriority.
+	public int UserPriority { get; set; } = 0;
+
 	// ELO
 	public int EloRating { get; set; } = EloConfig.BaseRating;
 	public int EloNumberOfMatches { get; set; } = 0;
@@ -161,6 +165,7 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
 		builder.Property(e => e.LimitSuperweapons).HasColumnName("favorite_limit_superweapons");
 		builder.Property(e => e.IsAdmin).HasColumnName("admin");
 		builder.Property(e => e.IsBanned).HasColumnName("banned");
+		builder.Property(e => e.UserPriority).HasColumnName("user_priority");
 		builder.Property(e => e.EloRating).HasColumnName("elo_rating");
 		builder.Property(e => e.EloNumberOfMatches).HasColumnName("elo_num_matches");
 		builder.Property(e => e.BanReason).HasColumnName("ban_reason").HasColumnType("varchar(128)"); ;
@@ -481,6 +486,124 @@ namespace Database
 				Console.WriteLine($"[ERROR] IsUserAdmin failed: {ex.Message}");
 				SentrySdk.CaptureException(ex);
 				return false;
+			}
+		}
+
+		private static readonly Func<AppDbContext, long, Task<int>> _getUserPriorityQuery =
+			EF.CompileAsyncQuery((AppDbContext db, long userId) =>
+				db.Users
+				  .AsNoTracking()
+				  .Where(u => u.ID == userId)
+				  .Select(u => u.UserPriority)
+				  .FirstOrDefault());
+
+		public static async Task<EUserPriority> GetUserPriority(AppDbContext db, long userId)
+		{
+			try
+			{
+				return (EUserPriority)await _getUserPriorityQuery(db, userId);
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[ERROR] GetUserPriority failed: {ex.Message}");
+				SentrySdk.CaptureException(ex);
+				return EUserPriority.None;
+			}
+		}
+
+		// Management surface for users.user_priority (Discord !setpriority). The value is
+		// clamped to the known EUserPriority range; a non-existent user id reports failure so
+		// the command can tell "no such user" from "update went through".
+		public static async Task<bool> SetUserPriority(AppDbContext db, long userId, int priority)
+		{
+			try
+			{
+				if (priority < (int)EUserPriority.None || priority > (int)EUserPriority.Viewer)
+				{
+					return false;
+				}
+
+				int updated = await db.Users
+					.Where(u => u.ID == userId)
+					.ExecuteUpdateAsync(setters => setters.SetProperty(u => u.UserPriority, priority));
+				return updated > 0;
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[ERROR] SetUserPriority failed: {ex.Message}");
+				SentrySdk.CaptureException(ex);
+				return false;
+			}
+		}
+
+		// Exact display-name lookup for Discord !getuserid. Display names are unique
+		// (SetDisplayName enforces it), and the MySQL collation makes the match
+		// case-insensitive. All input flows through EF Core parameters — never SQL strings.
+		public static async Task<User?> GetUserByDisplayName(AppDbContext db, string displayName)
+		{
+			try
+			{
+				return await db.Users.AsNoTracking()
+					.FirstOrDefaultAsync(u => u.DisplayName == displayName);
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[ERROR] GetUserByDisplayName failed: {ex.Message}");
+				SentrySdk.CaptureException(ex);
+				return null;
+			}
+		}
+
+		// Partial display-name search for Discord !searchuserid: every part must match (AND).
+		// Parameterised through EF Core, so arbitrary input cannot reach SQL.
+		public static async Task<List<User>> SearchUsersByDisplayName(AppDbContext db, List<string> nameParts, int limit)
+		{
+			try
+			{
+				IQueryable<User> query = db.Users.AsNoTracking();
+				foreach (string part in nameParts)
+				{
+					query = query.Where(u => u.DisplayName != null && u.DisplayName.Contains(part));
+				}
+
+				return await query.Take(limit).ToListAsync();
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[ERROR] SearchUsersByDisplayName failed: {ex.Message}");
+				SentrySdk.CaptureException(ex);
+				return new List<User>();
+			}
+		}
+
+		// Discord login mapping: the website writes users.discord_id when the account was
+		// created/used through Discord OAuth. Resolves a reactor's GO account.
+		public static async Task<User?> GetUserByDiscordID(AppDbContext db, long discordId)
+		{
+			try
+			{
+				return await db.Users.AsNoTracking()
+					.FirstOrDefaultAsync(u => u.DiscordID != null && u.DiscordID.Value == discordId);
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[ERROR] GetUserByDiscordID failed: {ex.Message}");
+				SentrySdk.CaptureException(ex);
+				return null;
+			}
+		}
+
+		public static async Task<User?> GetUserById(AppDbContext db, long userId)
+		{
+			try
+			{
+				return await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.ID == userId);
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[ERROR] GetUserById failed: {ex.Message}");
+				SentrySdk.CaptureException(ex);
+				return null;
 			}
 		}
 
