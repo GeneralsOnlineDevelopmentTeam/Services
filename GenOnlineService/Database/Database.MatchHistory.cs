@@ -211,6 +211,10 @@ namespace GenOnlineService
 
 		[JsonConverter(typeof(BoolFromIntConverter))]
 		public bool won { get; set; } = false;                // tinyint(4) DEFAULT NULL
+		
+        [JsonConverter(typeof(BoolFromIntConverter))]
+		public bool desynced {get; set; } = false;
+
 		public List<MemberMetadataModel> metadata { get; set; } = new List<MemberMetadataModel>();
 
 		public MatchdataMemberModel()
@@ -333,7 +337,8 @@ namespace Database
 	int unitsKilled,
 	int unitsLost,
 	int totalMoney,
-	bool won)
+	bool won,
+	bool desynced)
 		{
 			if (slotIndex < 0 || slotIndex > 7)
 				return;
@@ -361,6 +366,7 @@ namespace Database
 				model.units_lost = unitsLost;
 				model.total_money = totalMoney;
 				model.won = won;
+				model.desynced = desynced;
 
 				// 4. Serialize back
 				string updatedJson = JsonSerializer.Serialize(model);
