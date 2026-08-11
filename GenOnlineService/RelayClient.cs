@@ -277,11 +277,14 @@ namespace GenOnlineService
 			return false;
 		}
 
-		public static async Task<RelayWatchTicketResult> CreateWatchTicketAsync(long lobbyId, long userId)
+		// priority: privileged watchers (admin or user_priority = Viewer) get a priority
+		// watch ticket; the relay lets those connections bypass its byte-level
+		// broadcast-delay hold (plans/relay/relay-server-side-delay-hold.md).
+		public static async Task<RelayWatchTicketResult> CreateWatchTicketAsync(long lobbyId, long userId, bool priority = false)
 		{
 			try
 			{
-				string payloadJson = JsonSerializer.Serialize(new { lobby_id = lobbyId, user_id = userId });
+				string payloadJson = JsonSerializer.Serialize(new { lobby_id = lobbyId, user_id = userId, priority = priority });
 
 				using (var response = await SendAsync(HttpMethod.Post, "/internal/watch_tickets", payloadJson, "CreateWatchTicket", false))
 				{

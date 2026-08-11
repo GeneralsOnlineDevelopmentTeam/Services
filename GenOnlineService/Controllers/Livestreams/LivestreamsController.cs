@@ -443,7 +443,7 @@ namespace GenOnlineService.Controllers
 				}
 			}
 
-			RelayWatchTicketResult ticket = await RelayClient.CreateWatchTicketAsync(lobby.LobbyID, user_id);
+			RelayWatchTicketResult ticket = await RelayClient.CreateWatchTicketAsync(lobby.LobbyID, user_id, isPriority);
 			if (ticket.Status == RelayWatchTicketStatus.StreamEnded)
 			{
 				// The relay session for this lobby is gone (all sources left / reaped): the
