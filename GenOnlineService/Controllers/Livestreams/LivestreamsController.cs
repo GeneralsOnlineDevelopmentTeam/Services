@@ -61,6 +61,17 @@ namespace GenOnlineService.Controllers
 		// Priority-player match (lobby latched when a users.user_priority = Player creates or
 		// joins): sorts the row to the top of the Watch Live browser.
 		public bool priority { get; set; } = false;
+
+		// What the client should do with this row, computed per viewer:
+		// 0 = observe (pre-game lobby — enter the read-only lobby view),
+		// 1 = wait (stream not live yet, or this viewer is held behind the broadcast delay —
+		//     enter the read-only lobby view and wait there),
+		// 2 = join (stream live and this viewer may mint a ticket right now — connect
+		//     directly, skipping the lobby).
+		public int watch_action { get; set; } = 2;
+
+		// Remaining broadcast-delay hold in seconds for this viewer (null when not held).
+		public int? delay_remaining_seconds { get; set; } = null;
 	}
 
 	public class POST_Livestreams_Register_Result : APIResult
@@ -162,24 +173,55 @@ namespace GenOnlineService.Controllers
 			// started one, which is what IsStreaming records.
 			//
 			// The list is the Watch Live screen's one source for everything: live streams
-			// (INGAME + streaming) first, then every pre-game lobby the client can enter as a
-			// read-only observer. A pre-game lobby is never "streaming" yet — the entry's
-			// state flag tells the client which action applies (OBSERVE either way).
+			// (INGAME + streaming) first, then started-but-waiting lobbies, then every
+			// pre-game lobby the client can enter as a read-only observer.
+			//
+			// watch_action is per viewer (plans/live-observer-server-delay.md): a priority
+			// viewer (admin or user_priority = Viewer, re-read live from the DB like Observe
+			// does) is never held; a normal viewer is held behind the host's broadcast delay
+			// and gets a "wait" row so the client parks them in the lobby view instead of
+			// sitting on an empty CONNECT.
+			Int64 user_id = TokenHelper.GetUserID(this);
+			bool isPriority = TokenHelper.IsAdmin(this) || TokenHelper.GetUserPriority(this) == EUserPriority.Viewer;
+			if (!isPriority)
+			{
+				await using var db = await _dbFactory.CreateDbContextAsync();
+				if (await Database.Users.GetUserPriority(db, user_id) == EUserPriority.Viewer)
+				{
+					isPriority = true;
+				}
+			}
+
 			foreach (Lobby lobby in _lobbyManager.GetAllLobbies())
 			{
 				bool isPregame = lobby.State == ELobbyState.GAME_SETUP;
 				bool isLive = lobby.State == ELobbyState.INGAME && lobby.IsStreaming;
+				bool isWaiting = lobby.State == ELobbyState.INGAME && !lobby.IsStreaming;
 				// A pre-game lobby is only watchable when the host allowed streamers at
 				// creation: without that, no stream can ever come, and parking observers on
 				// it would only lead to an endless wait. Live rows are already streaming, so
 				// they are always listed.
-				if (isPregame && !lobby.AllowStreamers)
+				if (!isLive && !lobby.AllowStreamers)
 				{
 					continue;
 				}
-				if (!isPregame && !isLive)
+				if (!isPregame && !isLive && !isWaiting)
 				{
 					continue;
+				}
+
+				// 0 = observe (pre-game), 1 = wait (stream not live yet, or this viewer is
+				// held behind the broadcast delay), 2 = join (stream live, ticket mints now).
+				int watchAction = isPregame ? 0 : 1;
+				int? delayRemainingSeconds = null;
+				if (lobby.State == ELobbyState.INGAME && lobby.TimeMatchStarted != null && lobby.StreamDelaySeconds > 0)
+				{
+					delayRemainingSeconds = Math.Max(0, lobby.StreamDelaySeconds.Value -
+						(int)(DateTime.UtcNow - lobby.TimeMatchStarted.Value).TotalSeconds);
+				}
+				if (isLive && (isPriority || delayRemainingSeconds == null || delayRemainingSeconds == 0))
+				{
+					watchAction = 2;
 				}
 
 				GET_Livestreams_LivestreamEntry entry = new GET_Livestreams_LivestreamEntry();
@@ -194,16 +236,17 @@ namespace GenOnlineService.Controllers
 				entry.passworded = lobby.IsPassworded;
 				entry.pending_observer_count = lobby.PendingObserverCount;
 				entry.priority = lobby.IsPriority;
+				entry.watch_action = watchAction;
+				entry.delay_remaining_seconds = delayRemainingSeconds;
 
 				result.livestreams.Add(entry);
 			}
 
-			// Watch Live order: priority-player matches first, then live before pre-game —
-			// priority live → priority pre-game → normal live → normal pre-game. Stable, so
-			// equal rows keep their insertion order.
+			// Watch Live order: priority-player matches first, then join → wait → pre-game.
+			// Stable, so equal rows keep their insertion order.
 			result.livestreams = result.livestreams
 				.OrderByDescending(e => e.priority)
-				.ThenByDescending(e => e.state)
+				.ThenByDescending(e => e.watch_action)
 				.ToList();
 
 			return result;

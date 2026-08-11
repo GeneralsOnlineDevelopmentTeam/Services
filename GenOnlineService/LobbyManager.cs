@@ -283,7 +283,8 @@ namespace GenOnlineService
 		// broadcast-delay admission gate: normal viewers' watch tickets are held until
 		// TimeMatchStarted + StreamDelaySeconds, i.e. "held for the delay since the match
 		// started" — GO learns this moment from its own state transition, not from the
-		// relay's liveness report.
+		// relay's liveness report. The remaining hold is derived where it is consumed
+		// (the livestream controller), not serialized on the lobby itself.
 		public DateTime? TimeMatchStarted { get; private set; } = null;
 
 		// Priority-player match: latched TRUE when a user with user_priority = Player creates
