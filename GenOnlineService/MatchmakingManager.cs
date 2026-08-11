@@ -1124,7 +1124,7 @@ static class MatchmakingManager
 	// TODO_QUICKMATCH: Read from db or file
 	private static Dictionary<UInt16, Playlist> g_Playlists = new()
 	{
-		{ 0, new Playlist(0, "World Series 2026 Qualification", 2, 2, 8, false, -1, false, 0, new List<PlaylistMap>()
+		{ 0, new Playlist(0, "1v1 (Random Armies)", 2, 2, 8, false, -1, false, 0, new List<PlaylistMap>()
 			{
 				new PlaylistMap("[RANK] Snowy Drought ZH v5 (2)", "[RANK] Snowy Drought ZH v5", true, 2),
 				new PlaylistMap("[RANK] Natural Threats ZH v4 (2)", "[RANK] Natural Threats ZH v4", true, 2),

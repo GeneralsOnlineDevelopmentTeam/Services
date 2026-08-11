@@ -78,10 +78,23 @@ namespace GenOnlineService
             getToken = sectionGetToken;
         }
 
+        // NOTE: A single shared HttpClient/handler is used for every call. Creating one per request re-resolves DNS,
+        // prevents TCP connection reuse and leaks sockets in TIME_WAIT, which leads to port exhaustion when a lot of
+        // matches finish at once. PooledConnectionLifetime keeps DNS changes from being cached forever.
+        private static readonly Lazy<HttpClient> g_LeaderboardsClient = new Lazy<HttpClient>(() =>
+        {
+            return new HttpClient(CreateLeaderboardsHandler(), disposeHandler: true)
+            {
+                Timeout = TimeSpan.FromSeconds(10)
+            };
+        }, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
+
         private static SocketsHttpHandler CreateLeaderboardsHandler()
         {
             return new SocketsHttpHandler()
             {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
                 ConnectCallback = async (context, cancellationToken) =>
                 {
                     var entry = await Dns.GetHostEntryAsync(context.DnsEndPoint.Host, AddressFamily.InterNetwork, cancellationToken);
@@ -144,33 +157,35 @@ namespace GenOnlineService
                     });
 
                 HttpResponseMessage? response = null;
+                string? responseBody = null;
 
                 await retryPolicy.ExecuteAsync(async () =>
                 {
-                    using (var handler = CreateLeaderboardsHandler())
-                    using (var client = new HttpClient(handler))
+                    HttpClient client = g_LeaderboardsClient.Value;
+
+                    using (var request = new HttpRequestMessage(HttpMethod.Post, postUrl))
                     {
-                        client.Timeout = TimeSpan.FromSeconds(10);
+                        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", postToken);
+                        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                        request.Content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
 
-                        using (var request = new HttpRequestMessage(HttpMethod.Post, postUrl))
+                        var sw = Stopwatch.StartNew();
+                        using (response = await client.SendAsync(request))
                         {
-                            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", postToken);
-                            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-                            request.Content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
-
-                            var sw = Stopwatch.StartNew();
-                            response = await client.SendAsync(request);
                             sw.Stop();
 
                             Console.WriteLine($"[INFO] External Match Ingest POST Response for match {lobby.MatchID} was received in {sw.ElapsedMilliseconds}ms (status: {response.StatusCode}).");
 
                             // Explicitly verify response success inside execution block to ensure retry triggers on HTTP error statuses
                             response.EnsureSuccessStatusCode();
+
+                            // NOTE: read the body here, the response is disposed once we leave this block
+                            responseBody = await response.Content.ReadAsStringAsync();
                         }
                     }
                 });
 
-                if (response == null || !response.IsSuccessStatusCode)
+                if (responseBody == null)
                 {
                     Console.WriteLine($"[ERROR] External Match Ingest POST failed for match {lobby.MatchID}.");
                     return;
@@ -179,7 +194,6 @@ namespace GenOnlineService
                 // Only QuickMatch responses are expected to carry a ratings body.
                 if (lobby.LobbyType == ELobbyType.QuickMatch)
                 {
-                    string responseBody = await response.Content.ReadAsStringAsync();
                     var refreshResponse = JsonSerializer.Deserialize<EloRefreshResponse>(responseBody);
                     if (refreshResponse?.data == null)
                     {
@@ -228,11 +242,9 @@ namespace GenOnlineService
 
                 string requestUrl = getUrl.Replace("{playerId}", playerId.ToString());
 
-                using (var handler = CreateLeaderboardsHandler())
-                using (var client = new HttpClient(handler))
-                {
-                    client.Timeout = TimeSpan.FromSeconds(10);
+                HttpClient client = g_LeaderboardsClient.Value;
 
+                {
                     using (var request = new HttpRequestMessage(HttpMethod.Get, requestUrl))
                     {
                         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", getToken);

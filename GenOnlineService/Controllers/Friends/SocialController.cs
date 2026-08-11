@@ -110,6 +110,13 @@ namespace GenOnlineService.Controllers
 				return false;
 			}
 
+			// the target must actually have an outstanding request to us - without this check any user can force a
+			// friendship on any other user just by calling the accept endpoint with their id
+			if (!sharedUserDataSource.GetSocialContainer().PendingRequests.Contains(target_user_id))
+			{
+				return false;
+			}
+
 			await using var db = await _dbFactory.CreateDbContextAsync();
 
 			// a friendship adds an entry to both lists, so the target must have room too
