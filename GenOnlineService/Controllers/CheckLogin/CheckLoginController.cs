@@ -131,7 +131,7 @@ namespace GenOnlineService.Controllers
 								rng.GetBytes(randBytes);
 							}
 							user_id = BitConverter.ToUInt32(randBytes, 0) & 0x7FFFFFFF;
-							strDisplayName = String.Format("DEV_ACCOUNT_{0}", user_id);
+							strDisplayName = String.Format("dev_{0}", user_id);
 
 							// make user
 							await Database.Users.CreateUserIfNotExists_DevAccount(db, user_id, strDisplayName);
