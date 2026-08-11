@@ -287,6 +287,12 @@ static class MatchmakingManager
 		private bool m_bReachedMinPlayers = false;
 		private bool m_bWaitingOnLobbyJoins = false;
 		private bool m_bHasStartedCountdown = false;
+		private bool m_bMergedAway = false;
+
+		// a bucket that has been merged into another bucket (or that has already been handed a lobby) must never
+		// accept or donate members again, otherwise a player ends up in two buckets and gets sent to two lobbies
+		public bool IsMergedAway() { return m_bMergedAway; }
+		public bool IsLockedForMatchStart() { return m_bHasStartedCountdown || m_bWaitingOnLobbyJoins; }
 
 		public UInt16 PlaylistID { get; private set; }
 		public int MinPlayers { get; private set; }
@@ -459,8 +465,21 @@ static class MatchmakingManager
 				return false;
 			}
 
+			// either bucket already merged away this tick? it is stale, never touch it again
+			if (m_bMergedAway || bucketToMerge.m_bMergedAway)
+			{
+				return false;
+			}
+
 			// if we're already counting down, dont let people join, just pretend we are full
-			if (m_bHasStartedCountdown || m_bWaitingOnLobbyJoins)
+			if (IsLockedForMatchStart())
+			{
+				return false;
+			}
+
+			// the other bucket may have already been given a lobby this tick - its members are on their way into
+			// that lobby, so pulling them in here would matchmake them into a second lobby
+			if (bucketToMerge.IsLockedForMatchStart())
 			{
 				return false;
 			}
@@ -505,11 +524,21 @@ static class MatchmakingManager
 
 		public async Task MergeWithOtherBucket(MatchmakingBucket bucketToMerge)
 		{
-			// copy over players
+			// copy over players (skipping anyone already present, and dead sessions)
 			foreach (MatchmakingBucketMember rhsMember in bucketToMerge.m_lstMembers)
 			{
+				UserSession? rhsSession = rhsMember.GetAssociatedSession();
+				if (rhsSession == null || HasPlayer(rhsSession))
+				{
+					continue;
+				}
+
 				this.m_lstMembers.Add(rhsMember);
 			}
+
+			// the source bucket is now empty and flagged so it can never merge/accept players again
+			bucketToMerge.m_bMergedAway = true;
+			bucketToMerge.m_lstMembers.Clear();
 
 			// nothing else to copy... everything else should match since we were a merge candidate
 
@@ -589,8 +618,14 @@ static class MatchmakingManager
 
 		public bool HasSpaceForUsers(int numUsers, UInt32 exe_crc, UInt32 ini_crc, EKnownAnticheatID anticheatID)
 		{
+			// stale bucket that was merged into another one
+			if (m_bMergedAway)
+			{
+				return false;
+			}
+
 			// if we're already counting down, dont let people join, just pretend we are full
-			if (m_bHasStartedCountdown || m_bWaitingOnLobbyJoins)
+			if (IsLockedForMatchStart())
 			{
 				return false;
 			}
@@ -652,6 +687,12 @@ static class MatchmakingManager
 
         public async Task<bool> Join(UserSession playerSession)
 		{
+			// already in here? nothing to do (and never add a duplicate member)
+			if (HasPlayer(playerSession))
+			{
+				return true;
+			}
+
 			// cant be blocked by others in this bucket
 			if (!IsJoiningUserBlockedByOrHasBlockedAnyBucketMember(playerSession, playerSession.m_UserID))
             {
@@ -698,6 +739,12 @@ static class MatchmakingManager
 		Int64 m_StartTime = -1;
 		public async Task Tick()
 		{
+			// merged into another bucket - our members live there now, ticking would create a second lobby for them
+			if (m_bMergedAway)
+			{
+				return;
+			}
+
 			var lobbyManager = ServiceLocator.Services.GetRequiredService<LobbyManager>();
 
 			// TODO_QUICKMATCH: What if the playlist is null? is this even possible since we validated before creating the bucket
@@ -1105,7 +1152,7 @@ static class MatchmakingManager
 			foreach (MatchmakingBucket mmBucket in kvPair.Value)
 			{
 				// if we've already been merged and are awaiting delayed deletion, dont process it anymore
-				if (!lstBucketsMergedNeedingDeleted.Contains(mmBucket))
+				if (!lstBucketsMergedNeedingDeleted.Contains(mmBucket) && !mmBucket.IsMergedAway())
 				{
 					await mmBucket.Tick();
 
@@ -1114,8 +1161,13 @@ static class MatchmakingManager
 					{
 						if (mmBucketMergeCandidate != mmBucket)
 						{
-							// if we've already been merged and are awaiting delayed deletion, dont process it anymore
-							if (!lstBucketsMergedNeedingDeleted.Contains(mmBucket))
+							// if either bucket has already been merged and is awaiting delayed deletion, dont process it anymore
+							if (lstBucketsMergedNeedingDeleted.Contains(mmBucket) || mmBucket.IsMergedAway())
+							{
+								break;
+							}
+
+							if (!lstBucketsMergedNeedingDeleted.Contains(mmBucketMergeCandidate) && !mmBucketMergeCandidate.IsMergedAway())
 							{
 								if (mmBucket.CanMergeWithOtherBucket(mmBucketMergeCandidate))
 								{
@@ -1169,17 +1221,31 @@ static class MatchmakingManager
 						// Was the user in a bucket? if so theres nothing to do in terms of bucket management
 						bool bUseInBucket = false;
 						MatchmakingBucket? mmBucketUserIsIn = null;
-						foreach (MatchmakingBucket mmBucket in m_dictMatchmakingBuckets[thisSession.MatchmakingPlaylistID])
+						foreach (var kvBucketPair in m_dictMatchmakingBuckets)
 						{
-							if (mmBucket.HasPlayer(thisSession))
+							foreach (MatchmakingBucket mmBucket in kvBucketPair.Value)
 							{
-								bUseInBucket = true;
-								mmBucketUserIsIn = mmBucket;
+								if (mmBucket.HasPlayer(thisSession))
+								{
+									bUseInBucket = true;
+									mmBucketUserIsIn = mmBucket;
+									break;
+								}
+							}
+
+							if (bUseInBucket)
+							{
 								break;
 							}
 						}
 
-						if (!bUseInBucket)
+						if (bUseInBucket)
+						{
+							// already sorted into a bucket - stop tracking this session here, otherwise a stale entry
+							// can sort the same player into a second bucket (and therefore a second lobby) later on
+							lstDestroy.Add(wrSession);
+						}
+						else
 						{
 							// is there a suitable bucket for us
 							// TODO_MATCHMAKING: Optimize lookup
@@ -1188,6 +1254,11 @@ static class MatchmakingManager
 								MatchmakingBucket? bucketInUse = null;
 								foreach (MatchmakingBucket mmBucket in m_dictMatchmakingBuckets[thisSession.MatchmakingPlaylistID])
 								{
+									if (mmBucket.IsMergedAway())
+									{
+										continue;
+									}
+
 									// must be within initial elo threshold for a join, otherwise we'll make a bucket and try to merge buckets using the elo iteration expansion algorithm
 									int eloExpansionToUse = (mmBucket.GetAvgElo() >= EloConfig.HighEloThreshold ||mmBucket.GetAvgElo() >= EloConfig.HighEloThreshold) ? EloConfig.EloExpansionValue_HighELO : EloConfig.EloExpansionValue_Standard;
 									if (mmBucket.IsAvgEloWithinThreshold(thisSessionUserData.GameStats.EloRating, eloExpansionToUse))
@@ -1202,11 +1273,9 @@ static class MatchmakingManager
 
 												if (bJoined)
 												{
+													// stop looking - joining more than one bucket would matchmake this player into multiple lobbies
 													bucketInUse = mmBucket;
-												}
-												else
-												{
-													bucketInUse = null;
+													break;
 												}
 											}
 										}
@@ -1260,6 +1329,11 @@ static class MatchmakingManager
 
 	public static async Task RegisterPlayer(UserSession plr, UInt16 playlistID, List<int> mapIndices, UInt32 exe_crc, UInt32 ini_crc, EKnownAnticheatID anticheatID)
 	{
+		// make sure a re-register (or a duplicate request) cannot leave the player queued twice, or queued while
+		// still sat in an existing bucket - either would matchmake them into two lobbies at once
+		RemoveSessionFromPendingList(plr);
+		RemovePlayerFromAllBuckets(plr);
+
 		plr.MatchmakingPlaylistID = playlistID;
 		plr.MatchmakingMapIndicies = new ConcurrentList<int>(mapIndices);
 		plr.ExeCRC = exe_crc;
@@ -1270,12 +1344,21 @@ static class MatchmakingManager
         await SendMatchmakingMessage(plr, "Started matchmaking... Searching for players...");
 	}
 
-	public static void DeregisterPlayer(UserSession plr)
+	// NOTE: WeakReference does not implement value equality, so entries must be matched by their target session
+	private static void RemoveSessionFromPendingList(UserSession plr)
+	{
+		foreach (WeakReference<UserSession> wrSession in lstSessions)
+		{
+			if (!wrSession.TryGetTarget(out UserSession? thisSession) || thisSession == null || thisSession == plr)
+			{
+				lstSessions.Remove(wrSession);
+			}
+		}
+	}
+
+	private static void RemovePlayerFromAllBuckets(UserSession plr)
 	{
 		var lobbyManager = ServiceLocator.Services.GetRequiredService<LobbyManager>();
-		lstSessions.Remove(new WeakReference<UserSession>(plr));
-
-		// TODO_QUICKMATCH: What happens if the game is going to start? we should handle that, right now people probably goto game solo
 
 		// also remove from any bucket we are in to avoid ghost buckets
 		foreach (var kvPair in m_dictMatchmakingBuckets)
@@ -1307,6 +1390,16 @@ static class MatchmakingManager
 				}
 			}
 		}
+	}
+
+	public static void DeregisterPlayer(UserSession plr)
+	{
+		var lobbyManager = ServiceLocator.Services.GetRequiredService<LobbyManager>();
+		RemoveSessionFromPendingList(plr);
+
+		// TODO_QUICKMATCH: What happens if the game is going to start? we should handle that, right now people probably goto game solo
+
+		RemovePlayerFromAllBuckets(plr);
 
 		// leave QM lobby too
 		Console.WriteLine("[Source 4] User {0} Leave Any Lobby", plr.m_UserID);
