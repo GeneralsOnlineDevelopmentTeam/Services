@@ -148,6 +148,12 @@ namespace GenOnlineService.Controllers
 		private readonly LobbyManager _lobbyManager;
 		private readonly IDbContextFactory<AppDbContext> _dbFactory;
 
+		// A started game whose relay stream never materialises (host and members all have
+		// streaming off) — or whose stream ended mid-match — is dropped from Watch Live after
+		// this long. Streamers register within seconds of match start, so 60s is generous;
+		// keeping such a game listed would only strand observers on a wait that can never end.
+		private const int NeverStreamedGraceSeconds = 60;
+
 		public LivestreamsController(LobbyManager lobbyManager, IDbContextFactory<AppDbContext> dbFactory)
 		{
 			_lobbyManager = lobbyManager;
@@ -210,11 +216,25 @@ namespace GenOnlineService.Controllers
 					continue;
 				}
 
+				// A started game with no stream is only listed for a grace period: after
+				// that the stream is simply not coming (or has ended), so the row would
+				// only strand observers on a wait that can never end. The browser picks
+				// the drop up on its next 5s refresh.
+				if (isWaiting && lobby.TimeMatchStarted != null &&
+					(DateTime.UtcNow - lobby.TimeMatchStarted.Value).TotalSeconds > NeverStreamedGraceSeconds)
+				{
+					continue;
+				}
+
 				// 0 = observe (pre-game), 1 = wait (stream not live yet, or this viewer is
 				// held behind the broadcast delay), 2 = join (stream live, ticket mints now).
 				int watchAction = isPregame ? 0 : 1;
 				int? delayRemainingSeconds = null;
-				if (lobby.State == ELobbyState.INGAME && lobby.TimeMatchStarted != null && lobby.StreamDelaySeconds > 0)
+				// The hold clock only means something for lobbies that actually have a
+				// stream: a never-streamed game would otherwise show a countdown for a
+				// hold that can never expire.
+				if (lobby.State == ELobbyState.INGAME && lobby.IsStreaming &&
+					lobby.TimeMatchStarted != null && lobby.StreamDelaySeconds > 0)
 				{
 					delayRemainingSeconds = Math.Max(0, lobby.StreamDelaySeconds.Value -
 						(int)(DateTime.UtcNow - lobby.TimeMatchStarted.Value).TotalSeconds);
