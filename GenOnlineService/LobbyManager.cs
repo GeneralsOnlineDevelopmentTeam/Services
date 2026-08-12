@@ -1358,6 +1358,18 @@ namespace GenOnlineService
 			DirtyRetransmit();
 		}
 
+		// Host-forced bulk assignment (the lobby /roll command). Sets every slot property at
+		// once WITHOUT persisting the values as this member's favorites — only the member
+		// themselves may change those. No retransmit here: the bulk handler broadcasts once
+		// after the whole loop.
+		public void UpdateSlotPropertiesForced(int side, int color, int start_pos, int team)
+		{
+			Side = side;
+			Color = color;
+			StartingPosition = start_pos;
+			Team = team;
+		}
+
 		public void UpdateHasMap(bool bHasMap)
 		{
 			HasMap = bHasMap;
