@@ -197,6 +197,7 @@ CREATE TABLE IF NOT EXISTS `users` (
   `admin` tinyint(4) NOT NULL DEFAULT 0,
   `banned` tinyint(4) NOT NULL DEFAULT 0,
   `elo_rating` int(11) NOT NULL DEFAULT 1000,
+  `monthly_elo_rating` int(11) NOT NULL DEFAULT 1000,
   `elo_num_matches` int(11) NOT NULL DEFAULT 0,
   `ban_reason` varchar(128) DEFAULT NULL,
   `banned_by` varchar(50) DEFAULT NULL,
