@@ -217,6 +217,10 @@ namespace GenOnlineService
 
 		[JsonConverter(typeof(BoolFromIntConverter))]
 		public bool won { get; set; } = false;                // tinyint(4) DEFAULT NULL
+		
+        [JsonConverter(typeof(BoolFromIntConverter))]
+		public bool desynced {get; set; } = false;
+
 		public List<MemberMetadataModel> metadata { get; set; } = new List<MemberMetadataModel>();
 
 		public MatchdataMemberModel()
@@ -339,7 +343,8 @@ namespace Database
 	int unitsKilled,
 	int unitsLost,
 	int totalMoney,
-	bool won)
+	bool won,
+	bool desynced)
 		{
 			if (slotIndex < 0 || slotIndex > 7)
 				return;
@@ -367,6 +372,7 @@ namespace Database
 				model.units_lost = unitsLost;
 				model.total_money = totalMoney;
 				model.won = won;
+				model.desynced = desynced;
 
 				// 4. Serialize back
 				string updatedJson = JsonSerializer.Serialize(model);
@@ -552,7 +558,22 @@ namespace Database
 					}
 				}
 
-				// 3. Build winner groups from active, non-observer members.
+				// 3. Check if any member reported a desync. If so, mark all non-observer members as losers which the
+				//    ExternalLeaderboardClient interprets as a No Result
+				bool anyDesync = members.Values.Any(m => m.desynced);
+				if (anyDesync)
+				{
+					foreach (var kv in members)
+					{
+						if (kv.Value.side == Constants.OBSERVER_SIDE_VALUE)
+							continue;
+
+						await UpdateMatchHistorySetWinFlag(db, lobby.MatchID, kv.Key, false);
+					}
+					return;
+				}
+
+				// 4. Build winner groups from active, non-observer members.
                 //    Teamless players are treated individually using synthetic keys.
 				Dictionary<int, List<int>> winGroups = new();
 				foreach (var kv in members)
@@ -570,7 +591,7 @@ namespace Database
 					slotList.Add(kv.Key);
 				}
 
-				// 4. Compare winner groups by report count.
+				// 5. Compare winner groups by report count.
 				//    A unique maximum wins; ties or no winner groups fall back to
                 //    the abandoned timestamp-based resolution.
 				int? conclusiveWinningTeam = null;
@@ -594,7 +615,7 @@ namespace Database
 					}
 				}
 
-				// 5. If conclusively determined, propagate the win to the team 
+				// 6. If conclusively determined, propagate the win to the team 
 				//    and explicitly award a loss to everyone else.
 				if (conclusiveWinningTeam != null || conclusiveWinningSlot != -1)
 				{
@@ -610,7 +631,7 @@ namespace Database
 					return;
 				}
 
-				// 6. No winner — determine who quit last (= winner) using the most accurate timing available.
+				// 7. No winner — determine who quit last (= winner) using the most accurate timing available.
 				//    Prefer TimePlayerAbandonedIngame (recorded the instant each player's WS dropped while
 				//    in-game) over TimeMemberLeft (recorded when the player was structurally removed from the
 				//    lobby, which can happen much later, or earlier due to a fresh-session reconnect, skewing
