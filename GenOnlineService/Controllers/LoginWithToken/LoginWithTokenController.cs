@@ -47,6 +47,7 @@ namespace GenOnlineService.Controllers.LoginWithToken
 
 	[ApiController]
 	[Authorize(Roles = "GameClient,ChatClient,GameLauncher")]
+	[RefreshTokenEndpoint]
 	[Route("env/{environment}/contract/{contract_version}/[controller]")]
 	public class LoginWithToken : ControllerBase
 	{

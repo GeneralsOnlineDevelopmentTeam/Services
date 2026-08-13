@@ -169,6 +169,8 @@ CREATE TABLE IF NOT EXISTS `user_token_state` (
   `session_type` int(11) NOT NULL,
   `token_generation` int(11) NOT NULL DEFAULT 0,
   `refresh_jti` varchar(64) NOT NULL DEFAULT '',
+  `previous_refresh_jti` varchar(64) NOT NULL DEFAULT '',
+  `previous_refresh_jti_expires` datetime NOT NULL DEFAULT '1970-01-01 00:00:00',
   `updated` datetime NOT NULL DEFAULT current_timestamp(),
   PRIMARY KEY (`user_id`,`session_type`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

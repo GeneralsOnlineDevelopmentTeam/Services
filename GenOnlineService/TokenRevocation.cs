@@ -78,18 +78,20 @@ namespace Database
 			}
 		}
 
-		public static async Task Upsert(AppDbContext db, Int64 userID, EUserSessionType sessionType, int tokenGeneration, string refreshJti)
+		public static async Task Upsert(AppDbContext db, Int64 userID, EUserSessionType sessionType, int tokenGeneration, string refreshJti, string previousRefreshJti, DateTime previousRefreshJtiExpires)
 		{
 			try
 			{
 				int sessionTypeValue = (int)sessionType;
 
 				await db.Database.ExecuteSqlInterpolatedAsync($@"
-					INSERT INTO user_token_state (user_id, session_type, token_generation, refresh_jti, updated)
-					VALUES ({userID}, {sessionTypeValue}, {tokenGeneration}, {refreshJti}, UTC_TIMESTAMP())
+					INSERT INTO user_token_state (user_id, session_type, token_generation, refresh_jti, previous_refresh_jti, previous_refresh_jti_expires, updated)
+					VALUES ({userID}, {sessionTypeValue}, {tokenGeneration}, {refreshJti}, {previousRefreshJti}, {previousRefreshJtiExpires}, UTC_TIMESTAMP())
 					ON DUPLICATE KEY UPDATE
 						token_generation = VALUES(token_generation),
 						refresh_jti = VALUES(refresh_jti),
+						previous_refresh_jti = VALUES(previous_refresh_jti),
+						previous_refresh_jti_expires = VALUES(previous_refresh_jti_expires),
 						updated = VALUES(updated)");
 			}
 			catch (Exception ex)
@@ -126,7 +128,14 @@ namespace GenOnlineService
 		{
 			public int Generation;
 			public string RefreshJti = String.Empty;
+			public string PreviousRefreshJti = String.Empty;
+			public DateTime PreviousRefreshJtiExpires = DateTime.UnixEpoch;
 		}
+
+		// How long the refresh token that was just rotated out stays usable. Without this a client
+		// that never saw the response to its refresh (dropped connection, timeout, retry) would be
+		// locked out permanently, because the only token it holds has already been superseded.
+		private static readonly TimeSpan s_previousRefreshJtiGrace = TimeSpan.FromMinutes(5);
 
 		private static readonly ConcurrentDictionary<(Int64, EUserSessionType), CachedState> s_state = new();
 
@@ -153,7 +162,9 @@ namespace GenOnlineService
 				s_state[(row.UserID, row.SessionType)] = new CachedState
 				{
 					Generation = row.TokenGeneration,
-					RefreshJti = row.RefreshJti ?? String.Empty
+					RefreshJti = row.RefreshJti ?? String.Empty,
+					PreviousRefreshJti = row.PreviousRefreshJti ?? String.Empty,
+					PreviousRefreshJtiExpires = DateTime.SpecifyKind(row.PreviousRefreshJtiExpires, DateTimeKind.Utc)
 				};
 			}
 
@@ -201,15 +212,34 @@ namespace GenOnlineService
 				return true;
 			}
 
-			return String.Equals(state.RefreshJti, jti, StringComparison.Ordinal);
+			if (String.Equals(state.RefreshJti, jti, StringComparison.Ordinal))
+			{
+				return true;
+			}
+
+			// The token this one replaced stays valid for a short window so an unacknowledged refresh
+			// can be retried instead of forcing a full re-login.
+			return !String.IsNullOrEmpty(state.PreviousRefreshJti)
+				&& String.Equals(state.PreviousRefreshJti, jti, StringComparison.Ordinal)
+				&& DateTime.UtcNow < state.PreviousRefreshJtiExpires;
 		}
 
 		public static async Task OnTokensIssued(Int64 userID, EUserSessionType sessionType, string refreshJti)
 		{
+			DateTime previousExpiry = DateTime.UtcNow.Add(s_previousRefreshJtiGrace);
+
 			CachedState newState = s_state.AddOrUpdate(
 				(userID, sessionType),
 				_ => new CachedState { Generation = 0, RefreshJti = refreshJti },
-				(_, existing) => new CachedState { Generation = existing.Generation, RefreshJti = refreshJti });
+				(_, existing) => new CachedState
+				{
+					Generation = existing.Generation,
+					RefreshJti = refreshJti,
+
+					// the token we just replaced stays usable for the grace window
+					PreviousRefreshJti = existing.RefreshJti,
+					PreviousRefreshJtiExpires = previousExpiry
+				});
 
 			await Persist(userID, sessionType, newState);
 		}
@@ -275,7 +305,7 @@ namespace GenOnlineService
 			try
 			{
 				await using AppDbContext db = await s_dbFactory.CreateDbContextAsync();
-				await Database.UserTokens.Upsert(db, userID, sessionType, state.Generation, state.RefreshJti);
+				await Database.UserTokens.Upsert(db, userID, sessionType, state.Generation, state.RefreshJti, state.PreviousRefreshJti, state.PreviousRefreshJtiExpires);
 			}
 			catch (Exception ex)
 			{
