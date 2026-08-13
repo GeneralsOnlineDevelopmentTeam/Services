@@ -196,43 +196,39 @@ namespace GenOnlineService
                     return;
                 }
 
-                // Only QuickMatch responses are expected to carry a ratings body.
-                if (lobby.LobbyType == ELobbyType.QuickMatch)
+                var refreshResponse = JsonSerializer.Deserialize<EloRefreshResponse>(responseBody);
+                if (refreshResponse?.data == null)
                 {
-                    var refreshResponse = JsonSerializer.Deserialize<EloRefreshResponse>(responseBody);
-                    if (refreshResponse?.data == null)
+                    Console.WriteLine($"[WARNING] External Match Ingest response body contains no data or could not be deserialized: {responseBody}");
+                    return;
+                }
+
+                // Only player IDs that were actually part of this match are valid recipients of an ELO update.
+                var expectedPlayerIds = new HashSet<long>(matchEntry.members.Where(m => m.HasValue).Select(m => m.Value.user_id));
+
+                foreach (var (userId, updatedPlayer) in refreshResponse.data)
+                {
+                    if (!expectedPlayerIds.Contains(userId))
                     {
-                        Console.WriteLine($"[WARNING] External Match Ingest response body contains no data or could not be deserialized: {responseBody}");
-                        return;
+                        Console.WriteLine($"[WARNING] External Match Ingest response for match {lobby.MatchID} contained unexpected player_id {userId}; skipping (ELO left unchanged).");
+                        continue;
                     }
 
-                    // Only player IDs that were actually part of this match are valid recipients of an ELO update.
-                    var expectedPlayerIds = new HashSet<long>(matchEntry.members.Where(m => m.HasValue).Select(m => m.Value.user_id));
+                    int newRating = updatedPlayer.overall.rating;
+                    int newMatches = updatedPlayer.overall.matches;
+                    int newMonthlyRating = updatedPlayer.season.rating;
 
-                    foreach (var (userId, updatedPlayer) in refreshResponse.data)
+                    // Update in-memory session cache if the player is online
+                    var sharedData = WebSocketManager.GetSharedDataForUser(userId);
+                    if (sharedData?.GameStats != null)
                     {
-                        if (!expectedPlayerIds.Contains(userId))
-                        {
-                            Console.WriteLine($"[WARNING] External Match Ingest response for match {lobby.MatchID} contained unexpected player_id {userId}; skipping (ELO left unchanged).");
-                            continue;
-                        }
-
-                        int newRating = updatedPlayer.overall.rating;
-                        int newMatches = updatedPlayer.overall.matches;
-                        int newMonthlyRating = updatedPlayer.season.rating;
-
-                        // Update in-memory session cache if the player is online
-                        var sharedData = WebSocketManager.GetSharedDataForUser(userId);
-                        if (sharedData?.GameStats != null)
-                        {
-                            sharedData.GameStats.EloRating = newRating;
-                            sharedData.GameStats.EloMatches = newMatches;
-                            sharedData.GameStats.MonthlyEloRating = newMonthlyRating;
-                        }
-
-                        // Call SaveELOData to persist as fallback
-                        await Database.Users.SaveELOData(db, userId, new EloData(newRating, newMonthlyRating, newMatches));
+                        sharedData.GameStats.EloRating = newRating;
+                        sharedData.GameStats.EloMatches = newMatches;
+                        sharedData.GameStats.MonthlyEloRating = newMonthlyRating;
                     }
+
+                    // Call SaveELOData to persist as fallback
+                    await Database.Users.SaveELOData(db, userId, new EloData(newRating, newMonthlyRating, newMatches));
                 }
             }
             catch (Exception ex)
