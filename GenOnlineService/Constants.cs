@@ -1385,11 +1385,12 @@ namespace GenOnlineService
 	{
 		const int numGeneralsEntries = 15;
 
-		public PlayerStats(Int64 inUserID, int inEloRating, int inEloMatches)
+		public PlayerStats(Int64 inUserID, int inEloRating, int inEloMatches, int inMonthlyEloRating)
 		{
 			userID = inUserID;
 			EloRating = inEloRating;
 			EloMatches = inEloMatches;
+			MonthlyEloRating = inMonthlyEloRating;
 
             // init arrays, rest are init'ed below
             for (int i = 0; i < numGeneralsEntries; ++i)
@@ -1424,6 +1425,7 @@ namespace GenOnlineService
 		public Int64 userID { get; set; } = -1;
 		public int EloRating { get; set; } = EloConfig.BaseRating;
 		public int EloMatches { get; set; } = 0;
+		public int MonthlyEloRating { get; set; } = EloConfig.BaseRating;
 
 		public int[] wins { get; set; } = new int[numGeneralsEntries] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 		public int[] losses { get; set; } = new int[numGeneralsEntries] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
