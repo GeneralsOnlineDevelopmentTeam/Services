@@ -39,6 +39,7 @@ public class AppDbContext : DbContext
 
 	public DbSet<FriendRequestEntry> FriendRequests => Set<FriendRequestEntry>();
 	public DbSet<ConnectionOutcome> ConnectionOutcomes => Set<ConnectionOutcome>();
+	public DbSet<UserTokenState> UserTokenStates => Set<UserTokenState>();
 
 	public AppDbContext(DbContextOptions<AppDbContext> options)
 		: base(options)
@@ -64,5 +65,6 @@ public class AppDbContext : DbContext
 		modelBuilder.ApplyConfiguration(new FriendRequestConfiguration());
 		modelBuilder.ApplyConfiguration(new BlockedUserConfiguration());
 		modelBuilder.ApplyConfiguration(new ConnectionOutcomeConfiguration());
+		modelBuilder.ApplyConfiguration(new UserTokenStateConfiguration());
 	}
 }

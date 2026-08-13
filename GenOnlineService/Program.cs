@@ -79,9 +79,26 @@ namespace GenOnlineService
 		}
 	}
 
+	public static class SecretComparer
+	{
+		// Constant-time string comparison so an attacker can't learn a secret from response timing.
+		public static bool FixedTimeEquals(string? a, string? b)
+		{
+			if (a == null || b == null)
+			{
+				return false;
+			}
+
+			byte[] bytesA = Encoding.UTF8.GetBytes(a);
+			byte[] bytesB = Encoding.UTF8.GetBytes(b);
+
+			return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(bytesA, bytesB);
+		}
+	}
+
 	public static class APIKeyHelpers
 	{
-		private static HashSet<string>? s_cachedApiKeys = null;
+		private static List<string>? s_cachedApiKeys = null;
 		private static readonly object s_cacheLock = new object();
 
 		public static bool ValidateKey(string strKey)
@@ -91,7 +108,6 @@ namespace GenOnlineService
 				return false;
 			}
 
-			// Use cached HashSet for O(1) lookup
 			if (s_cachedApiKeys == null)
 			{
 				lock (s_cacheLock)
@@ -110,13 +126,22 @@ namespace GenOnlineService
 							return false;
 						}
 
-						// Convert to HashSet and uppercase all keys for O(1) lookup
-						s_cachedApiKeys = new HashSet<string>(api_keys.Select(k => k.ToUpper()), StringComparer.OrdinalIgnoreCase);
+						s_cachedApiKeys = api_keys.Select(k => k.ToUpperInvariant()).ToList();
 					}
 				}
 			}
 
-			return s_cachedApiKeys.Contains(strKey);
+			string strKeyUpper = strKey.ToUpperInvariant();
+
+			// Compare against every key without short-circuiting, so timing doesn't leak which key
+			// (or how much of a key) matched.
+			bool bMatched = false;
+			foreach (string strKnownKey in s_cachedApiKeys)
+			{
+				bMatched |= SecretComparer.FixedTimeEquals(strKnownKey, strKeyUpper);
+			}
+
+			return bMatched;
 		}
 	}
 	public static class CertHelpers
@@ -203,7 +228,8 @@ namespace GenOnlineService
 								throw new Exception("Monitor Password missing in config");
 							}
 
-							if (strUsername == monitorUsername && strPassword == monitorPassword)
+							if (SecretComparer.FixedTimeEquals(monitorUsername, strUsername)
+								& SecretComparer.FixedTimeEquals(monitorPassword, strPassword))
 							{
 								var claims = new[] { new Claim(ClaimTypes.Name, strUsername), new Claim(ClaimTypes.Role, "Monitor") };
 								var identity = new ClaimsIdentity(claims, "MonitorToken");
@@ -250,6 +276,14 @@ namespace GenOnlineService
 			await using var db = await factory.CreateDbContextAsync();
 			await Database.ServiceStats.CommitStats(db, DateTime.Now.DayOfYear, hourOfDay, numPlayers, numLobbies);
 		}
+	}
+
+	// Marks the endpoints that accept refresh tokens (LoginWithToken and RefreshToken). Used instead
+	// of matching on the request path so a future route whose path happens to contain "loginwithtoken"
+	// can't silently accept them.
+	[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = false)]
+	public sealed class RefreshTokenEndpointAttribute : Attribute
+	{
 	}
 
 	public static class TokenHelper
@@ -440,74 +474,158 @@ namespace GenOnlineService
 			}
 		}
 
+		// The signing key is the only thing standing between a user and a forged token, so refuse to
+		// start with a placeholder or a key too short for HS256.
+		private static void ValidateSigningKey(string strKey)
+		{
+			int keyBytes = Encoding.UTF8.GetByteCount(strKey);
+
+			if (keyBytes < 32)
+			{
+				throw new Exception($"JwtSettings:Key is only {keyBytes} bytes; HS256 requires at least 32 bytes of key material.");
+			}
+
+			if (strKey.Contains("TODO", StringComparison.OrdinalIgnoreCase))
+			{
+				throw new Exception("JwtSettings:Key is still set to the placeholder value. Set a real secret before starting the service.");
+			}
+		}
+
+		private static bool IsRefreshTokenEndpoint(HttpContext httpContext)
+		{
+			Endpoint? endpoint = httpContext.GetEndpoint();
+			if (endpoint != null)
+			{
+				return endpoint.Metadata.GetMetadata<RefreshTokenEndpointAttribute>() != null;
+			}
+
+			// Routing hasn't resolved an endpoint yet. Fall back to an exact final-segment match
+			// rather than a substring search over the whole path.
+			string path = httpContext.Request.Path.ToString().TrimEnd('/');
+			int lastSlash = path.LastIndexOf('/');
+			string lastSegment = lastSlash >= 0 ? path.Substring(lastSlash + 1) : path;
+			return String.Equals(lastSegment, "loginwithtoken", StringComparison.OrdinalIgnoreCase)
+				|| String.Equals(lastSegment, "refreshtoken", StringComparison.OrdinalIgnoreCase);
+		}
+
 		private static Task AdditionalValidation(TokenValidatedContext context)
 		{
-			//controller.User.Claims.First().Value
 			try
 			{
 				if (context.Principal == null || context.Principal.Claims == null)
 				{
 					context.Fail("Failed Validation #1");
+					return Task.CompletedTask;
 				}
 
-#pragma warning disable CS8602 // Dereference of a possibly null reference. (Appears to be erroronous flagging)
-#pragma warning disable CS8604 // null reference. (Appears to be erroronous flagging)
 				Claim? userIdClaim = context.Principal.FindFirst(ClaimTypes.NameIdentifier);
 				if (userIdClaim == null || !Int64.TryParse(userIdClaim.Value, out Int64 userID))
 				{
 					context.Fail("Failed Validation #2");
-				}
-
-
-				if (context.Principal.FindFirst(JwtRegisteredClaimNames.Name) == null || String.IsNullOrEmpty(context.Principal.FindFirst(JwtRegisteredClaimNames.Name).Value))
-				{
-					context.Fail("Failed Validation #3");
-				}
-
-				// must have type
-				if (context.Principal.FindFirst(JwtRegisteredClaimNames.Typ) == null)
-				{
-					context.Fail("Failed Validation #4");
-				}
-
-				// refresh tokens are only valid for LoginWithToken
-				Claim? firstType = context.Principal.FindFirst(JwtRegisteredClaimNames.Typ);
-
-				if (firstType == null || string.IsNullOrEmpty(firstType.Value))
-				{
-					context.Fail("Failed Validation #8");
 					return Task.CompletedTask;
 				}
 
-				string strTypeClaim = firstType.Value;
-				JwtTokenGenerator.ETokenType tokenType = (JwtTokenGenerator.ETokenType)Convert.ToInt32(strTypeClaim);
+				Claim? nameClaim = context.Principal.FindFirst(JwtRegisteredClaimNames.Name);
+				if (nameClaim == null || String.IsNullOrEmpty(nameClaim.Value))
+				{
+					context.Fail("Failed Validation #3");
+					return Task.CompletedTask;
+				}
 
-				// Use claim-based validation instead of path-based to prevent bypass
+				// refresh tokens are only valid on endpoints marked [RefreshTokenEndpoint]
+				Claim? firstType = context.Principal.FindFirst(JwtRegisteredClaimNames.Typ);
+
+				if (firstType == null || String.IsNullOrEmpty(firstType.Value))
+				{
+					context.Fail("Failed Validation #4");
+					return Task.CompletedTask;
+				}
+
+				if (!int.TryParse(firstType.Value, out int tokenTypeValue)
+					|| !System.Enum.IsDefined(typeof(JwtTokenGenerator.ETokenType), tokenTypeValue))
+				{
+					context.Fail("Failed Validation #10 - Unknown token type");
+					return Task.CompletedTask;
+				}
+
+				JwtTokenGenerator.ETokenType tokenType = (JwtTokenGenerator.ETokenType)tokenTypeValue;
+
+				bool bIsRefreshEndpoint = IsRefreshTokenEndpoint(context.HttpContext);
+
 				if (tokenType == JwtTokenGenerator.ETokenType.Refresh)
 				{
-					bool bIsLoginWithToken = context.Request.Path.ToString().ToLower().Contains("loginwithtoken");
-					if (!bIsLoginWithToken)
+					if (!bIsRefreshEndpoint)
 					{
 						context.Fail("Failed Validation #5 - Refresh token used on non-refresh endpoint");
+						return Task.CompletedTask;
 					}
 				}
 				else if (tokenType == JwtTokenGenerator.ETokenType.Session)
 				{
-					bool bIsLoginWithToken = context.Request.Path.ToString().ToLower().Contains("loginwithtoken");
-					if (bIsLoginWithToken)
+					if (bIsRefreshEndpoint)
 					{
 						context.Fail("Failed Validation #6 - Session token used on refresh endpoint");
+						return Task.CompletedTask;
 					}
 				}
-				else
-				{
-					context.Fail("Failed Validation #10 - Unknown token type");
-				}
 
-				if (context.Principal.FindFirst(JwtRegisteredClaimNames.Address) == null)
+				Claim? addressClaim = context.Principal.FindFirst(JwtRegisteredClaimNames.Address);
+				if (addressClaim == null)
 				{
 					context.Fail("Failed Validation #7");
 					return Task.CompletedTask;
+				}
+
+				EUserSessionType sessionType;
+				{
+					Claim? sessionTypeClaim = context.Principal.FindFirst("session_type");
+					if (sessionTypeClaim == null
+						|| !int.TryParse(sessionTypeClaim.Value, out int sessionTypeValue)
+						|| !System.Enum.IsDefined(typeof(EUserSessionType), sessionTypeValue))
+					{
+						context.Fail("Failed Validation #11 - Missing or invalid session type");
+						return Task.CompletedTask;
+					}
+
+					sessionType = (EUserSessionType)sessionTypeValue;
+				}
+
+				// Revocation checks. All in-memory, no database access per request.
+				if (TokenRevocationManager.IsUserBanned(userID))
+				{
+					context.Fail("Failed Validation #12 - User is banned");
+					return Task.CompletedTask;
+				}
+
+				{
+					// Tokens issued before this claim existed are treated as generation 0, so a deploy
+					// doesn't force every live client to re-login. They still get rejected once that
+					// user's generation is bumped by a revocation.
+					int tokenGeneration = 0;
+
+					Claim? generationClaim = context.Principal.FindFirst(JwtTokenGenerator.TokenGenerationClaim);
+					if (generationClaim != null && !int.TryParse(generationClaim.Value, out tokenGeneration))
+					{
+						context.Fail("Failed Validation #13 - Invalid token generation");
+						return Task.CompletedTask;
+					}
+
+					if (tokenGeneration != TokenRevocationManager.GetGeneration(userID, sessionType))
+					{
+						context.Fail("Failed Validation #14 - Token has been revoked");
+						return Task.CompletedTask;
+					}
+				}
+
+				// Refresh tokens are single use - only the most recently issued one is accepted.
+				if (tokenType == JwtTokenGenerator.ETokenType.Refresh)
+				{
+					Claim? jtiClaim = context.Principal.FindFirst(JwtRegisteredClaimNames.Jti);
+					if (jtiClaim == null || !TokenRevocationManager.IsCurrentRefreshToken(userID, sessionType, jtiClaim.Value))
+					{
+						context.Fail("Failed Validation #15 - Refresh token has been superseded");
+						return Task.CompletedTask;
+					}
 				}
 
 				if (Program.g_Config != null)
@@ -518,18 +636,16 @@ namespace GenOnlineService
 					{
 						if (jwtSettings.GetValue<bool>("enforce_ip_match"))
 						{
-							string strExpectedIP = context.Principal.FindFirst(JwtRegisteredClaimNames.Address).Value;
+							string strExpectedIP = addressClaim.Value;
 							string currentIP = IPHelpers.NormalizeIP(context.HttpContext.Connection.RemoteIpAddress?.ToString());
 							if (strExpectedIP != currentIP)
 							{
 								context.Fail("Failed Validation #8 - IP mismatch");
+								return Task.CompletedTask;
 							}
 						}
 					}
 				}
-
-#pragma warning restore CS8602 // Dereference of a possibly null reference.
-#pragma warning restore CS8604 // Dereference of a possibly null reference.
 			}
 			catch
 			{
@@ -554,7 +670,14 @@ namespace GenOnlineService
 				Refresh
 			}
 
+			public const string TokenGenerationClaim = "tgen";
+
 			public string GenerateToken(string displayname, Int64 userID, string ipAddr, ETokenType tokenType, KnownClients.EKnownClients knownClientID, EUserSessionType sessionType, bool bIsAdmin)
+			{
+				return GenerateToken(displayname, userID, ipAddr, tokenType, knownClientID, sessionType, bIsAdmin, out _);
+			}
+
+			public string GenerateToken(string displayname, Int64 userID, string ipAddr, ETokenType tokenType, KnownClients.EKnownClients knownClientID, EUserSessionType sessionType, bool bIsAdmin, out string jti)
 			{
 				var jwtSettings = _configuration.GetSection("JwtSettings");
 
@@ -572,15 +695,21 @@ namespace GenOnlineService
 				var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(strKey));
 				var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
 
+				jti = Guid.NewGuid().ToString();
+
 				List<Claim> claims = new List<Claim>
 				{
 					new Claim(JwtRegisteredClaimNames.Sub, userID.ToString()),
-					new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+					new Claim(JwtRegisteredClaimNames.Jti, jti),
 					new Claim(JwtRegisteredClaimNames.Name, displayname),
 					new Claim(JwtRegisteredClaimNames.Address, ipAddr),
 					new Claim(JwtRegisteredClaimNames.Typ, ((int)tokenType).ToString()),
 					new Claim("client_id", ((int)knownClientID).ToString()),
-					new Claim("session_type", ((int)sessionType).ToString())
+					new Claim("session_type", ((int)sessionType).ToString()),
+
+					// Token generation, checked against the revocation manager on every request so
+					// that bans/logouts can invalidate tokens before they naturally expire.
+					new Claim(TokenGenerationClaim, TokenRevocationManager.GetGeneration(userID, sessionType).ToString())
 				};
 
 				// everyone gets the player role
@@ -799,6 +928,8 @@ namespace GenOnlineService
 					throw new Exception("JWT Key not found in configuration");
 				}
 
+				ValidateSigningKey(strKey);
+
 				options.TokenValidationParameters = new TokenValidationParameters
 				{
 					ValidateIssuer = true,
@@ -807,7 +938,13 @@ namespace GenOnlineService
 					ValidateIssuerSigningKey = true,
 					ValidIssuer = jwtSettings["Issuer"],
 					ValidAudience = jwtSettings["Audience"],
-					IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(strKey))
+					IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(strKey)),
+
+					// Pin the algorithm so only tokens signed the way we sign them are accepted.
+					ValidAlgorithms = new[] { SecurityAlgorithms.HmacSha256 },
+
+					// Default is 5 minutes, which keeps expired tokens usable for that long.
+					ClockSkew = TimeSpan.FromSeconds(30)
 				};
 
 				options.Events = new JwtBearerEvents
@@ -1052,7 +1189,26 @@ namespace GenOnlineService
 				return next();
 			});
 
-			//app.UseHttpsRedirection();
+			// HTTPS enforcement. Gated because TLS may be terminated upstream (or a plain-HTTP
+			// listener may be deliberately in use), in which case redirecting would break clients.
+			bool bEnforceHttps = builder.Configuration.GetSection("Core").GetValue<bool>("enforce_https");
+			if (bEnforceHttps)
+			{
+				app.UseHsts();
+
+				// Websocket upgrades are exempt: ws_address_insecure is an intentional fallback for
+				// clients that can't do TLS, and redirecting the upgrade request would break it.
+				app.UseWhen(context => !context.WebSockets.IsWebSocketRequest, branch =>
+				{
+					branch.UseHttpsRedirection();
+				});
+			}
+			else
+			{
+				Console.ForegroundColor = ConsoleColor.Red;
+				Console.WriteLine("*** WARNING: Core:enforce_https is disabled. Bearer tokens will be sent in clear text over any plain-HTTP listener. ***");
+				Console.ForegroundColor = ConsoleColor.Gray;
+			}
 
 			app.UseCors();
 			app.UseAuthentication();
@@ -1183,6 +1339,33 @@ namespace GenOnlineService
 				timerTick.Start();
 			}
 
+			// keep token revocation state in sync with bans applied directly in the database
+			{
+				System.Timers.Timer timerTick = new System.Timers.Timer(60000); // 60s tick
+				timerTick.AutoReset = false;
+				timerTick.Elapsed += async (sender, e) =>
+				{
+					try
+					{
+						using (var scope = app.Services.CreateScope())
+						{
+							var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+							await using var db = await factory.CreateDbContextAsync();
+							await TokenRevocationManager.ReconcileBans(db);
+						}
+					}
+					catch (Exception ex)
+					{
+						Console.WriteLine($"[timerTick tokenrevocation] Exception: {ex}");
+					}
+					finally
+					{
+						timerTick.Start();
+					}
+				};
+				timerTick.Start();
+			}
+
 			AppDomain.CurrentDomain.ProcessExit += (_, _) =>
 			{
 				Console.ForegroundColor = ConsoleColor.Red;
@@ -1201,6 +1384,9 @@ namespace GenOnlineService
 				// do a cleanup on startup
 				await DoCleanup(db, true);
 				await DailyStatsManager.LoadFromDB(db);
+
+				// must happen before any token is issued or validated
+				await TokenRevocationManager.Initialize(factory, db);
 			}
 
 			app.Run();

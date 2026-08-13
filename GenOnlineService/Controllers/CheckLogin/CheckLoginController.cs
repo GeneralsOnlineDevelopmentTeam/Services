@@ -183,6 +183,8 @@ namespace GenOnlineService.Controllers
 									bool bIsBanned = await Database.Users.IsUserBanned(db, user_id);
 									if (bIsBanned)
 									{
+										await TokenRevocationManager.RevokeAllTokensForUser(user_id, "user is banned");
+
 										result.result = EPendingLoginState.LoginFailed;
 										Response.StatusCode = (int)HttpStatusCode.Locked;
 										return result;
@@ -206,7 +208,10 @@ namespace GenOnlineService.Controllers
 										Helpers.RegisterInitialPlayerExeCRC(user_id, exe_crc);
 
 										var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, knownClientID, sessionType, bIsAdmin);
-										var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, knownClientID, sessionType, false);
+										var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, knownClientID, sessionType, false, out string refreshJti);
+
+										// rotation: only this refresh token is accepted from now on
+										await TokenRevocationManager.OnTokensIssued(user_id, sessionType, refreshJti);
 
 										result.result = EPendingLoginState.LoginSuccess;
 										result.session_token = sessiontoken;
@@ -215,8 +220,10 @@ namespace GenOnlineService.Controllers
 										result.display_name = strDisplayName;
 										result.ws_uri = Program.GetWebSocketAddress(bSecureWS);
 
-										// clear cached data, its a refresh websocket connection
-										WebSocketManager.ClearDataFromUser(user_id, sessionType);
+										// clear cached data, its a new session and the client reconnects its
+										// websocket using the ws_uri below - must be awaited so the teardown
+										// can't race and destroy that new session
+										await WebSocketManager.ClearDataFromUser(user_id, sessionType);
 									}
 									else // limited login (auth partners)
 									{

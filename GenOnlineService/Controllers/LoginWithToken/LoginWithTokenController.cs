@@ -105,8 +105,9 @@ namespace GenOnlineService.Controllers.LoginWithToken
 					byte[] respNonce = new byte[32];
 					using (RandomNumberGenerator rng = RandomNumberGenerator.Create()) { rng.GetBytes(respNonce); }
 
-					// TODO_JWT: Look refresh token up in the revoked list
-					// TODO_JWT: invalidate old refresh and session tokens
+					// The refresh token that got us here was already checked against the current
+					// stored jti during authentication; issuing below rotates it so the presented
+					// token can't be used again.
 
 					// If you reach here, the refresh token was valid because auth happens globally
 					if (Program.g_tokenGenerator != null)
@@ -130,6 +131,9 @@ namespace GenOnlineService.Controllers.LoginWithToken
 						bool bIsBanned = await Database.Users.IsUserBanned(db, user_id);
 						if (bIsBanned)
 						{
+							// kill every token they hold, not just this request
+							await TokenRevocationManager.RevokeAllTokensForUser(user_id, "user is banned");
+
 							result.result = EPendingLoginState.LoginFailed;
 							Response.StatusCode = (int)HttpStatusCode.Locked;
 							return result;
@@ -148,7 +152,11 @@ namespace GenOnlineService.Controllers.LoginWithToken
 						// extend token
 						// TODO_TODAY_JWT: just get clientID from token
 						var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, clientID, sessionType, bIsAdmin);
-						var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, clientID, sessionType, false);
+						var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, clientID, sessionType, false, out string refreshJti);
+
+						// rotation: only this refresh token is accepted from now on
+						await TokenRevocationManager.OnTokensIssued(user_id, sessionType, refreshJti);
+
 						result.session_token = sessiontoken;
 						result.refresh_token = refreshtoken;
 
@@ -157,8 +165,13 @@ namespace GenOnlineService.Controllers.LoginWithToken
 
 						result.ws_uri = Program.GetWebSocketAddress(bSecureWS);
 
-						// clear cached data, its a refresh websocket connection
-						WebSocketManager.ClearDataFromUser(user_id, sessionType);
+						// This endpoint re-establishes a session, so tear down any state the previous
+						// one left behind (lobby membership, matchmaking, cached session data). Must
+						// be awaited - the response below hands the client a ws_uri and it will
+						// reconnect immediately, so a fire-and-forget teardown can race that new
+						// session and destroy it. Clients that only need to rotate an expiring token
+						// must use the RefreshToken endpoint instead, which leaves state intact.
+						await WebSocketManager.ClearDataFromUser(user_id, sessionType);
 					}
 					else
 					{

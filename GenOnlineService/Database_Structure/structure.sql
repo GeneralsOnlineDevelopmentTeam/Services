@@ -162,6 +162,18 @@ CREATE TABLE IF NOT EXISTS `user_devices` (
 
 -- Data exporting was unselected.
 
+-- Dumping structure for table go_production.user_token_state
+CREATE TABLE IF NOT EXISTS `user_token_state` (
+  `user_id` bigint(20) NOT NULL,
+  `session_type` int(11) NOT NULL,
+  `token_generation` int(11) NOT NULL DEFAULT 0,
+  `refresh_jti` varchar(64) NOT NULL DEFAULT '',
+  `updated` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`user_id`,`session_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Data exporting was unselected.
+
 -- Dumping structure for table go_production.user_stats_v2
 CREATE TABLE IF NOT EXISTS `user_stats_v2` (
   `user_id` bigint(20) NOT NULL,
