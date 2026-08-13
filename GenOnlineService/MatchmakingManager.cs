@@ -1127,7 +1127,7 @@ static class MatchmakingManager
 		{ 0, new Playlist(0, "1v1 (Random Armies)", 2, 2, 8, false, -1, false, 0, new List<PlaylistMap>()
 			{
 // 				new PlaylistMap("[RANK] Snowy Drought ZH v5 (2)", "[RANK] Snowy Drought ZH v5", true, 2),
-// 				new PlaylistMap("[RANK] Natural Threats ZH v4 (2)", "[RANK] Natural Threats ZH v4", true, 2),
+ 				new PlaylistMap("[RANK] Natural Threats ZH v4 (2)", "[RANK] Natural Threats ZH v4", true, 2),
 // 				new PlaylistMap("[RANK] Arctic Lagoon ZH v2 (2)", "[RANK] Arctic Lagoon ZH v2", true, 2),
 // 				new PlaylistMap("[RANK] ZH Carrier is Over v2 (2)", "[RANK] ZH Carrier is Over v2", true, 2),
  				new PlaylistMap("[RANK] Vendetta ZH v1 (2)", "[RANK] Vendetta ZH v1", true, 2),
@@ -1172,7 +1172,7 @@ static class MatchmakingManager
 				// new maps added in 8_13_26 for WS
 				new PlaylistMap("Forest of Camelot ZH v4 (2)", "Forest of Camelot ZH v4", true, 2),
 				new PlaylistMap("Mirmulnir v4 (2)", "Mirmulnir v4", true, 2),
-				new PlaylistMap("Seasonal Conflict Summer V2 (2)", "Seasonal Conflict Summer V2", true, 2),
+				//new PlaylistMap("Seasonal Conflict Summer V2 (2)", "Seasonal Conflict Summer V2", true, 2),
 				new PlaylistMap("Terraform v2 (2)", "Terraform v2", true, 2),
 				new PlaylistMap("Toxic Lake v5 (2)", "Toxic Lake v5", true, 2),
 			}
