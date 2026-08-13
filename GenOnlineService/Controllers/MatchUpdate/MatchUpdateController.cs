@@ -64,6 +64,7 @@ namespace GenOnlineService.Controllers
 		string map_name,
 		string map_path,
 		string match_roster_type,
+		ELobbyType? lobby_type,
 		bool is_official_map,
 		bool vanilla_teams_only,
 		UInt32 starting_cash,
@@ -84,6 +85,7 @@ namespace GenOnlineService.Controllers
 			this.map_name = map_name;
 			this.map_path = map_path;
 			this.match_roster_type = match_roster_type;
+			this.lobby_type = lobby_type;
 			this.is_official_map = is_official_map;
 			this.vanilla_teams_only = vanilla_teams_only;
 			this.starting_cash = starting_cash;
@@ -105,6 +107,7 @@ namespace GenOnlineService.Controllers
 		public string map_path { get; set; } = String.Empty;
 
 		public string match_roster_type { get; set; } = String.Empty;
+		public ELobbyType? lobby_type { get; set; } = null;
 		public bool is_official_map { get; set; } = false;
 		public bool vanilla_teams_only { get; set; } = false;
 		public UInt32 starting_cash { get; set; } = 0;

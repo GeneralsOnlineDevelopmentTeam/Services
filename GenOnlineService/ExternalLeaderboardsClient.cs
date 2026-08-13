@@ -22,9 +22,14 @@ namespace GenOnlineService
 
     public class EloRefreshEntry
     {
+        public EloRefreshRating overall { get; set; }
+        public EloRefreshRating season { get; set; }
+    }
+
+    public class EloRefreshRating
+    {
         public int rating { get; set; }
         public int matches { get; set; }
-        public int? rank { get; set; }
     }
 
     public static class ExternalLeaderboardsClient
@@ -212,8 +217,9 @@ namespace GenOnlineService
                             continue;
                         }
 
-                        int newRating = updatedPlayer.rating;
-                        int newMatches = updatedPlayer.matches;
+                        int newRating = updatedPlayer.overall.rating;
+                        int newMatches = updatedPlayer.overall.matches;
+                        int newMonthlyRating = updatedPlayer.season.rating;
 
                         // Update in-memory session cache if the player is online
                         var sharedData = WebSocketManager.GetSharedDataForUser(userId);
@@ -221,10 +227,11 @@ namespace GenOnlineService
                         {
                             sharedData.GameStats.EloRating = newRating;
                             sharedData.GameStats.EloMatches = newMatches;
+                            sharedData.GameStats.MonthlyEloRating = newMonthlyRating;
                         }
 
                         // Call SaveELOData to persist as fallback
-                        await Database.Users.SaveELOData(db, userId, new EloData(newRating, newMatches));
+                        await Database.Users.SaveELOData(db, userId, new EloData(newRating, newMonthlyRating, newMatches));
                     }
                 }
             }
@@ -270,7 +277,7 @@ namespace GenOnlineService
                                 return null;
                             }
 
-                            return new EloData(entry.rating, entry.matches);
+                            return new EloData(entry.overall.rating, entry.season.rating, entry.overall.matches);
                         }
                     }
                 }

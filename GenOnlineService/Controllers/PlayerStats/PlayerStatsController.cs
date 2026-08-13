@@ -85,7 +85,7 @@ namespace GenOnlineService.Controllers
 		{
 			// TODO_ASP: Set error codes properly in all places (and use variable, not magic numbers)
 			RouteHandler_GET_PlayerStats_Result result = new RouteHandler_GET_PlayerStats_Result();
-			result.stats = new PlayerStats(userID, EloConfig.BaseRating, 0); // return 0s by default, incase client tries to use it
+			result.stats = new PlayerStats(userID, EloConfig.BaseRating, 0, EloConfig.BaseRating); // return 0s by default, incase client tries to use it
 
 			var options = new JsonSerializerOptions
 			{

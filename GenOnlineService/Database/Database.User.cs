@@ -79,6 +79,7 @@ public class User
 
 	// ELO
 	public int EloRating { get; set; } = EloConfig.BaseRating;
+	public int MonthlyEloRating { get; set; } = EloConfig.BaseRating;
 	public int EloNumberOfMatches { get; set; } = 0;
 
 	// Bans
@@ -162,6 +163,7 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
 		builder.Property(e => e.IsAdmin).HasColumnName("admin");
 		builder.Property(e => e.IsBanned).HasColumnName("banned");
 		builder.Property(e => e.EloRating).HasColumnName("elo_rating");
+		builder.Property(e => e.MonthlyEloRating).HasColumnName("monthly_elo_rating");
 		builder.Property(e => e.EloNumberOfMatches).HasColumnName("elo_num_matches");
 		builder.Property(e => e.BanReason).HasColumnName("ban_reason").HasColumnType("varchar(128)"); ;
 		builder.Property(e => e.BannedBy).HasColumnName("banned_by").HasColumnType("varchar(50)"); ;
@@ -334,7 +336,7 @@ namespace Database
 					(AppDbContext db, long userId) =>
 						db.Users
 						  .Where(u => u.ID == userId)
-						  .Select(u => new EloData(u.EloRating, u.EloNumberOfMatches))
+						  .Select(u => new EloData(u.EloRating, u.MonthlyEloRating, u.EloNumberOfMatches))
 						  .FirstOrDefault()
 				);
 
@@ -411,14 +413,14 @@ namespace Database
 				// Execute compiled query
 				await foreach (var u in _compiledBulkQuery(db, userIds))
 				{
-					results[u.ID] = new EloData(u.EloRating, u.EloNumberOfMatches);
+					results[u.ID] = new EloData(u.EloRating, u.MonthlyEloRating, u.EloNumberOfMatches);
 				}
 
 				// Fill missing users with defaults
 				foreach (var id in userIds)
 				{
 					if (!results.ContainsKey(id))
-						results[id] = new EloData(EloConfig.BaseRating, 0);
+						results[id] = new EloData(EloConfig.BaseRating, EloConfig.BaseRating, 0);
 				}
 			}
 			catch (Exception ex)
@@ -600,7 +602,7 @@ namespace Database
 				SentrySdk.CaptureException(ex);
 			}
 
-			return new EloData(EloConfig.BaseRating, 0);
+			return new EloData(EloConfig.BaseRating, EloConfig.BaseRating, 0);
 		}
 
 
@@ -721,6 +723,7 @@ namespace Database
 					.Where(u => u.ID == userId)
 					.ExecuteUpdateAsync(setters => setters
 						.SetProperty(u => u.EloRating, newEloData.Rating)
+						.SetProperty(u => u.MonthlyEloRating, newEloData.MonthlyRating)
 						.SetProperty(u => u.EloNumberOfMatches, newEloData.NumMatches)
 					);
 			}
