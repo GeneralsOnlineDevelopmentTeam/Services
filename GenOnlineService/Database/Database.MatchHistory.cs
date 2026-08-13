@@ -41,6 +41,7 @@ public class MatchHistoryEntry
 	public string MapName { get; set; } = string.Empty;
 	public bool MapOfficial { get; set; }
 	public string MatchRosterType { get; set; } = string.Empty;
+	public ELobbyType? LobbyType { get; set; } = null;
 	public bool VanillaTeams { get; set; }
 	public uint StartingCash { get; set; }
 	public bool LimitSuperweapons { get; set; }
@@ -107,6 +108,11 @@ public class MatchHistoryConfiguration : IEntityTypeConfiguration<MatchHistoryEn
 			.HasColumnName("match_roster_type")
 			.HasMaxLength(32)
 			.HasDefaultValue("");
+
+		entity.Property(e => e.LobbyType)
+			.HasColumnName("lobby_type")
+			.HasConversion<byte?>()
+			.HasColumnType("tinyint unsigned");
 
 		entity.Property(e => e.VanillaTeams)
 			.HasColumnName("vanilla_teams");
@@ -480,6 +486,7 @@ namespace Database
 					MapPath = lobby.MapPath,
 					MapOfficial = lobby.IsMapOfficial,
 					MatchRosterType = rosterType,
+					LobbyType = lobby.LobbyType,
 					VanillaTeams = lobby.IsVanillaTeamsOnly,
 					StartingCash = lobby.StartingCash,
 					LimitSuperweapons = lobby.IsLimitSuperweapons,
@@ -755,6 +762,7 @@ namespace Database
 						m.MapName,
 						m.MapPath,
 						m.MatchRosterType,
+						m.LobbyType,
 						m.MapOfficial,
 						m.VanillaTeams,
 						m.StartingCash,
@@ -787,6 +795,7 @@ namespace Database
 						row.MapName,
 						row.MapPath ?? string.Empty,
 						row.MatchRosterType,
+						row.LobbyType,
 						row.MapOfficial,
 						row.VanillaTeams,
 						row.StartingCash,
@@ -841,6 +850,7 @@ namespace Database
 						row.MapName,
 						row.MapPath ?? string.Empty,
 						row.MatchRosterType,
+						row.LobbyType,
 						row.MapOfficial,
 						row.VanillaTeams,
 						row.StartingCash,
@@ -938,6 +948,7 @@ namespace Database
 				row.MapName,
 				row.MapPath ?? string.Empty,
 				row.MatchRosterType,
+				row.LobbyType,
 				row.MapOfficial,
 				row.VanillaTeams,
 				row.StartingCash,

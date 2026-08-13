@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS `match_history` (
   `map_name` varchar(128) NOT NULL,
   `map_official` tinyint(1) NOT NULL,
   `match_roster_type` varchar(32) NOT NULL DEFAULT '',
+  `lobby_type` tinyint(3) unsigned DEFAULT NULL,
   `vanilla_teams` tinyint(1) NOT NULL,
   `starting_cash` int(10) unsigned NOT NULL,
   `limit_superweapons` tinyint(1) NOT NULL,
