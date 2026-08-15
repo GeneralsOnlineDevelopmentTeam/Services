@@ -1268,8 +1268,32 @@ namespace GenOnlineService
 				timerTick.Start();
 			}
 
-			// tick matchmaking (done at lower frequency)
+            // tick lobby cleanup - this is a separate timer to prevent main lobby tick from being blocked by cleanup
+            // @hotfix SkyAero 15/08/2026
 			{
+                System.Timers.Timer timerTick = new System.Timers.Timer(5); // 5ms tick
+                timerTick.AutoReset = false;
+                timerTick.Elapsed += async (sender, e) =>
+                {
+                    try
+                    {
+                        var lobbyManager = ServiceLocator.Services.GetRequiredService<LobbyManager>();
+                        await lobbyManager.ProcessLobbiesNeedingDestroyed();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[cleanupTick lobby] Exception: {ex}");
+                    }
+                    finally
+                    {
+                        timerTick.Start();
+                    }
+                };
+                timerTick.Start();
+            }
+
+            // tick matchmaking (done at lower frequency)
+            {
 				System.Timers.Timer timerTick = new System.Timers.Timer(1000); // 1s tick
 				timerTick.AutoReset = false;
 				timerTick.Elapsed += async (sender, e) =>

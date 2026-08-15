@@ -1285,7 +1285,7 @@ namespace GenOnlineService
 			m_queueLobbiesNeedingDestroyed.Enqueue(lobby);
 		}
 
-		private async Task ProcessLobbiesNeedingDestroyed()
+		public async Task ProcessLobbiesNeedingDestroyed()
 		{
 			while (m_queueLobbiesNeedingDestroyed.TryDequeue(out Lobby? lobbyToDestroy))
 			{
@@ -1365,8 +1365,6 @@ namespace GenOnlineService
 			{
 				await kvPair.Value.Tick();
 			}
-
-			await ProcessLobbiesNeedingDestroyed();
 		}
 
 		public async Task<bool> JoinLobby(AppDbContext _db, Lobby lobby, UserSession playerSession, string strDisplayName, UInt16 userPreferredPort, bool bHasMap)
