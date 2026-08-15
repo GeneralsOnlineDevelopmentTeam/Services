@@ -61,6 +61,86 @@ namespace GenOnlineService
 		[JsonIgnore]
 		public ConcurrentDictionary<Int64, ConcurrentList<Int64>> FullMeshConnectivityChecks { get; set; } = new();
 
+
+		// AC Probes
+		[JsonIgnore]
+		ConcurrentDictionary<Int64, int> m_dictProbe1_Sent = new();
+
+		[JsonIgnore]
+		ConcurrentDictionary<Int64, int> m_dictProbe2_Sent = new();
+
+		[JsonIgnore]
+		ConcurrentDictionary<Int64, int> m_dictProbe1_Received = new();
+
+		[JsonIgnore]
+		ConcurrentDictionary<Int64, int> m_dictProbe2_Received = new();
+		public void RegisterProbeSent_Type1(Int64 userID)
+		{
+			if (!m_dictProbe1_Sent.ContainsKey(userID))
+			{
+				m_dictProbe1_Sent[userID] = 1;
+			}
+			else
+			{
+				++m_dictProbe1_Sent[userID];
+			}
+		}
+
+		public void RegisterProbeSent_Type2(Int64 userID)
+		{
+			if (!m_dictProbe2_Sent.ContainsKey(userID))
+			{
+				m_dictProbe2_Sent[userID] = 1;
+			}
+			else
+			{
+				++m_dictProbe2_Sent[userID];
+			}
+		}
+
+		public void RegisterProbeResponse_Type1(Int64 userID)
+		{
+			if (!m_dictProbe1_Received.ContainsKey(userID))
+			{
+				m_dictProbe1_Received[userID] = 1;
+			}
+			else
+			{
+				++m_dictProbe1_Received[userID];
+			}
+		}
+
+		public async Task RegisterProbeResponse_Malformed_Type1(Int64 userID)
+		{
+			// register immediately
+			using var scope = ServiceLocator.Services.CreateScope();
+			var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+			await using var db = await factory.CreateDbContextAsync();
+			await Database.AntiCheat.FlagAccountForReview_SuspectProbes(db, userID, MatchID, "Malformed probe response (Type 1)");
+		}
+
+		public void RegisterProbeResponse_Type2(Int64 userID)
+		{
+			if (!m_dictProbe2_Received.ContainsKey(userID))
+			{
+				m_dictProbe2_Received[userID] = 1;
+			}
+			else
+			{
+				++m_dictProbe2_Received[userID];
+			}
+		}
+
+		public async Task RegisterProbeResponse_Malformed_Type2(Int64 userID)
+		{
+			// register immediately
+			using var scope = ServiceLocator.Services.CreateScope();
+			var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+			await using var db = await factory.CreateDbContextAsync();
+			await Database.AntiCheat.FlagAccountForReview_SuspectProbes(db, userID, MatchID, "Malformed probe response (Type 2)");
+		}
+
+		// End AC Probes
 		public void StartFullMeshConnectivityCheck()
 		{
 			PendingFullMeshConnectivityChecks = true;
@@ -204,6 +284,28 @@ namespace GenOnlineService
 				if (member.GetSession().TryGetTarget(out UserSession? session))
 				{
 					session.RegisterHistoricMatchID(MatchID, member.SlotIndex, member.Side, TimeCreated);
+				}
+			}
+
+			// for each member, if this is QM, and they havent played 10 games, flag it for review, its a new user
+			if (LobbyType == ELobbyType.QuickMatch)
+			{
+				foreach (LobbyMember member in Members)
+				{
+					if (member != null)
+					{
+						var shared = GenOnlineService.WebSocketManager.GetSharedDataForUser(member.UserID);
+						if (shared != null)
+						{
+							if (shared.GameStats.EloMatches < 10)
+							{
+								using var scope = ServiceLocator.Services.CreateScope();
+								var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+								await using var db = await factory.CreateDbContextAsync();
+								await Database.AntiCheat.FlagAccountForReview_NewAccount_FirstMatches(db, member.UserID, MatchID);
+							}
+						}
+					}
 				}
 			}
 
@@ -422,6 +524,46 @@ namespace GenOnlineService
 			}
 		}
 
+public async Task FinalizeACChecks()
+		{
+			// do AC checks
+			foreach (var kvPair in m_dictProbe1_Sent)
+			{
+				Int64 userID = kvPair.Key;
+
+				if (!m_dictProbe1_Received.ContainsKey(userID))
+				{
+					m_dictProbe1_Received[userID] = 0;
+				}
+
+				if (m_dictProbe1_Received[userID] != kvPair.Value)
+				{
+					using var scope = ServiceLocator.Services.CreateScope();
+					var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+					await using var db = await factory.CreateDbContextAsync();
+					await Database.AntiCheat.FlagAccountForReview_SuspectProbes(db, userID, MatchID, String.Format("Missing probe response (Type 1): Sent {0}, Got {1} responses", kvPair.Value, m_dictProbe1_Received[userID]));
+				}
+			}
+
+			foreach (var kvPair in m_dictProbe2_Sent)
+			{
+				Int64 userID = kvPair.Key;
+
+				if (!m_dictProbe2_Received.ContainsKey(userID))
+				{
+					m_dictProbe2_Received[userID] = 0;
+				}
+
+				if (m_dictProbe2_Received[userID] != kvPair.Value)
+				{
+					using var scope = ServiceLocator.Services.CreateScope();
+					var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+					await using var db = await factory.CreateDbContextAsync();
+					await Database.AntiCheat.FlagAccountForReview_SuspectProbes(db, userID, MatchID, String.Format("Missing probe response (Type 1): Sent {0}, Got {1} responses", kvPair.Value, m_dictProbe2_Received[userID]));
+				}
+			}
+		}
+
 		public void CloseOpenSlots()
 		{
 			foreach (LobbyMember member in Members)
@@ -508,6 +650,24 @@ namespace GenOnlineService
 							{
 								session.QueueWebsocketSend(bytesJSON);
 							}
+						}
+					}
+				}
+
+				// send probe 2
+				{
+					WebSocketMessage_Simple probe = new WebSocketMessage_Simple();
+					probe.msg_id = (int)EWebSocketMessageID.WS_KEEPALIVE;
+					byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(probe));
+
+					foreach (LobbyMember memberEntry in Members)
+					{
+						if (memberEntry.GetSession().TryGetTarget(out UserSession? session))
+						{
+							// TODO_AC: We should increment the number of expected screenshots here (individually for each user, since people might've quit), so we can compare later
+							session.QueueWebsocketSend(bytesJSON);
+
+							RegisterProbeSent_Type2(memberEntry.UserID);
 						}
 					}
 				}

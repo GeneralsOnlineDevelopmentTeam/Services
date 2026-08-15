@@ -41,6 +41,11 @@ public class AppDbContext : DbContext
 	public DbSet<ConnectionOutcome> ConnectionOutcomes => Set<ConnectionOutcome>();
 	public DbSet<UserTokenState> UserTokenStates => Set<UserTokenState>();
 
+	public DbSet<AcReviewCrc> AcReviewsCrc => Set<AcReviewCrc>();
+	public DbSet<AcReviewModule> AcReviewsModules => Set<AcReviewModule>();
+	public DbSet<AcReviewNewAccountGame> AcReviewsNewAccountGames => Set<AcReviewNewAccountGame>();
+	public DbSet<AcReviewProbe> AcReviewsProbes => Set<AcReviewProbe>();
+
 	public AppDbContext(DbContextOptions<AppDbContext> options)
 		: base(options)
 	{
@@ -66,5 +71,9 @@ public class AppDbContext : DbContext
 		modelBuilder.ApplyConfiguration(new BlockedUserConfiguration());
 		modelBuilder.ApplyConfiguration(new ConnectionOutcomeConfiguration());
 		modelBuilder.ApplyConfiguration(new UserTokenStateConfiguration());
+		modelBuilder.ApplyConfiguration(new AcReviewCrcConfiguration());
+		modelBuilder.ApplyConfiguration(new AcReviewModuleConfiguration());
+		modelBuilder.ApplyConfiguration(new AcReviewNewAccountGameConfiguration());
+		modelBuilder.ApplyConfiguration(new AcReviewProbeConfiguration());
 	}
 }

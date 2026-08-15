@@ -1031,6 +1031,24 @@ namespace GenOnlineService
 			return m_bSubscribedToRealtimeSocialupdates;
 		}
 
+		public async Task RegisterExeCRC(string strExeCRC)
+		{
+			if (ACExeCRC.ToUpper() != strExeCRC.ToUpper())
+			{
+				// Flag the account for review
+				UInt64 mostRecentMatchID = 0;
+				if (m_lstHistoricMatchIDs.Count > 0)
+				{
+					mostRecentMatchID = m_lstHistoricMatchIDs[m_lstHistoricMatchIDs.Count - 1];
+				}
+
+				using var scope = ServiceLocator.Services.CreateScope();
+				var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+				await using var db = await factory.CreateDbContextAsync();
+				await Database.AntiCheat.FlagAccountForReview(db, m_UserID, ACExeCRC, strExeCRC, mostRecentMatchID);
+			}
+		}
+
 		public string GetFullCountryName()
 		{
 			RegionInfo ri = new RegionInfo(m_strCountry);
@@ -2525,7 +2543,9 @@ namespace GenOnlineService
         SOCIAL_CANT_ADD_FRIEND_LIST_FULL = 38,
 		PROBE_RESP = 39,
 		AC_REGISTER_PLAYER = 40,
-		AC_DEREGISTER_PLAYER = 41
+		AC_DEREGISTER_PLAYER = 41,
+		WS_KEEPALIVE = 42,
+		WS_KEEPALIVE_CLIENT = 43
 	};
 
 	public static class UserPresence
