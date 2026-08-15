@@ -38,18 +38,13 @@ namespace GenOnlineService
 
 	public static class RelayClient
 	{
-		// Every relay call sits inside a request a player is waiting on (they have just pressed
-		// "stream" or "watch"), so the budget is tight on purpose: a relay that is not answering
-		// in a couple of seconds is not going to answer usefully, and the player is better served
-		// by a prompt failure than by a client that appears to hang.
+		// Tight on purpose: every call sits inside a request a player is waiting on.
 		private static readonly HttpClient s_httpClient = new HttpClient
 		{
 			Timeout = TimeSpan.FromSeconds(5)
 		};
 
-		/// <summary>Whether the relay feature is enabled. Off by default — the relay config is
-		/// intentionally optional on day one, so without an explicit `enabled: true` (and a
-		/// base_url) the livestream endpoints must not attempt any relay call.</summary>
+		// Off unless enabled:true and a base_url are configured, so an unconfigured deployment makes no relay call.
 		public static bool IsEnabled()
 		{
 			if (Program.g_Config == null)
@@ -64,7 +59,7 @@ namespace GenOnlineService
 			}
 
 			// `enabled` is the master switch (mirrors Discord's enable_discord / Sentry's
-			// enabled). A missing value means off — the feature ships inert.
+			// enabled). A missing value means off - the feature ships inert.
 			if (!configSection.GetValue<bool>("enabled"))
 			{
 				return false;
@@ -79,9 +74,7 @@ namespace GenOnlineService
 				   !string.IsNullOrEmpty(sectionIngressKey);
 		}
 
-		/// <summary>Whether a key supplied on an inbound relay call (X-Relay-Key) matches the
-		/// configured ingress key. The relay authenticates to GO with this credential
-		/// (Relay.ingress_api_key), distinct from the api_key GO sends to the relay.</summary>
+		// Relay.ingress_api_key is the relay's credential for calls into GO, distinct from the api_key GO sends out.
 		public static bool ValidateIngressKey(string? suppliedKey)
 		{
 			if (string.IsNullOrEmpty(suppliedKey) || Program.g_Config == null)
@@ -136,11 +129,8 @@ namespace GenOnlineService
 
 		private static Polly.Retry.AsyncRetryPolicy BuildRetryPolicy(string description)
 		{
-			// Wait-and-retry with a deliberately short budget. These calls are made while a
-			// player waits on the response, so the whole policy has to fit inside a request
-			// they will sit through: two retries at 400ms and 800ms, which covers a dropped
-			// connection or a relay restart without turning a sick relay into a minute-long
-			// hang. Anything slower than this is a failure worth surfacing.
+			// Two retries at 400ms/800ms - covers a dropped connection or relay restart
+			// without turning a sick relay into a minute-long hang.
 			return Policy
 				.Handle<HttpRequestException>()
 				.Or<SocketException>()
@@ -151,10 +141,7 @@ namespace GenOnlineService
 				});
 		}
 
-		// Sends a relay request with the shared retry policy and auth header. When throwOnError is
-		// true, non-success statuses raise inside the retry block (so they are retried) and any
-		// failure surfaces as null. When false, non-success statuses are returned as-is — the
-		// caller must interpret them (e.g. a relay 404 "stream ended" is valid, not a failure).
+		// throwOnError false returns non-success as-is, because a relay 404 (stream ended) is an answer, not a failure.
 		private static async Task<HttpResponseMessage?> SendAsync(HttpMethod method, string path, string? payloadJson, string description, bool throwOnError)
 		{
 			GetRelayConfig(out string baseUrl, out string apiKey);
@@ -179,6 +166,10 @@ namespace GenOnlineService
 							request.Content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
 						}
 
+						// A retried attempt overwrites this local; dispose the previous
+						// attempt's response first or it leaks (HttpResponseMessage is
+						// IDisposable and holds the response stream).
+						response?.Dispose();
 						response = await s_httpClient.SendAsync(request);
 
 						// Explicitly verify response success inside execution block so the retry
@@ -192,6 +183,10 @@ namespace GenOnlineService
 			}
 			catch (Exception ex)
 			{
+				// The last attempt's response (if any) is a failure Polly gave up retrying -
+				// still needs disposing.
+				response?.Dispose();
+				response = null;
 				Console.WriteLine($"[ERROR] Relay {description} call failed: {ex.Message}");
 				return null;
 			}
@@ -277,9 +272,7 @@ namespace GenOnlineService
 			return false;
 		}
 
-		// priority: privileged watchers (admin or user_priority = Viewer) get a priority
-		// watch ticket; the relay lets those connections bypass its byte-level
-		// broadcast-delay hold (plans/relay/relay-server-side-delay-hold.md).
+		// A priority ticket lets the relay bypass its byte-level broadcast-delay hold for that watcher.
 		public static async Task<RelayWatchTicketResult> CreateWatchTicketAsync(long lobbyId, long userId, bool priority = false)
 		{
 			try
@@ -293,11 +286,9 @@ namespace GenOnlineService
 						return new RelayWatchTicketResult { Status = RelayWatchTicketStatus.Failure };
 					}
 
-					// A 404 means the relay session is gone — the stream ended — but only when it
-					// carries the relay's own marker. A bare 404 came from something else on the
-					// path (wrong base_url, a reverse proxy that mishandled the prefix) and must
-					// not be reported to the player as "the stream ended", because the stream is
-					// very likely fine and the deployment is not.
+					// Only a 404 carrying the relay's own marker means the stream ended - a bare
+					// 404 is a routing problem (wrong base_url, a mishandled proxy prefix) and
+					// must not be reported to the player as the stream having ended.
 					if ((int)response.StatusCode == 404)
 					{
 						string notFoundBody = await response.Content.ReadAsStringAsync();

@@ -47,11 +47,7 @@ namespace GenOnlineService.Controllers
 			AllowOutOfOrderMetadataProperties = true
 		};
 
-		// GeoIP DB is designed to be reused; opening per request is expensive. The database is
-		// gitignored and absent in fresh/CI clones, so a missing file must not brick the whole
-		// WS controller (static-init TypeInitializationException would reject every message).
-		// The IP-lookup call site already has hardcoded fallback values, so null just means
-		// "use the fallbacks".
+		// Gitignored and absent in fresh clones; null falls back to the lookup defaults rather than failing static init.
 		private static readonly DatabaseReader? GeoIpReader = TryOpenGeoIp();
 
 		private static DatabaseReader? TryOpenGeoIp()
@@ -272,9 +268,8 @@ namespace GenOnlineService.Controllers
 			// close the session
 			if (wsSess != null)
 			{
-				// Sweep this session's read-only observer subscriptions before the session is
-				// torn down — a closed websocket is a client that stopped watching, and the
-				// pending-observer count must not keep counting it.
+				// A closed websocket stopped watching - sweep its pending-observer subscriptions
+				// so the count doesn't keep counting it.
 				UserSession? closingSession = WebSocketManager.GetSessionFromUser(user_id, wsSess.m_SessionType);
 				if (closingSession != null)
 				{
@@ -772,10 +767,7 @@ namespace GenOnlineService.Controllers
 				}
 				else if (msgID == EWebSocketMessageID.LOBBY_OBSERVER_SUBSCRIBE)
 				{
-					// A client entering the read-only pre-game lobby view registers as a
-					// pending observer: it gets lobby-changed / game-starting / stream-live
-					// pushes and counts towards PendingObserverCount. No membership, no
-					// password, no lobby-state gate — watching a lobby is a read-only act.
+					// Read-only registration: no membership, password, or lobby-state check.
 					WebSocketMessage_LobbyObserverEvent? subscribeMsg =
 						JsonSerializer.Deserialize<WebSocketMessage_LobbyObserverEvent>(payload, JsonOpts);
 
@@ -784,9 +776,8 @@ namespace GenOnlineService.Controllers
 						Lobby? observerLobby = _lobbyManager.GetLobby(subscribeMsg.lobby_id);
 						if (observerLobby != null && observerLobby.PendingObservers.TryAdd(sourceUserSession, 0))
 						{
-							Console.WriteLine("[OBSERVER] User {0} subscribed to pre-game lobby {1}", sourceUserSession.m_UserID, observerLobby.LobbyID);
-							// The pending-observer count is part of the lobby JSON, so members
-							// get the usual refetch ping when it changes.
+							Console.WriteLine($"[OBSERVER] User {sourceUserSession.m_UserID} subscribed to pre-game lobby {observerLobby.LobbyID}");
+							// Retransmit so members see the pending-observer count change too.
 							observerLobby.DirtyRetransmit();
 						}
 					}
@@ -801,7 +792,7 @@ namespace GenOnlineService.Controllers
 						Lobby? observerLobby = _lobbyManager.GetLobby(unsubscribeMsg.lobby_id);
 						if (observerLobby != null && observerLobby.PendingObservers.TryRemove(sourceUserSession, out _))
 						{
-							Console.WriteLine("[OBSERVER] User {0} unsubscribed from pre-game lobby {1}", sourceUserSession.m_UserID, observerLobby.LobbyID);
+							Console.WriteLine($"[OBSERVER] User {sourceUserSession.m_UserID} unsubscribed from pre-game lobby {observerLobby.LobbyID}");
 							observerLobby.DirtyRetransmit();
 						}
 					}
@@ -829,16 +820,13 @@ namespace GenOnlineService.Controllers
 					// lock slots
 					lobbyInfo.CloseOpenSlots();
 
-					// The countdown is now a lobby property: observers mirror it through the
-					// ordinary lobby-changed refetch (LOBBY_CURRENT_LOBBY_UPDATE-style ping),
-					// and the eager GAME_STARTING forward below is just the instant cue.
+					// Observers mirror this through the ordinary lobby-changed refetch; the
+					// eager push below is just the instant cue.
 					lobbyInfo.SetCountdownStarted(true);
 
-					// The host's match-start countdown is running: tell the read-only
-					// observers parked in the lobby view NOW, so their countdown runs in sync
-					// with the lobby's instead of starting only when the match is already
-					// transitioning (the START_GAME forward below stays as a fallback for
-					// observers that subscribed too late to catch this one).
+					// Push it now so observers' countdown starts in sync with the lobby's,
+					// rather than only on the START_GAME forward below (kept as a fallback
+					// for observers that subscribed too late to catch this one).
 					if (lobbyInfo.PendingObservers.Count > 0)
 					{
 						WebSocketMessage_LobbyObserverEvent observerEvent = new WebSocketMessage_LobbyObserverEvent();
@@ -875,9 +863,8 @@ namespace GenOnlineService.Controllers
 					// start match + create placeholder match
 					await lobbyInfo.UpdateState(ELobbyState.INGAME);
 
-					// The countdown is over: the match is starting. Observers still in their
-					// countdown/waiting phase keep it (their refetch now sees INGAME), so this
-					// clear cannot be mistaken for a cancel.
+					// Not a cancel: UpdateState already flipped State to INGAME above, so
+					// observers' next refetch reads "started", not "countdown cleared".
 					lobbyInfo.SetCountdownStarted(false);
 
 					// simple websocket msg, has no data, so dont even read anything
@@ -905,11 +892,8 @@ namespace GenOnlineService.Controllers
 						}
 					}
 
-					// The match has started: tell the read-only observers parked in the lobby
-					// view to queue their join now. Their watch-ticket request is then held
-					// by GO's broadcast-delay gate (423 + countdown) until the match has run
-					// for the host's delay — the delay rides along so the client can show
-					// the wait from the start.
+					// Tell pending observers to queue their join now - the delay rides along so
+					// the client can show the broadcast-delay wait from the start.
 					if (lobbyInfo.PendingObservers.Count > 0)
 					{
 						WebSocketMessage_LobbyObserverEvent observerEvent = new WebSocketMessage_LobbyObserverEvent();

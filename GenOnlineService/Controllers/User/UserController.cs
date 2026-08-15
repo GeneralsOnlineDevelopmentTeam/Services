@@ -168,14 +168,12 @@ namespace GenOnlineService.Controllers
 			return result;
 		}
 
-		// ---- World Series bot API (the bot owns the event timetable in its own store and
-		// calls these to apply/restore user_priority at the right times). Authenticated with
-		// the "Discord" scheme: "Authorization: Discord <WsBot:api_key>" — the bot is not a
-		// player, so no game-client JWT is involved.
+		// ---- World Series bot API: applies/restores user_priority on the bot's own event
+		// timetable. Authenticated via "Authorization: Discord <WsBot:api_key>", not a
+		// game-client JWT.
 
-		// Body: { "user_id": 12345, "priority": 2 }  (priority 0..2 per EUserPriority)
-		// previous_priority lets the bot restore the user's prior value after the event
-		// window (the bot stores it and calls SetPriority again with it).
+		// Body: { "user_id": 12345, "priority": 2 }. previous_priority in the response lets
+		// the bot restore the prior value later (it stores it, calls SetPriority again with it).
 		[Authorize(AuthenticationSchemes = "Discord")]
 		[HttpPost("SetPriority")]
 		public async Task<APIResult> SetPriority()
@@ -243,11 +241,9 @@ namespace GenOnlineService.Controllers
 			return result;
 		}
 
-		// Body: [ { "user_id": 12345, "priority": 2 }, ... ]  (priority 0..2 per EUserPriority)
-		// The event bot registers its streamers up front, so the whole roster is applied in
-		// one call when the window opens (priority 2) and cleared in one call after it
-		// (priority 0). Updates are grouped by priority into bulk UPDATE ... WHERE user_id IN
-		// (...) statements; invalid entries are reported per-user, valid ones all apply.
+		// Body: [ { "user_id": 12345, "priority": 2 }, ... ] - the whole roster in one call,
+		// window-open (priority 2) or window-close (priority 0). Invalid entries are reported
+		// per-user; valid ones all apply.
 		[Authorize(AuthenticationSchemes = "Discord")]
 		[HttpPost("SetPriorityBatch")]
 		public async Task<APIResult> SetPriorityBatch()
@@ -335,7 +331,7 @@ namespace GenOnlineService.Controllers
 		//   { "display_name": "x64" }         exact display-name match
 		//   { "discord_id": 1234567890 }      users.discord_id (website Discord login)
 		//   { "search_parts": ["bob", "x64"]} partial AND search, max 10 rows
-		// All lookups are EF Core parameterised — arbitrary input cannot reach SQL.
+		// All lookups are EF Core parameterised - arbitrary input cannot reach SQL.
 		[Authorize(AuthenticationSchemes = "Discord")]
 		[HttpPost("LookupUser")]
 		public async Task<APIResult> LookupUser()

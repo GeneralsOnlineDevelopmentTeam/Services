@@ -258,10 +258,8 @@ namespace GenOnlineService
 
 		public bool AllowObservers { get; private set; } = false;
 
-		// Host decision at lobby creation: may this game be watched live at all? When off,
-		// the lobby is hidden from Watch Live's pre-game list and the pre-game observer view
-		// shows no stream controls — the game is simply not watchable, no matter which
-		// player has their own streamer role enabled.
+		// Host decision at creation: may this game be watched at all, regardless of any
+		// individual player's own streamer role? When off, hidden from Watch Live entirely.
 		public bool AllowStreamers { get; private set; } = false;
 
 		public void SetAllowStreamers(bool allowed)
@@ -272,24 +270,19 @@ namespace GenOnlineService
 			DirtyRetransmit();
 		}
 
-		// Livestream state, owned by the relay session. IsStreaming is true while the relay has
-		// a live stream for this lobby; StreamDelaySeconds is the host-reported relay delay; and
-		// ObserverCount is how many spectators are currently watching.
+		// Livestream state, owned by the relay session.
 		public bool IsStreaming { get; private set; } = false;
 		public int? StreamDelaySeconds { get; private set; } = null;
 		public int ObserverCount { get; private set; } = 0;
 
-		// The moment the match started (the INGAME transition). The clock for the
-		// broadcast-delay admission gate: normal viewers' watch tickets are held until
-		// TimeMatchStarted + StreamDelaySeconds, i.e. "held for the delay since the match
-		// started" — GO learns this moment from its own state transition, not from the
-		// relay's liveness report. The remaining hold is derived where it is consumed
-		// (the livestream controller), not serialized on the lobby itself.
+		// The INGAME transition moment - clock for the broadcast-delay gate
+		// (TimeMatchStarted + StreamDelaySeconds), learned from GO's own state transition,
+		// not the relay's liveness report.
 		public DateTime? TimeMatchStarted { get; private set; } = null;
 
-		// Priority-player match: latched TRUE when a user with user_priority = Player creates
-		// or joins the lobby. Sorts the lobby to the top of the Watch Live browser. Not
-		// broadcast — the client has no use for it (GO decides everything from the flag).
+		// Priority-player match: latched TRUE when a user_priority = Player creates or joins.
+		// [JsonIgnore]'d here (lobby members have no use for it) - LivestreamsController copies
+		// this into GET_Livestreams_LivestreamEntry.priority by hand for Watch Live sorting.
 		[JsonIgnore]
 		public bool IsPriority { get; private set; } = false;
 
@@ -298,11 +291,8 @@ namespace GenOnlineService
 			IsPriority = priority;
 		}
 
-		// True while the host's match-start countdown is running. Broadcast as part of the
-		// lobby JSON so members and read-only observers can mirror it through the ordinary
-		// lobby-changed refetch — no separate countdown messages needed. Cleared by any lobby
-		// field update or member leave (the things that cancel the host's countdown) and when
-		// the match actually starts.
+		// True while the host's match-start countdown is running. Rides the lobby JSON so
+		// members/observers mirror it via the ordinary refetch - no separate countdown message.
 		public bool CountdownStarted { get; private set; } = false;
 
 		public void SetCountdownStarted(bool started)
@@ -313,10 +303,9 @@ namespace GenOnlineService
 			DirtyRetransmit();
 		}
 
-		// Pre-game observers: clients parked in the read-only lobby view, subscribed over the
-		// websocket. Distinct from ObserverCount, which is live-stream watchers reported by the
-		// relay — these are watchers waiting for the match to start. Keyed by UserSession so a
-		// closed websocket can be swept from every lobby at once.
+		// Pre-game observers parked in the read-only lobby view - distinct from ObserverCount
+		// (live-stream watchers, reported by the relay). Keyed by UserSession so a closed
+		// websocket can be swept from every lobby at once.
 		[JsonIgnore]
 		public ConcurrentDictionary<UserSession, byte> PendingObservers { get; } = new();
 		public int PendingObserverCount => PendingObservers.Count;
@@ -347,20 +336,12 @@ namespace GenOnlineService
 		[JsonIgnore]
 		public ConcurrentDictionary<Int64, DateTime> TimeMemberLeft { get; private set; } = new();
 
-		// Records the first time each player's in-game WebSocket connection dropped (i.e., when they first "quit"
-		// while the match was in progress). Only the first disconnect is stored � reconnects do not reset it.
-		// Used by DetermineLobbyWinnerIfNotPresent to find who abandoned first (= loser) vs last (= winner).
-		// NOTE: These are mutated from HTTP/websocket threads and the lobby tick loop at the same time, so they must
-		// be concurrent collections.
+		// First in-game disconnect per player; DetermineLobbyWinnerIfNotPresent reads it to tell who quit first.
+		// Concurrent because HTTP/websocket threads and the lobby tick loop mutate it at the same time.
 		[JsonIgnore]
 		public ConcurrentDictionary<Int64, DateTime> TimePlayerAbandonedIngame { get; private set; } = new();
 
-		/// <summary>
-		/// Records the moment a player's WebSocket dropped while the lobby was in INGAME state.
-		/// Only the FIRST disconnect is stored; subsequent reconnect/disconnect cycles are ignored
-		/// so that a player who briefly loses connection is not penalised more than the player who
-		/// intentionally killed the game first.
-		/// </summary>
+		// Only the first disconnect is kept, so a brief drop is not penalised over the player who quit first.
 		public void RecordPlayerIngameAbandon(Int64 userId)
 		{
 			DateTime abandonTime = DateTime.UtcNow;
@@ -370,10 +351,7 @@ namespace GenOnlineService
 			}
 		}
 
-		/// <summary>
-		/// Removes the in-game abandon timestamp for a player who successfully reconnected.
-		/// This ensures a future disconnect records the correct (later) quit time.
-		/// </summary>
+		// Cleared on reconnect so a later disconnect records the real quit time.
 		public void ClearPlayerIngameAbandon(Int64 userId)
 		{
 			if (TimePlayerAbandonedIngame.TryRemove(userId, out _))
@@ -607,7 +585,7 @@ namespace GenOnlineService
 					}
 				}
 
-				// Ping pending observers too — they are not lobby members, so they get no
+				// Ping pending observers too - they are not lobby members, so they get no
 				// LOBBY_CURRENT_LOBBY_UPDATE, and they refetch GET /Lobby/{id} on the ping.
 				if (PendingObservers.Count > 0)
 				{
@@ -883,15 +861,12 @@ namespace GenOnlineService
 
 			await OnAfterPlayerLeft(UserID);
 
-			// Any departure cancels the host's match-start countdown client-side, so the
-			// broadcast countdown state must follow or observers would keep waiting for a
-			// match that is no longer starting.
+			// Any departure cancels the host's countdown client-side - follow suit or
+			// observers keep waiting for a match that isn't starting.
 			CountdownStarted = false;
 
-			// A priority Player leaving may demote the lobby: if no priority Player remains,
-			// the Watch Live sort returns it to the normal group. Each member carries its
-			// grant from the JWT (set at create/join), so this is a pure in-memory scan — no
-			// DB lookup. The leaver's slot is already a placeholder by now, so it cannot vote.
+			// Demote the lobby if the leaver was the last priority Player - in-memory scan,
+			// no DB lookup, since each member already carries its grant from the JWT.
 			if (IsPriority)
 			{
 				bool stillHasPriorityPlayer = false;
@@ -1103,10 +1078,8 @@ namespace GenOnlineService
 			bool wasIngame = State == ELobbyState.INGAME;
 			State = state;
 
-			// The match-start moment, latched on the transition INTO INGAME. Every start path
-			// lands here (the host's START_GAME websocket and the matchmaking quickmatch
-			// start), so this is the single place GO learns "the lobby started". A repeated
-			// INGAME update must not reset it.
+			// One-shot latch: every start path (host START_GAME, quickmatch) lands here, and a
+			// repeated INGAME update must not reset it.
 			if (state == ELobbyState.INGAME && !wasIngame)
 			{
 				TimeMatchStarted = DateTime.UtcNow;
@@ -1251,10 +1224,8 @@ namespace GenOnlineService
 		public string Region { get; private set; } = "Unknown";
 		public string MiddlewareUserID { get; private set; } = String.Empty;
 
-		// Livestream privilege grant, carried from the member's JWT at create/join. Used to
-		// recompute the lobby's priority latch on leave without a DB lookup. Also rides the
-		// lobby JSON (the client ignores it; the relay allow-lists member keys, so it never
-		// reaches observers).
+		// Livestream privilege grant, carried from the member's JWT at create/join - lets the
+		// lobby's priority latch be recomputed on leave without a DB lookup.
 		public EUserPriority Priority { get; private set; } = EUserPriority.None;
 
 		public void SetPriority(EUserPriority priority)
@@ -1423,9 +1394,8 @@ namespace GenOnlineService
             }
 		}
 
-		// Lobbies that asked to be destroyed from a synchronous event callback. They are deleted from the tick loop so
-		// the delete is properly awaited and its exceptions are observed (an `async void` handler would let a failure
-		// escape unobserved and leave the lobby leaked in m_dictLobbies forever).
+		// Destroyed from the tick loop so the delete is awaited and its exceptions observed; an async void
+		// handler would let a failure escape and leak the lobby in m_dictLobbies.
 		private readonly ConcurrentQueue<Lobby> m_queueLobbiesNeedingDestroyed = new();
 
 		private void HandleLobbyNeedsDestroyed(Lobby lobby)
@@ -1705,7 +1675,7 @@ namespace GenOnlineService
 			}
 		}
 
-		// A closed websocket means the client is gone (or reconnecting elsewhere) — its
+		// A closed websocket means the client is gone (or reconnecting elsewhere) - its
 		// read-only observer subscriptions are dead too. Called from the ws disconnect path.
 		public void RemovePendingObserver(UserSession session)
 		{

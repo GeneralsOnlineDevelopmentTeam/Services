@@ -513,13 +513,11 @@ namespace Database
 			}
 		}
 
-		// Management surface for users.user_priority (Discord !setpriority). The value is
-		// clamped to the known EUserPriority range; a non-existent user id reports failure so
-		// the command can tell "no such user" from "update went through".
 		public static async Task<bool> SetUserPriority(AppDbContext db, long userId, int priority)
 		{
 			try
 			{
+				// Reject out-of-range values.
 				if (priority < (int)EUserPriority.None || priority > (int)EUserPriority.Viewer)
 				{
 					return false;
@@ -528,6 +526,7 @@ namespace Database
 				int updated = await db.Users
 					.Where(u => u.ID == userId)
 					.ExecuteUpdateAsync(setters => setters.SetProperty(u => u.UserPriority, priority));
+				// False here means "no such user id" - distinct from the range check above.
 				return updated > 0;
 			}
 			catch (Exception ex)
@@ -538,9 +537,8 @@ namespace Database
 			}
 		}
 
-		// Exact display-name lookup for Discord !getuserid. Display names are unique
-		// (SetDisplayName enforces it), and the MySQL collation makes the match
-		// case-insensitive. All input flows through EF Core parameters — never SQL strings.
+		// Exact match - display names are unique (SetDisplayName enforces it), and the MySQL
+		// collation makes it case-insensitive.
 		public static async Task<User?> GetUserByDisplayName(AppDbContext db, string displayName)
 		{
 			try

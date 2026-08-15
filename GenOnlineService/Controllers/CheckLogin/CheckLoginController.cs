@@ -118,23 +118,41 @@ namespace GenOnlineService.Controllers
 								return result;
 							}
 #if DEBUG
-							// Dev/test login: every CheckLogin attempt gets a fresh, unique random
-							// user so multiple test clients can hold distinct sessions on the same
-							// service instance at the same time. Skips the pending_login table.
-							EPendingLoginState state = EPendingLoginState.LoginSuccess;
+							EPendingLoginState state = EPendingLoginState.Waiting;
 							UInt32 user_id = 0;
 							string strDisplayName = String.Empty;
-
-							byte[] randBytes = new byte[4];
-							using (RandomNumberGenerator rng = RandomNumberGenerator.Create())
+							if (gameCode == "ILOVECODE")
 							{
-								rng.GetBytes(randBytes);
-							}
-							user_id = BitConverter.ToUInt32(randBytes, 0) & 0x7FFFFFFF;
-							strDisplayName = String.Format("dev_{0}", user_id);
+								state = EPendingLoginState.LoginSuccess;
 
-							// make user
-							await Database.Users.CreateUserIfNotExists_DevAccount(db, user_id, strDisplayName);
+								UInt32 highestIDFound = 0;
+								// which account should we use?
+								var sessions = WebSocketManager.GetUserDataCache();
+								foreach (var sessionDataByClient in sessions)
+								{
+									foreach (var sessionData in sessionDataByClient.Value)
+									{
+										UserSession sessIter = sessionData.Value;
+										if (sessIter.m_UserID > highestIDFound)
+										{
+											highestIDFound = (UInt32)sessIter.m_UserID;
+										}
+									}
+								}
+
+								user_id = highestIDFound + 1;
+
+								bool bTestSPOP = false;
+								if (bTestSPOP)
+								{
+									user_id = 0;
+								}
+								strDisplayName = String.Format("DEV_ACCOUNT_{0}", Math.Abs(user_id) - 1);
+
+
+								// make user
+								await Database.Users.CreateUserIfNotExists_DevAccount(db, user_id, strDisplayName);
+							}
 
 							bool bIsAdmin = await Database.Users.IsUserAdmin(db, user_id);
 							EUserPriority userPriority = await Database.Users.GetUserPriority(db, user_id);

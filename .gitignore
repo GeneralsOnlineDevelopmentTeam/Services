@@ -58,7 +58,7 @@ nunit-*.xml
 *.csproj.user
 
 # Container files
-Dockerfile
+GenOnlineService/Dockerfile
 .dockerignore
 
 # Appsettings of any environment

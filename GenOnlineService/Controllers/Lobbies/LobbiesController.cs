@@ -392,9 +392,7 @@ namespace GenOnlineService.Controllers
 									result.result = 1;
 									result.lobby_id = newLobbyID;
 
-									// The host's livestream privilege rides on the member (from
-									// the JWT); a priority Player hosting marks the lobby for the
-									// Watch Live browser (sorted to the top).
+									// A priority Player hosting marks the lobby for Watch Live.
 									EUserPriority userPriority = TokenHelper.GetUserPriority(this);
 									Lobby? newLobby = _lobbyManager.GetLobby(newLobbyID);
 									newLobby?.GetMemberFromUserID(user_id)?.SetPriority(userPriority);

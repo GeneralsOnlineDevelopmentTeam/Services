@@ -146,8 +146,7 @@ namespace GenOnlineService
 	}
 
 	// Shared-key credential for the World Series bot (config WsBot:api_key, presented as
-	// "Authorization: Discord <key>"). Fixed-time compare so a wrong key does not leak how
-	// many leading bytes were right.
+	// "Authorization: Discord <key>").
 	public static class WsBotKeyValidator
 	{
 		public static bool ValidateKey(string? suppliedKey)
@@ -163,15 +162,15 @@ namespace GenOnlineService
 				return false;
 			}
 
+			// Fixed-time so a wrong key doesn't leak how many leading bytes were right.
 			return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
 				Encoding.UTF8.GetBytes(suppliedKey),
 				Encoding.UTF8.GetBytes(expectedKey));
 		}
 	}
 
-	// Authenticates the World Series Discord bot against the shared WsBot:api_key, mirroring
-	// the Basic handler pattern (scheme name in the Authorization header). The bot is not a
-	// player, so it gets its own scheme + role instead of a game-client JWT.
+	// Authenticates the World Series bot against WsBot:api_key - its own scheme, since it's
+	// not a player and carries no game-client JWT.
 	public class DiscordAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
 	{
 		public DiscordAuthenticationHandler(
@@ -382,9 +381,7 @@ namespace GenOnlineService
 			return controller.User.IsInRole("Admin");
 		}
 
-		// The caller's livestream privilege from the JWT, minted at login from
-		// users.user_priority and signed — a client cannot forge it. Absent/malformed claim
-		// = None (no privilege).
+		// Signed at login from users.user_priority - a client cannot forge it.
 		public static EUserPriority GetUserPriority(ControllerBase controller)
 		{
 			var claim = controller.User.FindFirst("priority");
@@ -825,10 +822,8 @@ namespace GenOnlineService
 					claims.Add(new Claim(ClaimTypes.Role, "Admin"));
 				}
 
-				// Livestream privilege (users.user_priority): carried as an int claim so the
-				// observe/join gates can read the exact value (Player vs Viewer) from the
-				// token. Signed like every other claim — a client cannot alter it without
-				// breaking the HMAC signature, so it is server-trusted, never client-input.
+				// Signed like every other claim - a client cannot alter it without breaking
+				// the HMAC signature.
 				claims.Add(new Claim("priority", ((int)userPriority).ToString()));
 
 
@@ -840,10 +835,7 @@ namespace GenOnlineService
 					signingCredentials: credentials
 				);
 
-				// Every mint logged with its expiry (never the token itself — it is a bearer
-				// credential and stateless: it lives only in the client's memory and request
-				// headers, never in a database). Lets a deployed instance be observed for
-				// refresh behaviour by timestamp alone.
+				// Logs the expiry, never the token itself - it's a bearer credential.
 				Console.WriteLine($"[JWT] Minted {tokenType} token for user {userID} (expires {token.ValidTo:HH:mm:ss})");
 
 				return new JwtSecurityTokenHandler().WriteToken(token);
@@ -956,10 +948,8 @@ namespace GenOnlineService
 				g_Discord = new DiscordBot();
 			}
 
-			// Relay startup check — same principle as Discord: a misconfigured optional
-			// integration must not take the server down. If the relay is explicitly enabled but
-			// not fully configured, log a loud warning and continue; the livestream endpoints
-			// will refuse with 503 via RelayClient.IsEnabled() rather than crashing at startup.
+			// A misconfigured optional integration must not take the server down - warn and
+			// continue, same as Discord's own startup check.
 			var relaySettings = Program.g_Config.GetSection("Relay");
 			if (relaySettings.GetValue<bool>("enabled"))
 			{
@@ -968,7 +958,7 @@ namespace GenOnlineService
 				string? relayIngressKey = relaySettings.GetValue<string>("ingress_api_key");
 				if (string.IsNullOrEmpty(relayBaseUrl) || string.IsNullOrEmpty(relayApiKey) || string.IsNullOrEmpty(relayIngressKey))
 				{
-					Console.WriteLine($"[WARNING] Relay is enabled in config but base_url, api_key and/or ingress_api_key are missing — " +
+					Console.WriteLine($"[WARNING] Relay is enabled in config but base_url, api_key and/or ingress_api_key are missing - " +
 						$"livestream endpoints will return 503 until the Relay section is completed.");
 				}
 			}

@@ -62,12 +62,8 @@ namespace GenOnlineService.Controllers
 		// joins): sorts the row to the top of the Watch Live browser.
 		public bool priority { get; set; } = false;
 
-		// What the client should do with this row, computed per viewer:
-		// 0 = observe (pre-game lobby — enter the read-only lobby view),
-		// 1 = wait (stream not live yet, or this viewer is held behind the broadcast delay —
-		//     enter the read-only lobby view and wait there),
-		// 2 = join (stream live and this viewer may mint a ticket right now — connect
-		//     directly, skipping the lobby).
+		// Per-viewer directive: 0 observe (pre-game, enter the lobby view), 1 wait (not live
+		// yet, or held behind the delay - enter the lobby view and wait), 2 join (connect now).
 		public int watch_action { get; set; } = 2;
 
 		// Remaining broadcast-delay hold in seconds for this viewer (null when not held).
@@ -122,10 +118,9 @@ namespace GenOnlineService.Controllers
 		public bool is_live { get; set; } = true;
 	}
 
-	// The relay is optional: when it is not configured (Relay.enabled off / missing keys) the
-	// livestream POST endpoints must refuse loudly rather than pretending a stream was set up.
-	// Applied per-endpoint so the GET /livestreams menu can keep its deliberate empty-list
-	// behaviour when the feature is not deployed.
+	// The relay is optional: when not configured, the POST endpoints must refuse loudly rather
+	// than pretending a stream was set up. Applied per-endpoint, not class-wide, so GET
+	// /livestreams can keep returning its normal empty list instead.
 	public class RequireRelayAttribute : ActionFilterAttribute
 	{
 		public override void OnActionExecuting(ActionExecutingContext context)
@@ -148,10 +143,8 @@ namespace GenOnlineService.Controllers
 		private readonly LobbyManager _lobbyManager;
 		private readonly IDbContextFactory<AppDbContext> _dbFactory;
 
-		// A started game whose relay stream never materialises (host and members all have
-		// streaming off) — or whose stream ended mid-match — is dropped from Watch Live after
-		// this long. Streamers register within seconds of match start, so 60s is generous;
-		// keeping such a game listed would only strand observers on a wait that can never end.
+		// How long a started-but-never-streamed game stays listed before Watch Live drops it -
+		// streamers register within seconds of match start, so 60s is generous.
 		private const int NeverStreamedGraceSeconds = 60;
 
 		public LivestreamsController(LobbyManager lobbyManager, IDbContextFactory<AppDbContext> dbFactory)
@@ -167,27 +160,15 @@ namespace GenOnlineService.Controllers
 
 			// Relay not configured -> no livestreams exist to list. An empty list is the right
 			// shape here: the observer menu just shows nothing, exactly as if nobody is
-			// streaming. No 5xx — there is no error, the feature is simply not deployed.
+			// streaming. No 5xx - there is no error, the feature is simply not deployed.
 			if (!RelayClient.IsEnabled())
 			{
 				return result;
 			}
 
-			// Note: AllowObservers is deliberately not consulted. That flag governs in-game
-			// observer slots — players joining the match itself — which is a different feature
-			// from a livestream. A livestream is gated by exactly one thing: whether the host
-			// started one, which is what IsStreaming records.
-			//
-			// The list is the Watch Live screen's one source for everything: live streams
-			// (INGAME + streaming) first, then started-but-waiting lobbies, then every
-			// pre-game lobby the client can enter as a read-only observer.
-			//
-			// watch_action is per viewer (plans/live-observer-server-delay.md): a priority
-			// viewer (admin or user_priority = Viewer, re-read live from the DB like Observe
-			// does) is never held; a normal viewer is held behind the host's broadcast delay
-			// and gets a "wait" row so the client parks them in the lobby view instead of
-			// sitting on an empty CONNECT.
 			Int64 user_id = TokenHelper.GetUserID(this);
+			// A priority viewer (admin, or user_priority = Viewer re-read live from the DB
+			// like Observe does) is never held behind the broadcast delay below.
 			bool isPriority = TokenHelper.IsAdmin(this) || TokenHelper.GetUserPriority(this) == EUserPriority.Viewer;
 			if (!isPriority)
 			{
@@ -200,6 +181,8 @@ namespace GenOnlineService.Controllers
 
 			foreach (Lobby lobby in _lobbyManager.GetAllLobbies())
 			{
+				// AllowObservers governs in-game observer slots, a different feature - a
+				// livestream is gated only by IsStreaming (did the host start one).
 				bool isPregame = lobby.State == ELobbyState.GAME_SETUP;
 				bool isLive = lobby.State == ELobbyState.INGAME && lobby.IsStreaming;
 				bool isWaiting = lobby.State == ELobbyState.INGAME && !lobby.IsStreaming;
@@ -262,7 +245,7 @@ namespace GenOnlineService.Controllers
 				result.livestreams.Add(entry);
 			}
 
-			// Watch Live order: priority-player matches first, then join → wait → pre-game.
+			// Watch Live order: priority-player matches first, then join -> wait -> pre-game.
 			// Stable, so equal rows keep their insertion order.
 			result.livestreams = result.livestreams
 				.OrderByDescending(e => e.priority)
@@ -303,17 +286,13 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
-			// Every streaming client registers itself and receives its own single-use stream
-			// token, so this runs once per source rather than minting the whole lobby's tokens
-			// up front (a relay credential is short-lived and single-use — minting one for a
-			// member who has not asked for it just burns a token that expires unused).
+			// Runs once per streaming client, not once per lobby: each gets its own single-use
+			// relay token, and minting one for a member who hasn't asked for it just burns it.
 			bool isHost = lobby.Owner == user_id;
 
-			// The stream delay is the host's spoiler window, so only the host may set it in the
-			// payload. But the delay is a lobby property the host chose in the game-setup
-			// screen, so when the first registrant is a member (the host's own streaming is
-			// off), the session must still be created with the host's delay rather than the
-			// relay default — members' streams stay behind the host's spoiler window.
+			// Only the host may set the delay (their spoiler window), but it's a lobby
+			// property - if a member registers first (host's own streaming still off), the
+			// session still needs the host's already-chosen delay, not the relay default.
 			int? delaySeconds = lobby.StreamDelaySeconds;
 			if (isHost)
 			{
@@ -334,8 +313,8 @@ namespace GenOnlineService.Controllers
 				}
 			}
 
-			// owner_user_id is the lobby's owner, not the caller: any member may open the relay
-			// session by registering first, and the relay must record the same owner either way.
+			// lobby.Owner, not the caller - any member may register first, but the relay must
+			// record the same owner either way.
 			RelayLivestreamResponse? livestream = await RelayClient.CreateLivestreamAsync(lobby.LobbyID, lobby.Owner, delaySeconds);
 			if (livestream == null || String.IsNullOrEmpty(livestream.base_url))
 			{
@@ -353,10 +332,8 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
-			// Registering does NOT make the lobby live. The relay session exists now, but nothing
-			// has been streamed into it yet — an observer admitted at this point would connect
-			// and watch nothing. The relay reports is_live once it holds the host's replay
-			// header (see Observers below), and that is what puts the lobby in the menu.
+			// Registering does not make the lobby live - nothing has streamed into the relay
+			// session yet. Observers() below flips IsStreaming once the relay reports is_live.
 			lobby.SetStreamDelay(delaySeconds);
 
 			result.success = true;
@@ -390,7 +367,7 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
-			// No active relay stream for this lobby — reject before another relay round-trip.
+			// No active relay stream for this lobby - reject before another relay round-trip.
 			if (!lobby.IsStreaming)
 			{
 				Response.StatusCode = (int)HttpStatusCode.NotFound;
@@ -398,28 +375,24 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
-			// Privileged watchers (admin, or user_priority = Viewer) skip the password and the
-			// broadcast-delay gates entirely: their ticket mints instantly. The claim is the
-			// fast path, but it is minted at login, so a privilege applied mid-session (the
-			// World Series bot's timed grants, Discord !setpriority) is re-read live from the
-			// DB — a grant must not wait for a re-login. The DB value can only add privilege,
-			// never take it away from the signed claim.
+			// Admin or user_priority = Viewer skips the password and broadcast-delay gates
+			// below - ticket mints instantly.
 			bool isPriority = TokenHelper.IsAdmin(this) || TokenHelper.GetUserPriority(this) == EUserPriority.Viewer;
 			if (!isPriority)
 			{
 				await using var db = await _dbFactory.CreateDbContextAsync();
 
+				// Re-read live rather than trusting only the login-time claim: a mid-session
+				// grant (bot timed grant, Discord !setpriority) must not wait for a re-login.
 				if (await Database.Users.GetUserPriority(db, user_id) == EUserPriority.Viewer)
 				{
 					isPriority = true;
 				}
 			}
 
-			// A livestream inherits its lobby's password (see plans/live-watch-password.md).
-			// The read-only pre-game lobby view stays password-free; this is the formal
-			// admission gate, mirroring PUT /Lobby/{lobbyID} — missing and wrong both give
-			// 401, and the check runs before the ticket mint so a bad password never burns
-			// a relay ticket.
+			// A livestream inherits its lobby's password; the read-only pre-game lobby view
+			// itself stays password-free. Checked before the ticket mint so a bad password
+			// never burns a relay ticket.
 			string? strProvidedPassword = null;
 			using (var reader = new StreamReader(HttpContext.Request.Body))
 			{
@@ -444,18 +417,16 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
-			// Broadcast-delay admission gate (plans/live-observer-server-delay.md): a normal
-			// viewer is held until the match has been running for the host's delay. The clock
-			// is the match-start transition (TimeMatchStarted), known to GO itself — not the
-			// relay's liveness report. A match older than the delay — or a zero-delay lobby —
-			// mints instantly. 423 so the held viewer's retry keeps working without burning a
-			// relay ticket (nothing was minted).
+			// A normal viewer is held until the match has run for the host's delay, clocked
+			// from TimeMatchStarted (GO's own state, not the relay's liveness report).
 			if (!isPriority && lobby.StreamDelaySeconds > 0 && lobby.TimeMatchStarted != null)
 			{
 				int remainingSeconds = lobby.StreamDelaySeconds.Value -
 					(int)(DateTime.UtcNow - lobby.TimeMatchStarted.Value).TotalSeconds;
 				if (remainingSeconds > 0)
 				{
+					// 423 so the client's retry keeps working - nothing was minted, so there's
+					// no ticket to burn.
 					Response.StatusCode = (int)HttpStatusCode.Locked;
 					result.detail = "This stream starts after its broadcast delay.";
 					result.delay_remaining_seconds = remainingSeconds;
@@ -505,10 +476,8 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
-			// The relay batches all lobbies whose livestream state changed into one request as an
-			// array of {lobby_id, observer_count, is_live} entries, always containing at least one
-			// update. is_live=false means the relay closed the stream (it owns stream liveness),
-			// so the lobby is deregistered.
+			// One request batches every lobby whose state changed: array of
+			// {lobby_id, observer_count, is_live}, at least one entry.
 			List<POST_Livestreams_Observers_Entry>? updates = null;
 			using (var reader = new StreamReader(HttpContext.Request.Body))
 			{
@@ -524,12 +493,8 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
-			// The relay (the authority on who is watching and on stream liveness) reports the
-			// current livestream state. is_live=true means it holds the host's replay header and
-			// the stream is watchable, which is what registers the stream here; is_live=false
-			// deregisters it so the lobby drops out of /livestreams and /observe rejects — even
-			// though GO's own lobby object may still be INGAME (a match can continue with nobody
-			// streaming it).
+			// The relay is the authority on stream liveness, not GO's own lobby state - a match
+			// can stay INGAME with nobody streaming it, so is_live=false here still deregisters.
 			foreach (POST_Livestreams_Observers_Entry update in updates)
 			{
 				if (!Int64.TryParse(update.lobby_id, out Int64 entryLobby))

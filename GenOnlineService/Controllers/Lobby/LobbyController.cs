@@ -541,9 +541,7 @@ namespace GenOnlineService.Controllers
 								}
 								else if (field == ELobbyUpdateField.LOBBY_STREAM_DELAY)
 								{
-									// The host's live-stream broadcast delay, a lobby property:
-									// stored here, broadcast to members (they display it
-									// read-only), and reported to the relay at stream
+									// Members see it read-only; reported to the relay at
 									// registration via StreamDelaySeconds.
 									if (data.ContainsKey("delay_seconds"))
 									{
@@ -741,15 +739,11 @@ namespace GenOnlineService.Controllers
 									}
 								}
 
-								// A recognized field was processed (unknown fields throw on the
-								// permission-table lookup above and fall into the catch, which
-								// keeps success=false). Clients use this flag to distinguish
-								// "stored and broadcast" from "silently ignored".
+								// Unknown fields throw on the permission-table lookup above and
+								// never reach here, so this only fires for a field actually stored.
 								result.success = true;
 
-								// Any lobby field update cancels the host's match-start
-								// countdown client-side (that is why the host changed the
-								// field), so the broadcast countdown state follows.
+								// Any field update cancels the host's countdown client-side.
 								lobby.SetCountdownStarted(false);
                             }
                         }
@@ -853,9 +847,7 @@ namespace GenOnlineService.Controllers
 									string strDisplayName = await Database.Users.GetDisplayName(db, user_id);
 									bool bJoinedSuccessfully = await _lobbyManager.JoinLobby(db, lobby, playerSession, strDisplayName, userPreferredPort, bHasMap);
 
-									// The joiner's livestream privilege rides on the member (from
-									// the JWT); a priority Player joining marks the lobby for
-									// the Watch Live browser (sorted to the top).
+									// A priority Player joining marks the lobby for Watch Live.
 									if (bJoinedSuccessfully)
 									{
 										EUserPriority userPriority = TokenHelper.GetUserPriority(this);

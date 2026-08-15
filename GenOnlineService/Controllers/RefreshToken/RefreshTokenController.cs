@@ -110,9 +110,10 @@ namespace GenOnlineService.Controllers.RefreshToken
 
 				string strDisplayName = await Database.Users.GetDisplayName(db, user_id);
 				bool bIsAdmin = await Database.Users.IsUserAdmin(db, user_id);
+				EUserPriority userPriority = await Database.Users.GetUserPriority(db, user_id);
 
-				var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, clientID, sessionType, bIsAdmin);
-				var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, clientID, sessionType, false, out string refreshJti);
+				var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, clientID, sessionType, bIsAdmin, userPriority);
+				var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, clientID, sessionType, false, EUserPriority.None, out string refreshJti);
 
 				// rotation: only this refresh token is accepted from now on
 				await TokenRevocationManager.OnTokensIssued(user_id, sessionType, refreshJti);
