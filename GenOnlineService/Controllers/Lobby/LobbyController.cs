@@ -703,6 +703,7 @@ namespace GenOnlineService.Controllers
 								{
 									if (data.ContainsKey("slots"))
 									{
+										await using var db = await _dbFactory.CreateDbContextAsync();
 										foreach (JsonElement slotEntry in data["slots"].EnumerateArray())
 										{
 											try
@@ -725,9 +726,10 @@ namespace GenOnlineService.Controllers
 												LobbyMember? TargetMember = lobby.GetMemberFromSlot(slotIndex);
 												if (TargetMember != null)
 												{
-													// Host-forced (lobby /roll): assign the slots without
-													// persisting anyone's favorites.
-													TargetMember.UpdateSlotPropertiesForced(side, color, start_pos, team);
+													await TargetMember.UpdateSide(db, side, start_pos);
+													await TargetMember.UpdateColor(db, color);
+													TargetMember.UpdateStartPos(start_pos);
+													TargetMember.UpdateTeam(team);
 												}
 											}
 											catch
