@@ -1583,7 +1583,6 @@ namespace GenOnlineService
 
 					// Post match result to external leaderboard API for every lobby type.
 					// Only QuickMatch responses are expected to carry a ratings body.
-					// Uses its own short-lived DbContexts internally so this call's HTTP retries don't pin the pooled connection above.
 					await ExternalLeaderboardsClient.PostMatchResultAsync(factory, lobby);
 				}
 

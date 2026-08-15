@@ -132,8 +132,7 @@ namespace GenOnlineService
             {
                 GetExternalLeaderboardsConfig(out string postUrl, out _, out string postToken, out _);
 
-                // Load the match payload. Context is closed before the HTTP call so the pooled connection
-                // isn't held open for the (potentially multi-minute, with retries) external request below.
+                // Dispose the read context before the potentially multi-minute external request below.
                 Controllers.MatchHistory_Entry? matchEntry;
                 await using (var readDb = await dbFactory.CreateDbContextAsync())
                 {
