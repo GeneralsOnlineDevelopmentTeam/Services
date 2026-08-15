@@ -491,9 +491,13 @@ namespace GenOnlineService
 				LobbyMember placeholderMember = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, -1, -1, -1, i < max_players ? EPlayerType.SLOT_OPEN : EPlayerType.SLOT_CLOSED, i, true);
 				Members[i] = placeholderMember;
 			}
-		}
 
-		public event Action<Lobby>? OnLobbyNeedsDestroyed;
+            using var scope = ServiceLocator.Services.CreateScope();
+            var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+            _db = factory.CreateDbContext();
+        }
+
+        public event Action<Lobby>? OnLobbyNeedsDestroyed;
 
 		public async Task OnAfterPlayerLeft(Int64 leavingUserID)
 		{
@@ -1125,9 +1129,10 @@ public async Task FinalizeACChecks()
 		private int m_cachedAtStart_numOpen = -1;
 		private int m_cachedAtStart_numClosed = -1;
 		private int m_cachedAtStart_numAI = -1;
+        private AppDbContext _db;
 
-		// TODO: Really, client also shouldnt upload data we arent going to process in this situation, its wasteful
-		public bool WasPVPAtStart()
+        // TODO: Really, client also shouldnt upload data we arent going to process in this situation, its wasteful
+        public bool WasPVPAtStart()
 		{
 			// debug
 #if DEBUG
@@ -1172,10 +1177,7 @@ public async Task FinalizeACChecks()
 					try
 					{
 						// create placeholder
-						using var scope = ServiceLocator.Services.CreateScope();
-						var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
-						await using var db = await factory.CreateDbContextAsync();
-						await Database.MatchHistory.CreatePlaceholderMatchHistory(db, this);
+						await Database.MatchHistory.CreatePlaceholderMatchHistory(_db, this);
 					}
 					catch (Exception ex)
 					{
@@ -1404,13 +1406,18 @@ public async Task FinalizeACChecks()
 		private Int64 m_NextLobbyID = 0;
 
 		private readonly IServiceProvider _services;
+		private readonly AppDbContext _db;
 
 		public LobbyManager(IServiceProvider services)
 		{
 			_services = services;
-		}
 
-		public async Task Cleanup()
+            var scope = _services.CreateScope();
+            var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+            var _db = factory.CreateDbContext();
+        }
+
+        public async Task Cleanup()
 		{
 			// Remove any lobby that has 0 members and has been around for a bit (enough time for host to join)
 			List<Lobby> lstLobbiesToRemove = new List<Lobby>();
@@ -1445,7 +1452,7 @@ public async Task FinalizeACChecks()
 			m_queueLobbiesNeedingDestroyed.Enqueue(lobby);
 		}
 
-		private async Task ProcessLobbiesNeedingDestroyed()
+		public async Task ProcessLobbiesNeedingDestroyed()
 		{
 			while (m_queueLobbiesNeedingDestroyed.TryDequeue(out Lobby? lobbyToDestroy))
 			{
@@ -1525,8 +1532,6 @@ public async Task FinalizeACChecks()
 			{
 				await kvPair.Value.Tick();
 			}
-
-			await ProcessLobbiesNeedingDestroyed();
 		}
 
 		public async Task<bool> JoinLobby(AppDbContext _db, Lobby lobby, UserSession playerSession, string strDisplayName, UInt16 userPreferredPort, bool bHasMap)
@@ -1715,17 +1720,13 @@ public async Task FinalizeACChecks()
 		{
 			try
 			{
-				using var scope = _services.CreateScope();
-				var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
-				await using var db = await factory.CreateDbContextAsync();
-
 				if (lobby.State != ELobbyState.COMPLETE)
 				{
 					// make done
 					await lobby.UpdateState(ELobbyState.COMPLETE);
 
 					// attempt to commit it
-					await Database.MatchHistory.CommitLobbyToMatchHistory(db, lobby);
+					await Database.MatchHistory.CommitLobbyToMatchHistory(_db, lobby);
 				}
 
 				// delete
@@ -1739,11 +1740,11 @@ public async Task FinalizeACChecks()
 					lobby.OnLobbyNeedsDestroyed -= HandleLobbyNeedsDestroyed;
 
 					// make sure we have a winner
-					await Database.MatchHistory.DetermineLobbyWinnerIfNotPresent(db, lobby);
+					await Database.MatchHistory.DetermineLobbyWinnerIfNotPresent(_db, lobby);
 
 					// Post match result to external leaderboard API for every lobby type.
 					// Only QuickMatch responses are expected to carry a ratings body.
-					await ExternalLeaderboardsClient.PostMatchResultAsync(db, lobby);
+					await ExternalLeaderboardsClient.PostMatchResultAsync(_db, lobby);
 				}
 
 				return bRemoved;
