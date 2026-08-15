@@ -1414,7 +1414,7 @@ public async Task FinalizeACChecks()
 
             var scope = _services.CreateScope();
             var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
-            var _db = factory.CreateDbContext();
+            _db = factory.CreateDbContext();
         }
 
         public async Task Cleanup()
