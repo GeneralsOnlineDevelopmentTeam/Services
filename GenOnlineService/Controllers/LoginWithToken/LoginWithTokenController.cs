@@ -122,9 +122,9 @@ namespace GenOnlineService.Controllers.LoginWithToken
 						// Game clients should register the user device
 						if (sessionType == EUserSessionType.GameClient)
 						{
-							string hwid_0 = data.ContainsKey("reserved_0") ? data["reserved_0"].ToString() : "NONE";
-							string hwid_1 = data.ContainsKey("reserved_1") ? data["reserved_1"].ToString() : "NONE";
-							string hwid_2 = data.ContainsKey("reserved_2") ? data["reserved_2"].ToString() : "NONE";
+							string hwid_0 = data.ContainsKey("machine_guid") ? data["machine_guid"].ToString() : "NONE";
+							string hwid_1 = data.ContainsKey("mac_addr") ? data["mac_addr"].ToString() : "NONE";
+							string hwid_2 = data.ContainsKey("vol_serial") ? data["vol_serial"].ToString() : "NONE";
 							await Database.UserDevices.RegisterUserDevice(db, user_id, hwid_0, hwid_1, hwid_2, ipAddr);
 						}
 

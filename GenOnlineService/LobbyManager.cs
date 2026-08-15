@@ -61,6 +61,86 @@ namespace GenOnlineService
 		[JsonIgnore]
 		public ConcurrentDictionary<Int64, ConcurrentList<Int64>> FullMeshConnectivityChecks { get; set; } = new();
 
+
+		// AC Probes
+		[JsonIgnore]
+		ConcurrentDictionary<Int64, int> m_dictProbe1_Sent = new();
+
+		[JsonIgnore]
+		ConcurrentDictionary<Int64, int> m_dictProbe2_Sent = new();
+
+		[JsonIgnore]
+		ConcurrentDictionary<Int64, int> m_dictProbe1_Received = new();
+
+		[JsonIgnore]
+		ConcurrentDictionary<Int64, int> m_dictProbe2_Received = new();
+		public void RegisterProbeSent_Type1(Int64 userID)
+		{
+			if (!m_dictProbe1_Sent.ContainsKey(userID))
+			{
+				m_dictProbe1_Sent[userID] = 1;
+			}
+			else
+			{
+				++m_dictProbe1_Sent[userID];
+			}
+		}
+
+		public void RegisterProbeSent_Type2(Int64 userID)
+		{
+			if (!m_dictProbe2_Sent.ContainsKey(userID))
+			{
+				m_dictProbe2_Sent[userID] = 1;
+			}
+			else
+			{
+				++m_dictProbe2_Sent[userID];
+			}
+		}
+
+		public void RegisterProbeResponse_Type1(Int64 userID)
+		{
+			if (!m_dictProbe1_Received.ContainsKey(userID))
+			{
+				m_dictProbe1_Received[userID] = 1;
+			}
+			else
+			{
+				++m_dictProbe1_Received[userID];
+			}
+		}
+
+		public async Task RegisterProbeResponse_Malformed_Type1(Int64 userID)
+		{
+			// register immediately
+			using var scope = ServiceLocator.Services.CreateScope();
+			var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+			await using var db = await factory.CreateDbContextAsync();
+			await Database.AntiCheat.FlagAccountForReview_SuspectProbes(db, userID, MatchID, "Malformed probe response (Type 1)");
+		}
+
+		public void RegisterProbeResponse_Type2(Int64 userID)
+		{
+			if (!m_dictProbe2_Received.ContainsKey(userID))
+			{
+				m_dictProbe2_Received[userID] = 1;
+			}
+			else
+			{
+				++m_dictProbe2_Received[userID];
+			}
+		}
+
+		public async Task RegisterProbeResponse_Malformed_Type2(Int64 userID)
+		{
+			// register immediately
+			using var scope = ServiceLocator.Services.CreateScope();
+			var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+			await using var db = await factory.CreateDbContextAsync();
+			await Database.AntiCheat.FlagAccountForReview_SuspectProbes(db, userID, MatchID, "Malformed probe response (Type 2)");
+		}
+
+		// End AC Probes
 		public void StartFullMeshConnectivityCheck()
 		{
 			PendingFullMeshConnectivityChecks = true;
@@ -204,6 +284,28 @@ namespace GenOnlineService
 				if (member.GetSession().TryGetTarget(out UserSession? session))
 				{
 					session.RegisterHistoricMatchID(MatchID, member.SlotIndex, member.Side, TimeCreated);
+				}
+			}
+
+			// for each member, if this is QM, and they havent played 10 games, flag it for review, its a new user
+			if (LobbyType == ELobbyType.QuickMatch)
+			{
+				foreach (LobbyMember member in Members)
+				{
+					if (member != null)
+					{
+						var shared = GenOnlineService.WebSocketManager.GetSharedDataForUser(member.UserID);
+						if (shared != null)
+						{
+							if (shared.GameStats.EloMatches < 10)
+							{
+								using var scope = ServiceLocator.Services.CreateScope();
+								var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+								await using var db = await factory.CreateDbContextAsync();
+								await Database.AntiCheat.FlagAccountForReview_NewAccount_FirstMatches(db, member.UserID, MatchID);
+							}
+						}
+					}
 				}
 			}
 
@@ -389,9 +491,13 @@ namespace GenOnlineService
 				LobbyMember placeholderMember = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, -1, -1, -1, i < max_players ? EPlayerType.SLOT_OPEN : EPlayerType.SLOT_CLOSED, i, true);
 				Members[i] = placeholderMember;
 			}
-		}
 
-		public event Action<Lobby>? OnLobbyNeedsDestroyed;
+            using var scope = ServiceLocator.Services.CreateScope();
+            var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+            _db = factory.CreateDbContext();
+        }
+
+        public event Action<Lobby>? OnLobbyNeedsDestroyed;
 
 		public async Task OnAfterPlayerLeft(Int64 leavingUserID)
 		{
@@ -418,6 +524,46 @@ namespace GenOnlineService
 				if (bNeedsHostMigrate && State != ELobbyState.INGAME)
 				{
 					DoHostMigration();
+				}
+			}
+		}
+
+public async Task FinalizeACChecks()
+		{
+			// do AC checks
+			foreach (var kvPair in m_dictProbe1_Sent)
+			{
+				Int64 userID = kvPair.Key;
+
+				if (!m_dictProbe1_Received.ContainsKey(userID))
+				{
+					m_dictProbe1_Received[userID] = 0;
+				}
+
+				if (m_dictProbe1_Received[userID] != kvPair.Value)
+				{
+					using var scope = ServiceLocator.Services.CreateScope();
+					var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+					await using var db = await factory.CreateDbContextAsync();
+					await Database.AntiCheat.FlagAccountForReview_SuspectProbes(db, userID, MatchID, String.Format("Missing probe response (Type 1): Sent {0}, Got {1} responses", kvPair.Value, m_dictProbe1_Received[userID]));
+				}
+			}
+
+			foreach (var kvPair in m_dictProbe2_Sent)
+			{
+				Int64 userID = kvPair.Key;
+
+				if (!m_dictProbe2_Received.ContainsKey(userID))
+				{
+					m_dictProbe2_Received[userID] = 0;
+				}
+
+				if (m_dictProbe2_Received[userID] != kvPair.Value)
+				{
+					using var scope = ServiceLocator.Services.CreateScope();
+					var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+					await using var db = await factory.CreateDbContextAsync();
+					await Database.AntiCheat.FlagAccountForReview_SuspectProbes(db, userID, MatchID, String.Format("Missing probe response (Type 1): Sent {0}, Got {1} responses", kvPair.Value, m_dictProbe2_Received[userID]));
 				}
 			}
 		}
@@ -508,6 +654,24 @@ namespace GenOnlineService
 							{
 								session.QueueWebsocketSend(bytesJSON);
 							}
+						}
+					}
+				}
+
+				// send probe 2
+				{
+					WebSocketMessage_Simple probe = new WebSocketMessage_Simple();
+					probe.msg_id = (int)EWebSocketMessageID.WS_KEEPALIVE;
+					byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(probe));
+
+					foreach (LobbyMember memberEntry in Members)
+					{
+						if (memberEntry.GetSession().TryGetTarget(out UserSession? session))
+						{
+							// TODO_AC: We should increment the number of expected screenshots here (individually for each user, since people might've quit), so we can compare later
+							session.QueueWebsocketSend(bytesJSON);
+
+							RegisterProbeSent_Type2(memberEntry.UserID);
 						}
 					}
 				}
@@ -965,9 +1129,10 @@ namespace GenOnlineService
 		private int m_cachedAtStart_numOpen = -1;
 		private int m_cachedAtStart_numClosed = -1;
 		private int m_cachedAtStart_numAI = -1;
+        private AppDbContext _db;
 
-		// TODO: Really, client also shouldnt upload data we arent going to process in this situation, its wasteful
-		public bool WasPVPAtStart()
+        // TODO: Really, client also shouldnt upload data we arent going to process in this situation, its wasteful
+        public bool WasPVPAtStart()
 		{
 			// debug
 #if DEBUG
@@ -1012,10 +1177,7 @@ namespace GenOnlineService
 					try
 					{
 						// create placeholder
-						using var scope = ServiceLocator.Services.CreateScope();
-						var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
-						await using var db = await factory.CreateDbContextAsync();
-						await Database.MatchHistory.CreatePlaceholderMatchHistory(db, this);
+						await Database.MatchHistory.CreatePlaceholderMatchHistory(_db, this);
 					}
 					catch (Exception ex)
 					{
@@ -1244,13 +1406,18 @@ namespace GenOnlineService
 		private Int64 m_NextLobbyID = 0;
 
 		private readonly IServiceProvider _services;
+		private readonly AppDbContext _db;
 
 		public LobbyManager(IServiceProvider services)
 		{
 			_services = services;
-		}
 
-		public async Task Cleanup()
+            var scope = _services.CreateScope();
+            var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+            var _db = factory.CreateDbContext();
+        }
+
+        public async Task Cleanup()
 		{
 			// Remove any lobby that has 0 members and has been around for a bit (enough time for host to join)
 			List<Lobby> lstLobbiesToRemove = new List<Lobby>();
@@ -1285,7 +1452,7 @@ namespace GenOnlineService
 			m_queueLobbiesNeedingDestroyed.Enqueue(lobby);
 		}
 
-		private async Task ProcessLobbiesNeedingDestroyed()
+		public async Task ProcessLobbiesNeedingDestroyed()
 		{
 			while (m_queueLobbiesNeedingDestroyed.TryDequeue(out Lobby? lobbyToDestroy))
 			{
@@ -1365,8 +1532,6 @@ namespace GenOnlineService
 			{
 				await kvPair.Value.Tick();
 			}
-
-			await ProcessLobbiesNeedingDestroyed();
 		}
 
 		public async Task<bool> JoinLobby(AppDbContext _db, Lobby lobby, UserSession playerSession, string strDisplayName, UInt16 userPreferredPort, bool bHasMap)
@@ -1555,17 +1720,13 @@ namespace GenOnlineService
 		{
 			try
 			{
-				using var scope = _services.CreateScope();
-				var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
-				await using var db = await factory.CreateDbContextAsync();
-
 				if (lobby.State != ELobbyState.COMPLETE)
 				{
 					// make done
 					await lobby.UpdateState(ELobbyState.COMPLETE);
 
 					// attempt to commit it
-					await Database.MatchHistory.CommitLobbyToMatchHistory(db, lobby);
+					await Database.MatchHistory.CommitLobbyToMatchHistory(_db, lobby);
 				}
 
 				// delete
@@ -1579,11 +1740,11 @@ namespace GenOnlineService
 					lobby.OnLobbyNeedsDestroyed -= HandleLobbyNeedsDestroyed;
 
 					// make sure we have a winner
-					await Database.MatchHistory.DetermineLobbyWinnerIfNotPresent(db, lobby);
+					await Database.MatchHistory.DetermineLobbyWinnerIfNotPresent(_db, lobby);
 
 					// Post match result to external leaderboard API for every lobby type.
 					// Only QuickMatch responses are expected to carry a ratings body.
-					await ExternalLeaderboardsClient.PostMatchResultAsync(factory, lobby);
+					await ExternalLeaderboardsClient.PostMatchResultAsync(_db, lobby);
 				}
 
 				return bRemoved;

@@ -400,10 +400,12 @@ namespace GenOnlineService
 			string? password = dbSettings.GetValue<string>("db_password");
 			UInt16? port = dbSettings.GetValue<UInt16>("db_port");
 
-			int? db_min_poolsize = dbSettings.GetValue<int>("db_min_poolsize");
-			int? db_max_poolsize = dbSettings.GetValue<int>("db_max_poolsize");
-			bool? db_use_pooling = dbSettings.GetValue<bool>("db_use_pooling");
-			bool? db_conn_reset = dbSettings.GetValue<bool>("db_conn_reset");
+			// Fall back to MySql.Data's own defaults when a key is absent, rather than silently
+			// disabling pooling / zeroing the pool size for deployments predating these settings.
+			int db_min_poolsize = dbSettings.GetValue<int?>("db_min_poolsize") ?? 0;
+			int db_max_poolsize = dbSettings.GetValue<int?>("db_max_poolsize") ?? 100;
+			bool db_use_pooling = dbSettings.GetValue<bool?>("db_use_pooling") ?? true;
+			bool db_conn_reset = dbSettings.GetValue<bool?>("db_conn_reset") ?? true;
 			int? db_connect_timeout = dbSettings.GetValue<int>("db_connect_timeout");
 			int? db_command_timeout = dbSettings.GetValue<int>("db_command_timeout");
 
@@ -451,7 +453,11 @@ namespace GenOnlineService
 					Password = password,
 					ConnectionTimeout = (uint)db_connect_timeout,
 					DefaultCommandTimeout = (uint)db_command_timeout,
-					SslMode = MySql.Data.MySqlClient.MySqlSslMode.Preferred
+					SslMode = MySql.Data.MySqlClient.MySqlSslMode.Preferred,
+					Pooling = db_use_pooling,
+					MinimumPoolSize = (uint)db_min_poolsize,
+					MaximumPoolSize = (uint)db_max_poolsize,
+					ConnectionReset = db_conn_reset
 				};
 
 				// TODO_EFCORE: Consider use of ExecuteDeleteAsync and options.UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking);
@@ -1268,8 +1274,32 @@ namespace GenOnlineService
 				timerTick.Start();
 			}
 
-			// tick matchmaking (done at lower frequency)
+            // tick lobby cleanup - this is a separate timer to prevent main lobby tick from being blocked by cleanup
+            // @hotfix SkyAero 15/08/2026
 			{
+                System.Timers.Timer timerTick = new System.Timers.Timer(5); // 5ms tick
+                timerTick.AutoReset = false;
+                timerTick.Elapsed += async (sender, e) =>
+                {
+                    try
+                    {
+                        var lobbyManager = ServiceLocator.Services.GetRequiredService<LobbyManager>();
+                        await lobbyManager.ProcessLobbiesNeedingDestroyed();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[cleanupTick lobby] Exception: {ex}");
+                    }
+                    finally
+                    {
+                        timerTick.Start();
+                    }
+                };
+                timerTick.Start();
+            }
+
+            // tick matchmaking (done at lower frequency)
+            {
 				System.Timers.Timer timerTick = new System.Timers.Timer(1000); // 1s tick
 				timerTick.AutoReset = false;
 				timerTick.Elapsed += async (sender, e) =>
