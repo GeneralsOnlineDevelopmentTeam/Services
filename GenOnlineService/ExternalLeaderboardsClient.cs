@@ -10,6 +10,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Polly;
 
@@ -122,7 +123,7 @@ namespace GenOnlineService
             };
         }
 
-        public static async Task PostMatchResultAsync(AppDbContext db, Lobby lobby)
+        public static async Task PostMatchResultAsync(IDbContextFactory<AppDbContext> dbFactory, Lobby lobby)
         {
             if (lobby.MatchID == 0)
                 return;
@@ -131,8 +132,13 @@ namespace GenOnlineService
             {
                 GetExternalLeaderboardsConfig(out string postUrl, out _, out string postToken, out _);
 
-                // Load the match payload
-                var matchEntry = await Database.MatchHistory.LoadMatchHistoryEntryAsync(db, (long)lobby.MatchID);
+                // Dispose the read context before the potentially multi-minute external request below.
+                Controllers.MatchHistory_Entry? matchEntry;
+                await using (var readDb = await dbFactory.CreateDbContextAsync())
+                {
+                    matchEntry = await Database.MatchHistory.LoadMatchHistoryEntryAsync(readDb, (long)lobby.MatchID);
+                }
+
                 if (matchEntry == null)
                 {
                     Console.WriteLine($"[WARNING] MatchHistory entry not found for match ID {lobby.MatchID}");
@@ -206,6 +212,9 @@ namespace GenOnlineService
                 // Only player IDs that were actually part of this match are valid recipients of an ELO update.
                 var expectedPlayerIds = new HashSet<long>(matchEntry.members.Where(m => m.HasValue).Select(m => m.Value.user_id));
 
+                // Fresh, short-lived context just for the persistence writes below.
+                await using var writeDb = await dbFactory.CreateDbContextAsync();
+
                 foreach (var (userId, updatedPlayer) in refreshResponse.data)
                 {
                     if (!expectedPlayerIds.Contains(userId))
@@ -228,7 +237,7 @@ namespace GenOnlineService
                     }
 
                     // Call SaveELOData to persist as fallback
-                    await Database.Users.SaveELOData(db, userId, new EloData(newRating, newMonthlyRating, newMatches));
+                    await Database.Users.SaveELOData(writeDb, userId, new EloData(newRating, newMonthlyRating, newMatches));
                 }
             }
             catch (Exception ex)
