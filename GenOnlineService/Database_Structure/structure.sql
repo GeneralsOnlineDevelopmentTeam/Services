@@ -104,12 +104,15 @@ CREATE TABLE IF NOT EXISTS `match_history` (
   `map_name` varchar(128) NOT NULL,
   `map_official` tinyint(1) NOT NULL,
   `match_roster_type` varchar(32) NOT NULL DEFAULT '',
+  `lobby_type` tinyint(3) unsigned DEFAULT NULL,
   `vanilla_teams` tinyint(1) NOT NULL,
   `starting_cash` int(10) unsigned NOT NULL,
   `limit_superweapons` tinyint(1) NOT NULL,
   `track_stats` tinyint(1) NOT NULL,
   `allow_observers` tinyint(1) NOT NULL,
   `max_cam_height` smallint(6) unsigned NOT NULL,
+  `exe_crc` int(10) unsigned NOT NULL DEFAULT 0,
+  `ini_crc` int(10) unsigned NOT NULL DEFAULT 0,
   `map_path` varchar(128) DEFAULT NULL,
   `member_slot_0` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`member_slot_0`)),
   `member_slot_1` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`member_slot_1`)),
@@ -160,6 +163,20 @@ CREATE TABLE IF NOT EXISTS `user_devices` (
 
 -- Data exporting was unselected.
 
+-- Dumping structure for table go_production.user_token_state
+CREATE TABLE IF NOT EXISTS `user_token_state` (
+  `user_id` bigint(20) NOT NULL,
+  `session_type` int(11) NOT NULL,
+  `token_generation` int(11) NOT NULL DEFAULT 0,
+  `refresh_jti` varchar(64) NOT NULL DEFAULT '',
+  `previous_refresh_jti` varchar(64) NOT NULL DEFAULT '',
+  `previous_refresh_jti_expires` datetime NOT NULL DEFAULT '1970-01-01 00:00:00',
+  `updated` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`user_id`,`session_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Data exporting was unselected.
+
 -- Dumping structure for table go_production.user_stats_v2
 CREATE TABLE IF NOT EXISTS `user_stats_v2` (
   `user_id` bigint(20) NOT NULL,
@@ -196,6 +213,7 @@ CREATE TABLE IF NOT EXISTS `users` (
   `banned` tinyint(4) NOT NULL DEFAULT 0,
   `user_priority` tinyint(4) NOT NULL DEFAULT 0,
   `elo_rating` int(11) NOT NULL DEFAULT 1000,
+  `monthly_elo_rating` int(11) NOT NULL DEFAULT 1000,
   `elo_num_matches` int(11) NOT NULL DEFAULT 0,
   `ban_reason` varchar(128) DEFAULT NULL,
   `banned_by` varchar(50) DEFAULT NULL,

@@ -93,17 +93,66 @@ namespace GenOnlineService.Controllers.LoginWithToken
 
 		}
 
-		public static string GetClaimValue(string jwtToken, string claimType)
+		public static string? GetClaimValue(ClaimsPrincipal principal, string claimType)
 		{
-			var handler = new JwtSecurityTokenHandler();
-			var token = handler.ReadJwtToken(jwtToken); // Parses the token into JwtSecurityToken
-			var claim = token.Claims.FirstOrDefault(c => c.Type == claimType);
-			return claim?.Value;
+			return principal.FindFirst(claimType)?.Value;
 		}
 
 		public static byte[] Base64UrlDecode(string input)
 		{
 			return Base64UrlEncoder.DecodeBytes(input);
+		}
+
+		// One shared client for JWKS fetches. A new HttpClient per validation exhausts sockets and
+		// makes this endpoint trivially DoS-able.
+		private static readonly Lazy<HttpClient> s_httpClient = new Lazy<HttpClient>(() =>
+		{
+			var handler = new SocketsHttpHandler
+			{
+				PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+				PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2)
+			};
+
+			return new HttpClient(handler)
+			{
+				Timeout = TimeSpan.FromSeconds(10)
+			};
+		}, true);
+
+		private static readonly SemaphoreSlim s_jwksLock = new SemaphoreSlim(1, 1);
+		private static Jwks? s_cachedJwks = null;
+		private static DateTime s_cachedJwksExpiry = DateTime.MinValue;
+		private static readonly TimeSpan s_jwksCacheDuration = TimeSpan.FromMinutes(10);
+
+		private static async Task<Jwks?> GetJwks(string endpoint, bool bForceRefresh)
+		{
+			if (!bForceRefresh && s_cachedJwks != null && DateTime.UtcNow < s_cachedJwksExpiry)
+			{
+				return s_cachedJwks;
+			}
+
+			await s_jwksLock.WaitAsync();
+			try
+			{
+				// another caller may have refreshed while we waited
+				if (!bForceRefresh && s_cachedJwks != null && DateTime.UtcNow < s_cachedJwksExpiry)
+				{
+					return s_cachedJwks;
+				}
+
+				Jwks? jwks = await s_httpClient.Value.GetFromJsonAsync<Jwks>(endpoint);
+				if (jwks != null)
+				{
+					s_cachedJwks = jwks;
+					s_cachedJwksExpiry = DateTime.UtcNow.Add(s_jwksCacheDuration);
+				}
+
+				return jwks;
+			}
+			finally
+			{
+				s_jwksLock.Release();
+			}
 		}
 
 
@@ -143,12 +192,16 @@ namespace GenOnlineService.Controllers.LoginWithToken
 			throw new Exception("middleware_issuer missing in config");
 		}
 
-		// get JWKS
-		using var http = new HttpClient();
-		http.Timeout = TimeSpan.FromSeconds(10);
-		var jwks = await http.GetFromJsonAsync<Jwks>(middleware_jwks_endpoint);
+		// get JWKS (cached; refreshed on an unknown kid in case of key rotation)
+		var jwks = await GetJwks(middleware_jwks_endpoint, false);
 
-		var key = jwks.Keys.FirstOrDefault(k => k.Kid == kid);
+		var key = jwks?.Keys?.FirstOrDefault(k => k.Kid == kid);
+		if (key == null)
+		{
+			jwks = await GetJwks(middleware_jwks_endpoint, true);
+			key = jwks?.Keys?.FirstOrDefault(k => k.Kid == kid);
+		}
+
 		if (key == null)
 			throw new SecurityTokenException($"No matching JWKS key for kid={kid}");
 
@@ -220,7 +273,13 @@ namespace GenOnlineService.Controllers.LoginWithToken
 
 					if (validatedClaims != null)
 					{
-						string mwUserID = GetClaimValue(mw_token, "sub");
+						// read from the validated principal, never by re-parsing the raw token
+						string? mwUserID = GetClaimValue(validatedClaims, "sub");
+						if (String.IsNullOrEmpty(mwUserID))
+						{
+							Response.StatusCode = (int)HttpStatusCode.Unauthorized;
+							return;
+						}
 
 						Int64 user_id = TokenHelper.GetUserID(this);
 						EUserSessionType sessionType = TokenHelper.GetSessionType(this);

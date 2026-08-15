@@ -92,10 +92,10 @@ namespace Database
 			{
 				Console.WriteLine($"[ERROR] GetPlayerStats failed: {ex.Message}");
 				SentrySdk.CaptureException(ex);
-				return new PlayerStats(userId, EloConfig.BaseRating, 0);
+				return new PlayerStats(userId, EloConfig.BaseRating, 0, EloConfig.BaseRating);
 			}
 
-			PlayerStats ps = new PlayerStats(userId, elo.Rating, elo.NumMatches);
+			PlayerStats ps = new PlayerStats(userId, elo.Rating, elo.NumMatches, elo.MonthlyRating);
 
 			try
 			{

@@ -300,6 +300,15 @@ namespace GenOnlineService
 			}
 
 			// now create a websocket, we always do this whether its reconnect or not, only data is persistent
+			// NOTE: on the reconnect path the previous websocket may still be physically open (e.g. its receive loop
+			// is parked in a 30s ReceiveAsync). Overwriting the entry without closing it leaks a zombie connection
+			// that keeps running and sending on a socket nobody owns any more.
+			if (m_dictWebsockets[sessionType].TryRemove(ownerID, out UserWebSocketInstance? supersededSess) && supersededSess != null)
+			{
+				Console.WriteLine("Closing superseded websocket for {0} ({1})", ownerID, strDisplayName);
+				await supersededSess.CloseAsync(WebSocketCloseStatus.NormalClosure, "Superseded by a newer connection");
+			}
+
 			UserWebSocketInstance newSess = new UserWebSocketInstance(sessionType, ownerID);
 			m_dictWebsockets[sessionType][ownerID] = newSess;
 
@@ -423,8 +432,17 @@ namespace GenOnlineService
 			UserSession? sourceData = WebSocketManager.GetSessionFromUser(user_id, sessionType);
 			SharedUserData? sourceSharedData = WebSocketManager.GetSharedDataForUser(user_id);
 
+			bool bIsStaleSocket = false;
+
 			if (oldWS != null)
 			{
+				// has this websocket already been superseded by a newer connection for the same user? if so it is a
+				// stale/zombie socket and must not be allowed to abandon or tear down the live session
+				if (m_dictWebsockets[sessionType].TryGetValue(user_id, out UserWebSocketInstance? currentWS))
+				{
+					bIsStaleSocket = !ReferenceEquals(currentWS, oldWS);
+				}
+
 				try
 				{
 					// dont remove by ID, user could have re-opened another websocket open via reconnection, remove by instance, if its not there, thats OK, it was already closed and the new instance is a reconnect
@@ -433,32 +451,28 @@ namespace GenOnlineService
 
 					if (destroyedSess != null)
 					{
-						destroyedSess.CloseAsync(WebSocketCloseStatus.NormalClosure, "User signed in from another point of presence [A]");
+						await destroyedSess.CloseAsync(WebSocketCloseStatus.NormalClosure, "User signed in from another point of presence [A]");
 					}
 				}
 				catch
 				{
 
 				}
+
+				if (bIsStaleSocket)
+				{
+					// nothing else to do - the user is still connected on the newer socket
+					await oldWS.CloseAsync(WebSocketCloseStatus.NormalClosure, "Superseded by a newer connection");
+					return;
+				}
 			}
 
 			if (bShouldInvalidatePlayerCacheToBlockReconnect)
 			{
-				WebSocketManager.ClearDataFromUser(user_id, sessionType);
-
-				// decrement ref count on shared data
-				if (m_dictSharedUserData.TryGetValue(user_id, out SharedUserData? sharedData))
-				{
-					sharedData.DecrementRefCount();
-					if (sharedData.NeedsGC()) // cleanup if necessary
-					{
-						m_dictSharedUserData.Remove(user_id, out var removedSharedData);
-					}
-				}
-				else
-				{
-					Console.WriteLine("Error: Could not find shared data for user {0} when deleting session", user_id);
-				}
+				// NOTE: ClearDataFromUser owns the shared data ref count decrement (and GC) for this path - doing it
+				// again here would drop the count twice for a single disconnect and tear down the shared data while
+				// the user still has other live sessions
+				await WebSocketManager.ClearDataFromUser(user_id, sessionType);
 			}
 			else
 			{
@@ -1057,7 +1071,17 @@ namespace GenOnlineService
 				m_lstHistoricMatchIDToSlotIndexMap.TryRemove(oldest, out _);
 				m_lstHistoricMatchIDToArmy.TryRemove(oldest, out _);
 				m_lstHistoricMatchIDToCreationTime.TryRemove(oldest, out _);
+				m_dictReportedMatchOutcomes.TryRemove(oldest, out _);
 			}
+		}
+
+		private ConcurrentDictionary<UInt64, byte> m_dictReportedMatchOutcomes = new();
+
+		// Returns true only the first time an outcome is reported for a given match, so a client cannot replay the
+		// same result to inflate aggregate stats.
+		public bool TryMarkMatchOutcomeReported(UInt64 matchID)
+		{
+			return m_dictReportedMatchOutcomes.TryAdd(matchID, 0);
 		}
 
 		public bool WasPlayerInMatch(UInt64 matchID, out int slotIndexInLobby, out int army, out DateTime lobbyCreationTime)
@@ -1171,6 +1195,9 @@ namespace GenOnlineService
 		{
 			if (m_SockInternal != null)
 			{
+				// WebSocket.SendAsync must never be called concurrently on the same socket or the frame stream gets
+				// corrupted. Several paths (tick drain, pongs, direct sends) can send at the same time, so serialize here.
+				await m_SendLock.WaitAsync();
 				try
 				{
 					// should we chunked send?
@@ -1230,8 +1257,14 @@ namespace GenOnlineService
 				{
 
 				}
+				finally
+				{
+					m_SendLock.Release();
+				}
 			}
 		}
+
+		private readonly SemaphoreSlim m_SendLock = new SemaphoreSlim(1, 1);
 
 		public async Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription)
 		{
@@ -1363,11 +1396,12 @@ namespace GenOnlineService
 	{
 		const int numGeneralsEntries = 15;
 
-		public PlayerStats(Int64 inUserID, int inEloRating, int inEloMatches)
+		public PlayerStats(Int64 inUserID, int inEloRating, int inEloMatches, int inMonthlyEloRating)
 		{
 			userID = inUserID;
 			EloRating = inEloRating;
 			EloMatches = inEloMatches;
+			MonthlyEloRating = inMonthlyEloRating;
 
             // init arrays, rest are init'ed below
             for (int i = 0; i < numGeneralsEntries; ++i)
@@ -1402,6 +1436,7 @@ namespace GenOnlineService
 		public Int64 userID { get; set; } = -1;
 		public int EloRating { get; set; } = EloConfig.BaseRating;
 		public int EloMatches { get; set; } = 0;
+		public int MonthlyEloRating { get; set; } = EloConfig.BaseRating;
 
 		public int[] wins { get; set; } = new int[numGeneralsEntries] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 		public int[] losses { get; set; } = new int[numGeneralsEntries] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -2040,9 +2075,24 @@ namespace GenOnlineService
 	public static class S3CredentialManager
 	{
 		private static AmazonS3Client m_s3client = null;
+		private static bool s_uploadsEnabled = false;
 
 		public static void Initialize()
 		{
+			if (Program.g_Config == null)
+			{
+				throw new Exception("Config not loaded");
+			}
+
+			s_uploadsEnabled = Program.g_Config.GetSection("MatchData").GetValue<bool?>("upload_match_data") ?? false;
+
+			// When uploads are disabled, the S3 settings are intentionally optional.
+			if (!s_uploadsEnabled)
+			{
+				Console.WriteLine("MatchData: upload_match_data is false, replay and screenshot uploads are disabled.");
+				return;
+			}
+
 			GetS3Config(out int TTL, out string access_key, out string secret_key, out string bucket_name, out string client_endpoint);
 
 			var config = new AmazonS3Config
@@ -2114,6 +2164,11 @@ namespace GenOnlineService
 
 		public static async Task<string?> GetPresignedURL(EMetadataFileType fileType, EScreenshotType screenshotTypeIfScreenshot, UInt64 matchID, Int64 userID, int slotIndex, DateTime matchStartTime)
 		{
+			if (!s_uploadsEnabled || m_s3client == null)
+			{
+				return null;
+			}
+
 			GetS3Config(out int TTL, out string access_key, out string secret_key, out string bucket_name, out string client_endpoint);
 			TimeSpan expiresIn = TimeSpan.FromMinutes(TTL);
 

@@ -41,12 +41,15 @@ public class MatchHistoryEntry
 	public string MapName { get; set; } = string.Empty;
 	public bool MapOfficial { get; set; }
 	public string MatchRosterType { get; set; } = string.Empty;
+	public ELobbyType? LobbyType { get; set; } = null;
 	public bool VanillaTeams { get; set; }
 	public uint StartingCash { get; set; }
 	public bool LimitSuperweapons { get; set; }
 	public bool TrackStats { get; set; }
 	public bool AllowObservers { get; set; }
 	public ushort MaxCamHeight { get; set; }
+	public uint ExeCRC { get; set; }
+	public uint IniCRC { get; set; }
 	public string? MapPath { get; set; }
 
 	// JSON slots
@@ -106,6 +109,11 @@ public class MatchHistoryConfiguration : IEntityTypeConfiguration<MatchHistoryEn
 			.HasMaxLength(32)
 			.HasDefaultValue("");
 
+		entity.Property(e => e.LobbyType)
+			.HasColumnName("lobby_type")
+			.HasConversion<byte?>()
+			.HasColumnType("tinyint unsigned");
+
 		entity.Property(e => e.VanillaTeams)
 			.HasColumnName("vanilla_teams");
 
@@ -125,6 +133,14 @@ public class MatchHistoryConfiguration : IEntityTypeConfiguration<MatchHistoryEn
 		entity.Property(e => e.MaxCamHeight)
 			.HasColumnName("max_cam_height")
 			.HasColumnType("smallint unsigned");
+
+		entity.Property(e => e.ExeCRC)
+			.HasColumnName("exe_crc")
+			.HasColumnType("int unsigned");
+
+		entity.Property(e => e.IniCRC)
+			.HasColumnName("ini_crc")
+			.HasColumnType("int unsigned");
 
 		entity.Property(e => e.MapPath)
 			.HasColumnName("map_path")
@@ -201,6 +217,10 @@ namespace GenOnlineService
 
 		[JsonConverter(typeof(BoolFromIntConverter))]
 		public bool won { get; set; } = false;                // tinyint(4) DEFAULT NULL
+		
+        [JsonConverter(typeof(BoolFromIntConverter))]
+		public bool desynced {get; set; } = false;
+
 		public List<MemberMetadataModel> metadata { get; set; } = new List<MemberMetadataModel>();
 
 		public MatchdataMemberModel()
@@ -323,7 +343,8 @@ namespace Database
 	int unitsKilled,
 	int unitsLost,
 	int totalMoney,
-	bool won)
+	bool won,
+	bool desynced)
 		{
 			if (slotIndex < 0 || slotIndex > 7)
 				return;
@@ -351,6 +372,7 @@ namespace Database
 				model.units_lost = unitsLost;
 				model.total_money = totalMoney;
 				model.won = won;
+				model.desynced = desynced;
 
 				// 4. Serialize back
 				string updatedJson = JsonSerializer.Serialize(model);
@@ -470,12 +492,15 @@ namespace Database
 					MapPath = lobby.MapPath,
 					MapOfficial = lobby.IsMapOfficial,
 					MatchRosterType = rosterType,
+					LobbyType = lobby.LobbyType,
 					VanillaTeams = lobby.IsVanillaTeamsOnly,
 					StartingCash = lobby.StartingCash,
 					LimitSuperweapons = lobby.IsLimitSuperweapons,
 					TrackStats = lobby.IsTrackingStats,
 					AllowObservers = lobby.AllowObservers,
 					MaxCamHeight = lobby.MaximumCameraHeight,
+					ExeCRC = lobby.ExeCRC,
+					IniCRC = lobby.IniCRC,
 
 					MemberSlot0 = jsonSlots[0],
 					MemberSlot1 = jsonSlots[1],
@@ -533,7 +558,22 @@ namespace Database
 					}
 				}
 
-				// 3. Build winner groups from active, non-observer members.
+				// 3. Check if any member reported a desync. If so, mark all non-observer members as losers which the
+				//    ExternalLeaderboardClient interprets as a No Result
+				bool anyDesync = members.Values.Any(m => m.desynced);
+				if (anyDesync)
+				{
+					foreach (var kv in members)
+					{
+						if (kv.Value.side == Constants.OBSERVER_SIDE_VALUE)
+							continue;
+
+						await UpdateMatchHistorySetWinFlag(db, lobby.MatchID, kv.Key, false);
+					}
+					return;
+				}
+
+				// 4. Build winner groups from active, non-observer members.
                 //    Teamless players are treated individually using synthetic keys.
 				Dictionary<int, List<int>> winGroups = new();
 				foreach (var kv in members)
@@ -551,7 +591,7 @@ namespace Database
 					slotList.Add(kv.Key);
 				}
 
-				// 4. Compare winner groups by report count.
+				// 5. Compare winner groups by report count.
 				//    A unique maximum wins; ties or no winner groups fall back to
                 //    the abandoned timestamp-based resolution.
 				int? conclusiveWinningTeam = null;
@@ -575,7 +615,7 @@ namespace Database
 					}
 				}
 
-				// 5. If conclusively determined, propagate the win to the team 
+				// 6. If conclusively determined, propagate the win to the team 
 				//    and explicitly award a loss to everyone else.
 				if (conclusiveWinningTeam != null || conclusiveWinningSlot != -1)
 				{
@@ -591,7 +631,7 @@ namespace Database
 					return;
 				}
 
-				// 6. No winner — determine who quit last (= winner) using the most accurate timing available.
+				// 7. No winner — determine who quit last (= winner) using the most accurate timing available.
 				//    Prefer TimePlayerAbandonedIngame (recorded the instant each player's WS dropped while
 				//    in-game) over TimeMemberLeft (recorded when the player was structurally removed from the
 				//    lobby, which can happen much later, or earlier due to a fresh-session reconnect, skewing
@@ -743,6 +783,7 @@ namespace Database
 						m.MapName,
 						m.MapPath,
 						m.MatchRosterType,
+						m.LobbyType,
 						m.MapOfficial,
 						m.VanillaTeams,
 						m.StartingCash,
@@ -750,6 +791,8 @@ namespace Database
 						m.TrackStats,
 						m.AllowObservers,
 						m.MaxCamHeight,
+						m.ExeCRC,
+						m.IniCRC,
 						m.MemberSlot0,
 						m.MemberSlot1,
 						m.MemberSlot2,
@@ -773,13 +816,16 @@ namespace Database
 						row.MapName,
 						row.MapPath ?? string.Empty,
 						row.MatchRosterType,
+						row.LobbyType,
 						row.MapOfficial,
 						row.VanillaTeams,
 						row.StartingCash,
 						row.LimitSuperweapons,
 						row.TrackStats,
 						row.AllowObservers,
-						row.MaxCamHeight
+						row.MaxCamHeight,
+						row.ExeCRC,
+						row.IniCRC
 					);
 
 					AddMemberIfNotNull(entry, row.MemberSlot0);
@@ -825,13 +871,16 @@ namespace Database
 						row.MapName,
 						row.MapPath ?? string.Empty,
 						row.MatchRosterType,
+						row.LobbyType,
 						row.MapOfficial,
 						row.VanillaTeams,
 						row.StartingCash,
 						row.LimitSuperweapons,
 						row.TrackStats,
 						row.AllowObservers,
-						row.MaxCamHeight
+						row.MaxCamHeight,
+						row.ExeCRC,
+						row.IniCRC
 					);
 
 					AddMemberIfNotNull(entry, row.MemberSlot0);
@@ -920,13 +969,16 @@ namespace Database
 				row.MapName,
 				row.MapPath ?? string.Empty,
 				row.MatchRosterType,
+				row.LobbyType,
 				row.MapOfficial,
 				row.VanillaTeams,
 				row.StartingCash,
 				row.LimitSuperweapons,
 				row.TrackStats,
 				row.AllowObservers,
-				row.MaxCamHeight
+				row.MaxCamHeight,
+				row.ExeCRC,
+				row.IniCRC
 			);
 
 			AddMemberIfNotNull(entry, row.MemberSlot0);

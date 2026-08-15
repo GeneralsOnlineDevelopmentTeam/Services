@@ -304,6 +304,7 @@ namespace GenOnlineService.Controllers
 						&& data.ContainsKey("total_money")
 						&& data.ContainsKey("won")
 						&& data.ContainsKey("side")
+						&& data.ContainsKey("desynced")
 						)
 					{
 						Int64 user_id = TokenHelper.GetUserID(this);
@@ -322,6 +323,7 @@ namespace GenOnlineService.Controllers
 								int total_money = data["total_money"].GetInt32();
 								int side = data["side"].GetInt32();
 								bool won = data["won"].GetBoolean();
+								bool desynced = data["desynced"].GetBoolean();
 								UInt64 match_id = data["match_id"].GetUInt64();
 
 								// were they really in the match they claim to be in?
@@ -332,16 +334,22 @@ namespace GenOnlineService.Controllers
 								}
 
 								// register with daily stats
-								DailyStatsManager.RegisterOutcome(army, won);
+								// NOTE: only once per match - the outcome endpoint can be called repeatedly for the
+								// same match_id, and these counters are unconditional increments
+								bool bFirstOutcomeReportForMatch = sourceData.TryMarkMatchOutcomeReported(match_id);
+								if (bFirstOutcomeReportForMatch)
+								{
+									DailyStatsManager.RegisterOutcome(army, won);
+								}
 
 								// give them back signed URLs they need
-								result.screenshot_url = await S3CredentialManager.GetPresignedURL(EMetadataFileType.FILE_TYPE_SCREENSHOT, EScreenshotType.SCREENSHOT_TYPE_SCORESCREEN, match_id, user_id, slotIndexInLobby, LobbyCreationTime);
-								result.replay_url = await S3CredentialManager.GetPresignedURL(EMetadataFileType.FILE_TYPE_REPLAY, EScreenshotType.NONE, match_id, user_id, slotIndexInLobby, LobbyCreationTime);
+								result.screenshot_url = await S3CredentialManager.GetPresignedURL(EMetadataFileType.FILE_TYPE_SCREENSHOT, EScreenshotType.SCREENSHOT_TYPE_SCORESCREEN, match_id, user_id, slotIndexInLobby, LobbyCreationTime) ?? String.Empty;
+								result.replay_url = await S3CredentialManager.GetPresignedURL(EMetadataFileType.FILE_TYPE_REPLAY, EScreenshotType.NONE, match_id, user_id, slotIndexInLobby, LobbyCreationTime) ?? String.Empty;
 
 								// store in DB
 								await using var db = await _dbFactory.CreateDbContextAsync();
 								await Database.MatchHistory.CommitPlayerOutcome(db, slotIndexInLobby, match_id, side,
-										buildings_built, buildings_killed, buildings_lost, units_built, units_killed, units_lost, total_money, won);
+										buildings_built, buildings_killed, buildings_lost, units_built, units_killed, units_lost, total_money, won, desynced);
 							}
 						}
 					}
@@ -566,22 +574,27 @@ namespace GenOnlineService.Controllers
 										// TODO: we should communicate the kick to the user...
 										Int64 KickedUserID = data["userid"].GetInt64();
 
-										_lobbyManager.LeaveSpecificLobby(KickedUserID, lobbyID);
-
-										// cleanup TURN credentials
-										TURNCredentialManager.DeleteCredentialsForUser(KickedUserID);
-
-										// clear our lobby ID
-										UserSession? sourceData = WebSocketManager.GetSessionFromUser(KickedUserID, EUserSessionType.GameClient); // user being kicked must be a game client
-
-										if (sourceData != null)
+										// the target must actually be in THIS lobby, otherwise a host could wipe the
+										// TURN credentials / lobby state of any arbitrary online player
+										if (lobby.GetMemberFromUserID(KickedUserID) != null)
 										{
-											sourceData.UpdateSessionLobbyID(-1);
-											// NOTE: We dont update the match history match ID here, that is done by the match history service
-										}
+											_lobbyManager.LeaveSpecificLobby(KickedUserID, lobbyID);
 
-										// we have to manually send to the kicked user... they won't get the dirty lobby update anymore
-										await lobby.DirtyRetransmitToSingleMember(KickedUserID);
+											// cleanup TURN credentials
+											TURNCredentialManager.DeleteCredentialsForUser(KickedUserID);
+
+											// clear our lobby ID
+											UserSession? sourceData = WebSocketManager.GetSessionFromUser(KickedUserID, EUserSessionType.GameClient); // user being kicked must be a game client
+
+											if (sourceData != null)
+											{
+												sourceData.UpdateSessionLobbyID(-1);
+												// NOTE: We dont update the match history match ID here, that is done by the match history service
+											}
+
+											// we have to manually send to the kicked user... they won't get the dirty lobby update anymore
+											await lobby.DirtyRetransmitToSingleMember(KickedUserID);
+										}
 									}
 								}
 								else if (field == ELobbyUpdateField.HOST_ACTION_SET_SLOT_STATE)

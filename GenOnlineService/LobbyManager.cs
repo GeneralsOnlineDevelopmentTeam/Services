@@ -56,7 +56,7 @@ namespace GenOnlineService
 		[JsonIgnore]
 		public Int64 TimeStartFullMeshChecks { get; private set; } = -1;
 
-		private const int MSToWaitForFullMeshChecks = 5; // really shouldnt take more than 5 seconds... this might even be too much
+		private const int MSToWaitForFullMeshChecks = 5000; // really shouldnt take more than 5 seconds... this might even be too much
 
 		[JsonIgnore]
 		public ConcurrentDictionary<Int64, ConcurrentList<Int64>> FullMeshConnectivityChecks { get; set; } = new();
@@ -345,13 +345,15 @@ namespace GenOnlineService
 		public EKnownAnticheatID AnticheatID { get; private set; }  = EKnownAnticheatID.NONE;
 
 		[JsonIgnore]
-		public Dictionary<Int64, DateTime> TimeMemberLeft { get; private set; } = new();
+		public ConcurrentDictionary<Int64, DateTime> TimeMemberLeft { get; private set; } = new();
 
 		// Records the first time each player's in-game WebSocket connection dropped (i.e., when they first "quit"
 		// while the match was in progress). Only the first disconnect is stored � reconnects do not reset it.
 		// Used by DetermineLobbyWinnerIfNotPresent to find who abandoned first (= loser) vs last (= winner).
+		// NOTE: These are mutated from HTTP/websocket threads and the lobby tick loop at the same time, so they must
+		// be concurrent collections.
 		[JsonIgnore]
-		public Dictionary<Int64, DateTime> TimePlayerAbandonedIngame { get; private set; } = new();
+		public ConcurrentDictionary<Int64, DateTime> TimePlayerAbandonedIngame { get; private set; } = new();
 
 		/// <summary>
 		/// Records the moment a player's WebSocket dropped while the lobby was in INGAME state.
@@ -361,11 +363,10 @@ namespace GenOnlineService
 		/// </summary>
 		public void RecordPlayerIngameAbandon(Int64 userId)
 		{
-			if (!TimePlayerAbandonedIngame.ContainsKey(userId))
+			DateTime abandonTime = DateTime.UtcNow;
+			if (TimePlayerAbandonedIngame.TryAdd(userId, abandonTime))
 			{
-				TimePlayerAbandonedIngame[userId] = DateTime.UtcNow;
-				Console.WriteLine("[Lobby {0}] Recorded in-game abandon for user {1} at {2:O}", LobbyID, userId, TimePlayerAbandonedIngame[userId]);
-
+				Console.WriteLine("[Lobby {0}] Recorded in-game abandon for user {1} at {2:O}", LobbyID, userId, abandonTime);
 			}
 		}
 
@@ -375,7 +376,7 @@ namespace GenOnlineService
 		/// </summary>
 		public void ClearPlayerIngameAbandon(Int64 userId)
 		{
-			if (TimePlayerAbandonedIngame.Remove(userId))
+			if (TimePlayerAbandonedIngame.TryRemove(userId, out _))
 			{
 				Console.WriteLine("[Lobby {0}] Cleared in-game abandon record for reconnected user {1}", LobbyID, userId);
 			}
@@ -631,16 +632,18 @@ namespace GenOnlineService
 		private readonly SemaphoreSlim g_SlotLock = new SemaphoreSlim(1, 1);
 		public async Task<bool> AddMember(UserSession playerSession, string strDisplayName, UInt16 userPreferredPort, bool bHasMap, UserLobbyPreferences lobbyPrefs)
 		{
-			LobbyMember? existingMember = GetMemberFromUserID(playerSession.m_UserID);
-			if (existingMember != null) // we're already in this lobby
-			{
-				return false;
-			}
-
 			// NOTE: AddMember is called async, so timing + slot determination could result in players being inserted in the same slot
 			await g_SlotLock.WaitAsync();
 			try
 			{
+				// NOTE: this must be inside the lock, otherwise two concurrent joins for the same user can both pass
+				// the check and end up occupying two slots
+				LobbyMember? existingMember = GetMemberFromUserID(playerSession.m_UserID);
+				if (existingMember != null) // we're already in this lobby
+				{
+					return false;
+				}
+
 				// find first open slot
 				bool bFoundSlot = false;
 				UInt16 slotIndex = 0;
@@ -720,7 +723,9 @@ namespace GenOnlineService
 				int colorToUse = lobbyPrefs.favorite_color;
 				foreach (var memberEntry in Members)
 				{
-					if (memberEntry.Color == lobbyPrefs.favorite_color)
+					// NOTE: only occupied slots matter - empty/closed placeholder slots have Color 0, which would
+					// otherwise always force players who prefer color 0 onto a random color
+					if (memberEntry.IsHuman() && memberEntry.Color == lobbyPrefs.favorite_color)
 					{
 						colorToUse = -1;
 						break;
@@ -1430,9 +1435,35 @@ namespace GenOnlineService
             }
 		}
 
-		private async void HandleLobbyNeedsDestroyed(Lobby lobby)
+		// Lobbies that asked to be destroyed from a synchronous event callback. They are deleted from the tick loop so
+		// the delete is properly awaited and its exceptions are observed (an `async void` handler would let a failure
+		// escape unobserved and leave the lobby leaked in m_dictLobbies forever).
+		private readonly ConcurrentQueue<Lobby> m_queueLobbiesNeedingDestroyed = new();
+
+		private void HandleLobbyNeedsDestroyed(Lobby lobby)
 		{
-			await DeleteLobby(lobby);
+			m_queueLobbiesNeedingDestroyed.Enqueue(lobby);
+		}
+
+		private async Task ProcessLobbiesNeedingDestroyed()
+		{
+			while (m_queueLobbiesNeedingDestroyed.TryDequeue(out Lobby? lobbyToDestroy))
+			{
+				if (lobbyToDestroy == null)
+				{
+					continue;
+				}
+
+				try
+				{
+					await DeleteLobby(lobbyToDestroy);
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"[ERROR] Failed to destroy lobby {lobbyToDestroy.LobbyID}: {ex}");
+					SentrySdk.CaptureException(ex);
+				}
+			}
 		}
 
 		public async Task<Int64> CreateLobby(AppDbContext _db, UserSession owningSession, string strOwnerDisplayName, string strName, string strMapName, string strMapPath, bool bMapOfficial, int maxPlayers, string HostIPAddr,
@@ -1495,6 +1526,8 @@ namespace GenOnlineService
 			{
 				await kvPair.Value.Tick();
 			}
+
+			await ProcessLobbiesNeedingDestroyed();
 		}
 
 		public async Task<bool> JoinLobby(AppDbContext _db, Lobby lobby, UserSession playerSession, string strDisplayName, UInt16 userPreferredPort, bool bHasMap)

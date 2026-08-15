@@ -177,6 +177,11 @@ namespace GenOnlineService.Controllers
 			var buffer = new byte[8196 * 4];
 			WebSocketReceiveResult? receiveResult = null;
 
+			// WebSocket messages can arrive split across multiple frames - they must be reassembled before parsing,
+			// otherwise each fragment is parsed as if it were a whole message and the message is silently lost
+			MemoryStream? fragmentBuffer = null;
+			const int c_MaxReassembledMessageBytes = 8196 * 4 * 8;
+
 			while (webSocket.State == WebSocketState.Open)
 			{
 				bool bDisconnectTest = false;
@@ -195,7 +200,7 @@ namespace GenOnlineService.Controllers
 				catch (OperationCanceledException)
 				{
 					// No message received in 30s � send a keep-alive pong and continue waiting
-					wsSess.SendPong();
+					await wsSess.SendPong();
 					continue;
 				}
 				catch (Exception ex)
@@ -214,7 +219,38 @@ namespace GenOnlineService.Controllers
 				}
 
 				// slice only the valid part, no extra allocation
-				var segment = new ArraySegment<byte>(buffer, 0, receiveResult.Count);
+				ArraySegment<byte> segment;
+				if (!receiveResult.EndOfMessage || fragmentBuffer != null)
+				{
+					fragmentBuffer ??= new MemoryStream();
+
+					if (fragmentBuffer.Length + receiveResult.Count > c_MaxReassembledMessageBytes)
+					{
+						// a client streaming an unbounded message - drop the connection rather than buffer forever
+						fragmentBuffer.Dispose();
+						fragmentBuffer = null;
+
+						using var ctsTooBig = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+						await webSocket.CloseAsync(WebSocketCloseStatus.MessageTooBig, "Message too large", ctsTooBig.Token);
+						break;
+					}
+
+					fragmentBuffer.Write(buffer, 0, receiveResult.Count);
+
+					if (!receiveResult.EndOfMessage)
+					{
+						// wait for the rest of the message
+						continue;
+					}
+
+					segment = new ArraySegment<byte>(fragmentBuffer.ToArray());
+					fragmentBuffer.Dispose();
+					fragmentBuffer = null;
+				}
+				else
+				{
+					segment = new ArraySegment<byte>(buffer, 0, receiveResult.Count);
+				}
 
 				UserSession? sourceUserData = WebSocketManager.GetSessionFromUser(wsSess.m_UserID, wsSess.m_SessionType);
 
@@ -270,6 +306,13 @@ namespace GenOnlineService.Controllers
 		private async Task ProcessWSMessage(UserWebSocketInstance sourceWS, UserSession sourceUserSession, WebSocketReceiveResult receiveResult, ArraySegment<byte> buffer)
 		{
 			SharedUserData sourceUserData = WebSocketManager.GetSharedDataForUser(sourceUserSession.m_UserID);
+
+			// shared data can legitimately be gone (session torn down concurrently) - dereferencing it below would
+			// throw straight out of the receive loop and kill the connection
+			if (sourceUserData == null)
+			{
+				return;
+			}
 
 			if (receiveResult.MessageType == WebSocketMessageType.Close)
 			{
@@ -851,7 +894,7 @@ namespace GenOnlineService.Controllers
 									// response
 									WebSocketMessage_StartMatch startCommand = new WebSocketMessage_StartMatch();
 									startCommand.msg_id = (int)EWebSocketMessageID.START_GAME;
-									startCommand.screenshot_url = await S3CredentialManager.GetPresignedURL(EMetadataFileType.FILE_TYPE_SCREENSHOT, EScreenshotType.SCREENSHOT_TYPE_LOADSCREEN, lobbyInfo.MatchID, lobbyMember.UserID, lobbyMember.SlotIndex, lobbyInfo.TimeCreated);
+									startCommand.screenshot_url = await S3CredentialManager.GetPresignedURL(EMetadataFileType.FILE_TYPE_SCREENSHOT, EScreenshotType.SCREENSHOT_TYPE_LOADSCREEN, lobbyInfo.MatchID, lobbyMember.UserID, lobbyMember.SlotIndex, lobbyInfo.TimeCreated) ?? String.Empty;
 
 									// Serialize once before broadcasting
 									byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(startCommand));

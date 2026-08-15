@@ -35,10 +35,18 @@ public class EloData
 {
     public int Rating { get; set; } = 1000;
     public int NumMatches { get; set; } = 0;
+    public int MonthlyRating { get; set; } = 1000;
 
     public EloData(int rating, int numMatches)
     {
         Rating = rating;
+        NumMatches = numMatches;
+    }
+
+    public EloData(int rating, int monthlyRating, int numMatches)
+    {
+        Rating = rating;
+        MonthlyRating = monthlyRating;
         NumMatches = numMatches;
     }
 }

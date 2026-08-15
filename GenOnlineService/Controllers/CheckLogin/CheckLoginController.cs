@@ -167,17 +167,18 @@ namespace GenOnlineService.Controllers
 									bool bIsBanned = await Database.Users.IsUserBanned(db, user_id);
 									if (bIsBanned)
 									{
+										await TokenRevocationManager.RevokeAllTokensForUser(user_id, "user is banned");
+
 										result.result = EPendingLoginState.LoginFailed;
 										Response.StatusCode = (int)HttpStatusCode.Locked;
 										return result;
 									}
 
 									// full login (known clients)
-									if (Enum.TryParse(typeof(KnownClients.EKnownClients), clientID, ignoreCase: true, out object knownClientIDObj))
+									// Enum.TryParse also accepts "unknown" and arbitrary numeric strings, neither of which is mapped.
+									if (Enum.TryParse(clientID, ignoreCase: true, out KnownClients.EKnownClients knownClientID)
+										&& KnownClients.KnownClientSessionTypes.TryGetValue(knownClientID, out EUserSessionType sessionType))
 									{
-										KnownClients.EKnownClients knownClientID = (KnownClients.EKnownClients)knownClientIDObj;
-										EUserSessionType sessionType = KnownClients.KnownClientSessionTypes[knownClientID];
-
 										// Game clients should register the user device
 										if (sessionType == EUserSessionType.GameClient)
 										{
@@ -191,7 +192,10 @@ namespace GenOnlineService.Controllers
 										Helpers.RegisterInitialPlayerExeCRC(user_id, exe_crc);
 
 										var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, knownClientID, sessionType, bIsAdmin, userPriority);
-										var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, knownClientID, sessionType, false, EUserPriority.None);
+										var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, knownClientID, sessionType, false, EUserPriority.None, out string refreshJti);
+
+										// rotation: only this refresh token is accepted from now on
+										await TokenRevocationManager.OnTokensIssued(user_id, sessionType, refreshJti);
 
 										result.result = EPendingLoginState.LoginSuccess;
 										result.session_token = sessiontoken;
@@ -200,8 +204,10 @@ namespace GenOnlineService.Controllers
 										result.display_name = strDisplayName;
 										result.ws_uri = Program.GetWebSocketAddress(bSecureWS);
 
-										// clear cached data, its a refresh websocket connection
-										WebSocketManager.ClearDataFromUser(user_id, sessionType);
+										// clear cached data, its a new session and the client reconnects its
+										// websocket using the ws_uri below - must be awaited so the teardown
+										// can't race and destroy that new session
+										await WebSocketManager.ClearDataFromUser(user_id, sessionType);
 									}
 									else // limited login (auth partners)
 									{

@@ -22,9 +22,14 @@ namespace GenOnlineService
 
     public class EloRefreshEntry
     {
+        public EloRefreshRating overall { get; set; }
+        public EloRefreshRating season { get; set; }
+    }
+
+    public class EloRefreshRating
+    {
         public int rating { get; set; }
         public int matches { get; set; }
-        public int? rank { get; set; }
     }
 
     public static class ExternalLeaderboardsClient
@@ -78,10 +83,23 @@ namespace GenOnlineService
             getToken = sectionGetToken;
         }
 
+        // NOTE: A single shared HttpClient/handler is used for every call. Creating one per request re-resolves DNS,
+        // prevents TCP connection reuse and leaks sockets in TIME_WAIT, which leads to port exhaustion when a lot of
+        // matches finish at once. PooledConnectionLifetime keeps DNS changes from being cached forever.
+        private static readonly Lazy<HttpClient> g_LeaderboardsClient = new Lazy<HttpClient>(() =>
+        {
+            return new HttpClient(CreateLeaderboardsHandler(), disposeHandler: true)
+            {
+                Timeout = TimeSpan.FromSeconds(10)
+            };
+        }, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
+
         private static SocketsHttpHandler CreateLeaderboardsHandler()
         {
             return new SocketsHttpHandler()
             {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
                 ConnectCallback = async (context, cancellationToken) =>
                 {
                     var entry = await Dns.GetHostEntryAsync(context.DnsEndPoint.Host, AddressFamily.InterNetwork, cancellationToken);
@@ -129,80 +147,88 @@ namespace GenOnlineService
                     .Handle<HttpRequestException>()
                     .Or<SocketException>()
                     .Or<TaskCanceledException>()
-                    .WaitAndRetryAsync(3, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)), (exception, timeSpan, retryCount, context) =>
+                    .WaitAndRetryAsync(new[]
+                    {
+                        TimeSpan.FromSeconds(2),
+                        TimeSpan.FromSeconds(4),
+                        TimeSpan.FromSeconds(15),
+                        TimeSpan.FromSeconds(30),
+                        TimeSpan.FromMinutes(1),
+                        TimeSpan.FromMinutes(2),
+                        TimeSpan.FromMinutes(2)
+                    }, (exception, timeSpan, retryCount, context) =>
                     {
                         Console.WriteLine($"[WARNING] External Match ingest POST failed (attempt {retryCount}). Retrying in {timeSpan.TotalSeconds}s. Error: {exception.Message}");
                     });
 
                 HttpResponseMessage? response = null;
+                string? responseBody = null;
 
                 await retryPolicy.ExecuteAsync(async () =>
                 {
-                    using (var handler = CreateLeaderboardsHandler())
-                    using (var client = new HttpClient(handler))
+                    HttpClient client = g_LeaderboardsClient.Value;
+
+                    using (var request = new HttpRequestMessage(HttpMethod.Post, postUrl))
                     {
-                        client.Timeout = TimeSpan.FromSeconds(10);
+                        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", postToken);
+                        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                        request.Content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
 
-                        using (var request = new HttpRequestMessage(HttpMethod.Post, postUrl))
+                        var sw = Stopwatch.StartNew();
+                        using (response = await client.SendAsync(request))
                         {
-                            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", postToken);
-                            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-                            request.Content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
-
-                            var sw = Stopwatch.StartNew();
-                            response = await client.SendAsync(request);
                             sw.Stop();
 
                             Console.WriteLine($"[INFO] External Match Ingest POST Response for match {lobby.MatchID} was received in {sw.ElapsedMilliseconds}ms (status: {response.StatusCode}).");
 
                             // Explicitly verify response success inside execution block to ensure retry triggers on HTTP error statuses
                             response.EnsureSuccessStatusCode();
+
+                            // NOTE: read the body here, the response is disposed once we leave this block
+                            responseBody = await response.Content.ReadAsStringAsync();
                         }
                     }
                 });
 
-                if (response == null || !response.IsSuccessStatusCode)
+                if (responseBody == null)
                 {
                     Console.WriteLine($"[ERROR] External Match Ingest POST failed for match {lobby.MatchID}.");
                     return;
                 }
 
-                // Only QuickMatch responses are expected to carry a ratings body.
-                if (lobby.LobbyType == ELobbyType.QuickMatch)
+                var refreshResponse = JsonSerializer.Deserialize<EloRefreshResponse>(responseBody);
+                if (refreshResponse?.data == null)
                 {
-                    string responseBody = await response.Content.ReadAsStringAsync();
-                    var refreshResponse = JsonSerializer.Deserialize<EloRefreshResponse>(responseBody);
-                    if (refreshResponse?.data == null)
+                    Console.WriteLine($"[WARNING] External Match Ingest response body contains no data or could not be deserialized: {responseBody}");
+                    return;
+                }
+
+                // Only player IDs that were actually part of this match are valid recipients of an ELO update.
+                var expectedPlayerIds = new HashSet<long>(matchEntry.members.Where(m => m.HasValue).Select(m => m.Value.user_id));
+
+                foreach (var (userId, updatedPlayer) in refreshResponse.data)
+                {
+                    if (!expectedPlayerIds.Contains(userId))
                     {
-                        Console.WriteLine($"[WARNING] External Match Ingest response body contains no data or could not be deserialized: {responseBody}");
-                        return;
+                        Console.WriteLine($"[WARNING] External Match Ingest response for match {lobby.MatchID} contained unexpected player_id {userId}; skipping (ELO left unchanged).");
+                        continue;
                     }
 
-                    // Only player IDs that were actually part of this match are valid recipients of an ELO update.
-                    var expectedPlayerIds = new HashSet<long>(matchEntry.members.Where(m => m.HasValue).Select(m => m.Value.user_id));
+                    int newRating = updatedPlayer.overall.rating;
+                    int newMatches = updatedPlayer.overall.matches;
+                    int newMonthlyRating = updatedPlayer.season.rating;
 
-                    foreach (var (userId, updatedPlayer) in refreshResponse.data)
+                    // Update in-memory session cache if the player is online
+                    var sharedData = WebSocketManager.GetSharedDataForUser(userId);
+                    if (sharedData?.GameStats != null)
                     {
-                        if (!expectedPlayerIds.Contains(userId))
-                        {
-                            Console.WriteLine($"[WARNING] External Match Ingest response for match {lobby.MatchID} contained unexpected player_id {userId}; skipping (ELO left unchanged).");
-                            continue;
-                        }
-
-                        int newRating = updatedPlayer.rating;
-                        int newMatches = updatedPlayer.matches;
-
-                        // Update in-memory session cache if the player is online
-                        var sharedData = WebSocketManager.GetSharedDataForUser(userId);
-                        if (sharedData?.GameStats != null)
-                        {
-                            sharedData.GameStats.EloRating = newRating;
-                            sharedData.GameStats.EloMatches = newMatches;
-                        }
-
-                        // Call SaveELOData to persist as fallback
-                        await Database.Users.SaveELOData(db, userId, new EloData(newRating, newMatches));
+                        sharedData.GameStats.EloRating = newRating;
+                        sharedData.GameStats.EloMatches = newMatches;
+                        sharedData.GameStats.MonthlyEloRating = newMonthlyRating;
                     }
+
+                    // Call SaveELOData to persist as fallback
+                    await Database.Users.SaveELOData(db, userId, new EloData(newRating, newMonthlyRating, newMatches));
                 }
             }
             catch (Exception ex)
@@ -219,11 +245,9 @@ namespace GenOnlineService
 
                 string requestUrl = getUrl.Replace("{playerId}", playerId.ToString());
 
-                using (var handler = CreateLeaderboardsHandler())
-                using (var client = new HttpClient(handler))
-                {
-                    client.Timeout = TimeSpan.FromSeconds(10);
+                HttpClient client = g_LeaderboardsClient.Value;
 
+                {
                     using (var request = new HttpRequestMessage(HttpMethod.Get, requestUrl))
                     {
                         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", getToken);
@@ -249,7 +273,7 @@ namespace GenOnlineService
                                 return null;
                             }
 
-                            return new EloData(entry.rating, entry.matches);
+                            return new EloData(entry.overall.rating, entry.season.rating, entry.overall.matches);
                         }
                     }
                 }

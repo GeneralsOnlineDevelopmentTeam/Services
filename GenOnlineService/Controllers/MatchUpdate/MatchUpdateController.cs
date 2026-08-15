@@ -64,13 +64,16 @@ namespace GenOnlineService.Controllers
 		string map_name,
 		string map_path,
 		string match_roster_type,
+		ELobbyType? lobby_type,
 		bool is_official_map,
 		bool vanilla_teams_only,
 		UInt32 starting_cash,
 		bool is_limit_superweapons,
 		bool is_tracking_stats,
 		bool allow_observers,
-		UInt16 max_camera_height
+		UInt16 max_camera_height,
+		UInt32 exe_crc,
+		UInt32 ini_crc
 		)
 		{
 			this.match_id = match_id;
@@ -82,6 +85,7 @@ namespace GenOnlineService.Controllers
 			this.map_name = map_name;
 			this.map_path = map_path;
 			this.match_roster_type = match_roster_type;
+			this.lobby_type = lobby_type;
 			this.is_official_map = is_official_map;
 			this.vanilla_teams_only = vanilla_teams_only;
 			this.starting_cash = starting_cash;
@@ -89,6 +93,8 @@ namespace GenOnlineService.Controllers
 			this.is_tracking_stats = is_tracking_stats;
 			this.allow_observers = allow_observers;
 			this.max_camera_height = max_camera_height;
+			this.exe_crc = exe_crc;
+			this.ini_crc = ini_crc;
 		}
 
 		public Int64 match_id { get; set; } = -1;
@@ -101,6 +107,7 @@ namespace GenOnlineService.Controllers
 		public string map_path { get; set; } = String.Empty;
 
 		public string match_roster_type { get; set; } = String.Empty;
+		public ELobbyType? lobby_type { get; set; } = null;
 		public bool is_official_map { get; set; } = false;
 		public bool vanilla_teams_only { get; set; } = false;
 		public UInt32 starting_cash { get; set; } = 0;
@@ -108,6 +115,8 @@ namespace GenOnlineService.Controllers
 		public bool is_tracking_stats { get; set; } = false;
 		public bool allow_observers { get; set; } = false;
 		public UInt16 max_camera_height { get; set; } = 0;
+		public UInt32 exe_crc { get; set; } = 0;
+		public UInt32 ini_crc { get; set; } = 0;
 
 		public List<MatchdataMemberModel?> members { get; private set; } = new();
 	}
