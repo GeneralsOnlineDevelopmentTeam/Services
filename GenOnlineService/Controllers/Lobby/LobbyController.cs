@@ -330,6 +330,17 @@ namespace GenOnlineService.Controllers
 									return null;
 								}
 
+								// Record on the lobby that this player reported, and what they claimed. The lobby
+								// outlives a disconnected player's session, so this survives to DeleteLobby where the
+								// winner is determined. MatchID is compared because WasPlayerInMatch accepts any
+								// historic match of this session - without it a stale report could be attributed to
+								// whatever lobby the player happens to be in now.
+								Lobby? outcomeLobby = _lobbyManager.GetLobby(sourceData.currentLobbyID);
+								if (outcomeLobby != null && outcomeLobby.MatchID == match_id)
+								{
+									outcomeLobby.RecordPlayerOutcome(user_id, won);
+								}
+
 								// register with daily stats
 								// NOTE: only once per match - the outcome endpoint can be called repeatedly for the
 								// same match_id, and these counters are unconditional increments
