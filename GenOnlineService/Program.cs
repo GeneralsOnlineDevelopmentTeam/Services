@@ -756,11 +756,6 @@ namespace GenOnlineService
 				return GenerateToken(displayname, userID, ipAddr, tokenType, knownClientID, sessionType, bIsAdmin, userPriority, out _);
 			}
 
-			public string GenerateToken(string displayname, Int64 userID, string ipAddr, ETokenType tokenType, KnownClients.EKnownClients knownClientID, EUserSessionType sessionType, bool bIsAdmin, out string jti)
-			{
-				return GenerateToken(displayname, userID, ipAddr, tokenType, knownClientID, sessionType, bIsAdmin, EUserPriority.None, out jti);
-			}
-
 			public string GenerateToken(string displayname, Int64 userID, string ipAddr, ETokenType tokenType, KnownClients.EKnownClients knownClientID, EUserSessionType sessionType, bool bIsAdmin, EUserPriority userPriority, out string jti)
 			{
 				var jwtSettings = _configuration.GetSection("JwtSettings");
@@ -833,9 +828,6 @@ namespace GenOnlineService
 					expires: DateTime.Now.AddMinutes(Convert.ToDouble(tokenType == ETokenType.Session ? jwtSettings["ExpiresInMinutes_Session"] : jwtSettings["ExpiresInMinutes_Refresh"])),
 					signingCredentials: credentials
 				);
-
-				// Logs the expiry, never the token itself - it's a bearer credential.
-				Console.WriteLine($"[JWT] Minted {tokenType} token for user {userID} (expires {token.ValidTo:HH:mm:ss})");
 
 				return new JwtSecurityTokenHandler().WriteToken(token);
 			}

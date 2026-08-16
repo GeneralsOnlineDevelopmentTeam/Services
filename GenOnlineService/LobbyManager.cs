@@ -1140,10 +1140,20 @@ namespace GenOnlineService
 		// see whether a stream has data and who is watching it.
 		public void SetStreaming(bool isStreaming, int? observerCount = null)
 		{
+			// Retransmit on the live/not-live edge only: the observer lobby view mirrors
+			// IsStreaming, but the relay reports counts continuously and those must not each
+			// cost a lobby transmit.
+			bool bStateChanged = IsStreaming != isStreaming;
+
 			IsStreaming = isStreaming;
 			if (observerCount.HasValue)
 			{
 				ObserverCount = observerCount.Value;
+			}
+
+			if (bStateChanged)
+			{
+				DirtyRetransmit();
 			}
 		}
 

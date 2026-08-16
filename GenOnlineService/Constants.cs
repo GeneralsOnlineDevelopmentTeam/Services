@@ -2640,10 +2640,8 @@ namespace GenOnlineService
 		public string screenshot_url { get; set; } = String.Empty;
 	}
 
-	// Inbound (subscribe/unsubscribe) and outbound (lobby-changed / game-starting /
-	// stream-live / game-started) share one shape: a lobby id and the msg_id distinguishing
-	// the event. GAME_STARTED also carries the host's broadcast delay so waiting observers
-	// can time their watch-key request.
+	// All six observer events share one shape; msg_id distinguishes them. Only GAME_STARTED sets
+	// delay_seconds, which is what a waiting observer times its watch-key request against.
 	public class WebSocketMessage_LobbyObserverEvent : WebSocketMessage
 	{
 		public Int64 lobby_id { get; set; } = -1;

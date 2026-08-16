@@ -56,10 +56,3 @@ nunit-*.xml
 .vs/*
 */.vs/*
 *.csproj.user
-
-# Container files
-GenOnlineService/Dockerfile
-.dockerignore
-
-# Appsettings of any environment
-GenOnlineService/appsettings.*.json
