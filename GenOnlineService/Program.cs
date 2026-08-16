@@ -145,7 +145,7 @@ namespace GenOnlineService
 		}
 	}
 
-	// Shared-key credential for the World Series bot (config WsBot:api_key, presented as
+	// Shared-key credential for the priority scheduler (config WsBot:api_key, presented as
 	// "Authorization: Discord <key>").
 	public static class WsBotKeyValidator
 	{
@@ -169,8 +169,7 @@ namespace GenOnlineService
 		}
 	}
 
-	// Authenticates the World Series bot against WsBot:api_key - its own scheme, since it's
-	// not a player and carries no game-client JWT.
+	// Its own scheme because the caller is a back-end service, not a player, and carries no game-client JWT.
 	public class DiscordAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
 	{
 		public DiscordAuthenticationHandler(

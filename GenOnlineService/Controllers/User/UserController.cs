@@ -168,12 +168,12 @@ namespace GenOnlineService.Controllers
 			return result;
 		}
 
-		// ---- World Series bot API: applies/restores user_priority on the bot's own event
-		// timetable. Authenticated via "Authorization: Discord <WsBot:api_key>", not a
-		// game-client JWT.
+		// ---- Operator API for user_priority. Authenticated with a shared key
+		// ("Authorization: Discord <WsBot:api_key>"), not a game-client JWT, so an external
+		// scheduler can grant priority for the duration of an event and restore it afterwards.
 
-		// Body: { "user_id": 12345, "priority": 2 }. previous_priority in the response lets
-		// the bot restore the prior value later (it stores it, calls SetPriority again with it).
+		// Body: { "user_id": 12345, "priority": 2 }. previous_priority in the response is what
+		// the caller stores to restore the earlier value later.
 		[Authorize(AuthenticationSchemes = "Discord")]
 		[HttpPost("SetPriority")]
 		public async Task<APIResult> SetPriority()
