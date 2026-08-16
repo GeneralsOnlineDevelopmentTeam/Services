@@ -270,6 +270,18 @@ namespace GenOnlineService
 			DirtyRetransmit();
 		}
 
+		// Host decision: may pre-game observers send chat into the lobby? On by default; the host
+		// opts out. Public so it lands in GET /Lobby/{id} (which returns the live object).
+		public bool AllowObserverChat { get; private set; } = true;
+
+		public void SetAllowObserverChat(bool allowed)
+		{
+			if (AllowObserverChat == allowed)
+				return;
+			AllowObserverChat = allowed;
+			DirtyRetransmit();
+		}
+
 		// Livestream state, owned by the relay session.
 		public bool IsStreaming { get; private set; } = false;
 		public int? StreamDelaySeconds { get; private set; } = null;
@@ -311,7 +323,7 @@ namespace GenOnlineService
 		// every existing client renders it with no change at all. user_id -2 is the established
 		// "not a player" sender id (see the admin announcement in Discord.cs); it matches no slot,
 		// so clients colour it as a generic action line rather than in some player's colour.
-		public void BroadcastSystemChatToMembers(string message)
+		public void BroadcastSystemChatToMembers(string message, bool includeObservers = false)
 		{
 			WebSocketMessage_LobbyChatMessageOutbound outboundMsg = new WebSocketMessage_LobbyChatMessageOutbound();
 			outboundMsg.msg_id = (int)EWebSocketMessageID.LOBBY_CHAT_FROM_SERVER;
@@ -331,6 +343,14 @@ namespace GenOnlineService
 				if (lobbyMember.GetSession().TryGetTarget(out UserSession? sess) && sess != null)
 				{
 					sess.QueueWebsocketSend(bytesJSON);
+				}
+			}
+
+			if (includeObservers)
+			{
+				foreach (UserSession observerSession in PendingObservers.Keys)
+				{
+					observerSession.QueueWebsocketSend(bytesJSON);
 				}
 			}
 		}

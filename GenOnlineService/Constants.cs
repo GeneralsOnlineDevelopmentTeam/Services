@@ -1138,6 +1138,10 @@ namespace GenOnlineService
 
 		// lobby id
 		public Int64 currentLobbyID = -1;
+
+		// Observer-chat rate gate: last time this session sent an observer chat message
+		// (Environment.TickCount64). Dies with the socket, so no cleanup is needed.
+		public long m_timeLastObserverChatSent = -1;
 	}
 
 	public class UserWebSocketInstance
@@ -2539,7 +2543,8 @@ namespace GenOnlineService
 		LOBBY_OBSERVER_LOBBY_CHANGED = 44,
 		LOBBY_OBSERVER_GAME_STARTING = 45,
 		LOBBY_OBSERVER_STREAM_LIVE = 46,
-		LOBBY_OBSERVER_GAME_STARTED = 47
+		LOBBY_OBSERVER_GAME_STARTED = 47,
+		LOBBY_OBSERVER_CHAT_FROM_CLIENT = 48
 	};
 
 	public static class UserPresence
@@ -2643,6 +2648,16 @@ namespace GenOnlineService
 	{
 		public Int64 lobby_id { get; set; } = -1;
 		public int? delay_seconds { get; set; } = null;
+	}
+
+	// Observer chat into a pre-game lobby. Deliberately no action / announcement /
+	// show_announcement_to_host fields: the member path trusts those verbatim (letting a member
+	// post an unprefixed line that looks like a system message); this path has the server decide
+	// the formatting instead.
+	public class WebSocketMessage_LobbyObserverChatInbound : WebSocketMessage
+	{
+		public Int64 lobby_id { get; set; } = -1;
+		public string? message { get; set; }
 	}
 
 	public abstract class WebSocketMessage

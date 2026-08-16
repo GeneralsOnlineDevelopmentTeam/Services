@@ -811,6 +811,96 @@ namespace GenOnlineService.Controllers
 						}
 					}
 				}
+				else if (msgID == EWebSocketMessageID.LOBBY_OBSERVER_CHAT_FROM_CLIENT)
+				{
+					// Observer sends chat into a pre-game lobby. Own lane because the member
+					// path is gated on currentLobbyID != -1 and an observer is not in a lobby.
+					WebSocketMessage_LobbyObserverChatInbound? observerChatMsg =
+						JsonSerializer.Deserialize<WebSocketMessage_LobbyObserverChatInbound>(payload, JsonOpts);
+
+					if (observerChatMsg == null)
+					{
+						return;
+					}
+
+					Lobby? observerChatLobby = _lobbyManager.GetLobby(observerChatMsg.lobby_id);
+					if (observerChatLobby == null)
+					{
+						return;
+					}
+
+					// Authorization: only sessions actually observing this lobby may post into
+					// it. This is what stops someone from writing into an arbitrary lobby by
+					// guessing an id; lobby_id selects which observed lobby this is for.
+					if (!observerChatLobby.PendingObservers.ContainsKey(sourceUserSession))
+					{
+						return;
+					}
+
+					// Host kill switch. A stale client that still shows an enabled entry gets
+					// an explanation rather than silence.
+					if (!observerChatLobby.AllowObserverChat)
+					{
+						WebSocketMessage_LobbyChatMessageOutbound refusalMsg = new WebSocketMessage_LobbyChatMessageOutbound();
+						refusalMsg.msg_id = (int)EWebSocketMessageID.LOBBY_CHAT_FROM_SERVER;
+						refusalMsg.user_id = -2;
+						refusalMsg.message = "Observer chat is disabled by the host.";
+						refusalMsg.action = true;
+						sourceUserSession.QueueWebsocketSend(
+							Encoding.UTF8.GetBytes(JsonSerializer.Serialize(refusalMsg)));
+						return;
+					}
+
+					string strText = observerChatMsg.message ?? String.Empty;
+					strText = strText.Trim();
+					if (strText.Length == 0)
+					{
+						return;
+					}
+					if (strText.Length > 200)
+					{
+						strText = strText.Substring(0, 200);
+					}
+
+					// Server-side rate gate (3000 ms, matching the client's network-room
+					// slowmode): the client-side slowmode is only courtesy, a modded client
+					// ignores it. The timestamp lives on the session and dies with the socket.
+					long timeNow = Environment.TickCount64;
+					if (sourceUserSession.m_timeLastObserverChatSent != -1 &&
+						timeNow - sourceUserSession.m_timeLastObserverChatSent < 3000)
+					{
+						return;
+					}
+					sourceUserSession.m_timeLastObserverChatSent = timeNow;
+
+					// Server-controlled formatting: exactly the member path's [Name] message,
+					// but with the flags fixed so a client can never smuggle in an action or
+					// announcement line through this lane.
+					WebSocketMessage_LobbyChatMessageOutbound outboundMsg = new WebSocketMessage_LobbyChatMessageOutbound();
+					outboundMsg.msg_id = (int)EWebSocketMessageID.LOBBY_CHAT_FROM_SERVER;
+					outboundMsg.user_id = sourceUserSession.m_UserID;
+					outboundMsg.message = String.Format("[{0}] {1}", sourceUserData.m_strDisplayName, strText);
+					outboundMsg.action = false;
+					outboundMsg.announcement = false;
+					outboundMsg.show_announcement_to_host = false;
+
+					byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outboundMsg));
+
+					foreach (LobbyMember lobbyMember in observerChatLobby.Members)
+					{
+						if (lobbyMember != null && lobbyMember.GetSession().TryGetTarget(out UserSession? sess) && sess != null)
+						{
+							sess.QueueWebsocketSend(bytesJSON);
+						}
+					}
+
+					// Observers get the same bytes; the sender's own copy comes back this way,
+					// so no local echo is needed.
+					foreach (UserSession observerSess in observerChatLobby.PendingObservers.Keys)
+					{
+						observerSess.QueueWebsocketSend(bytesJSON);
+					}
+				}
 				else if (msgID == EWebSocketMessageID.START_GAME_COUNTDOWN_STARTED)
 				{
 					// must be in a lobby
