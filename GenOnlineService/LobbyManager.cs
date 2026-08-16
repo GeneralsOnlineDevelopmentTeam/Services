@@ -323,7 +323,7 @@ namespace GenOnlineService
 		// every existing client renders it with no change at all. user_id -2 is the established
 		// "not a player" sender id (see the admin announcement in Discord.cs); it matches no slot,
 		// so clients colour it as a generic action line rather than in some player's colour.
-		public void BroadcastSystemChatToMembers(string message, bool includeObservers = false)
+		public void BroadcastSystemChatToMembers(string message, bool includeObservers = false, UserSession? excludeObserverSession = null)
 		{
 			WebSocketMessage_LobbyChatMessageOutbound outboundMsg = new WebSocketMessage_LobbyChatMessageOutbound();
 			outboundMsg.msg_id = (int)EWebSocketMessageID.LOBBY_CHAT_FROM_SERVER;
@@ -350,6 +350,10 @@ namespace GenOnlineService
 			{
 				foreach (UserSession observerSession in PendingObservers.Keys)
 				{
+					if (observerSession == excludeObserverSession)
+					{
+						continue;
+					}
 					observerSession.QueueWebsocketSend(bytesJSON);
 				}
 			}
@@ -1744,10 +1748,13 @@ namespace GenOnlineService
 					continue;
 				}
 
-				// Same courtesy as an explicit unsubscribe: the members were told this observer
-				// arrived, so tell them it is gone. DirtyRetransmit keeps the "N observers
-				// waiting" count honest, which the subscribe/unsubscribe paths already do.
-				lobbyInst.BroadcastSystemChatToMembers(String.Format("Observer {0} left the lobby", strObserverName));
+// Same courtesy as an explicit unsubscribe: the members were told this observer
+			// arrived, so tell them it is gone, and the remaining observers in the same lobby
+			// see it too. DirtyRetransmit keeps the "N observers waiting" count honest, which
+			// the subscribe/unsubscribe paths already do. The swept session is already out of
+			// PendingObservers, so the exclusion is moot but keeps the shape uniform.
+			lobbyInst.BroadcastSystemChatToMembers(String.Format("Observer {0} left the lobby", strObserverName),
+				includeObservers: true, excludeObserverSession: session);
 				lobbyInst.DirtyRetransmit();
 			}
 		}

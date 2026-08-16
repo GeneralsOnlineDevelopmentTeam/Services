@@ -786,9 +786,12 @@ namespace GenOnlineService.Controllers
 						{
 							Console.WriteLine($"[OBSERVER] User {sourceUserSession.m_UserID} subscribed to pre-game lobby {observerLobby.LobbyID}");
 							// The members can be read by this watcher from here on, so say so by
-							// name: the count alone does not tell them who is listening.
+							// name: the count alone does not tell them who is listening. Other
+							// observers in the same lobby see the line too - except the one who
+							// just joined, who knows.
 							observerLobby.BroadcastSystemChatToMembers(
-								String.Format("Observer {0} joined the lobby", sourceUserData.m_strDisplayName));
+								String.Format("Observer {0} joined the lobby", sourceUserData.m_strDisplayName),
+								includeObservers: true, excludeObserverSession: sourceUserSession);
 							// Retransmit so members see the pending-observer count change too.
 							observerLobby.DirtyRetransmit();
 						}
@@ -805,8 +808,11 @@ namespace GenOnlineService.Controllers
 						if (observerLobby != null && observerLobby.PendingObservers.TryRemove(sourceUserSession, out _))
 						{
 							Console.WriteLine($"[OBSERVER] User {sourceUserSession.m_UserID} unsubscribed from pre-game lobby {observerLobby.LobbyID}");
+							// The leaving session is already out of PendingObservers, so the
+							// remaining observers and the members all get the line.
 							observerLobby.BroadcastSystemChatToMembers(
-								String.Format("Observer {0} left the lobby", sourceUserData.m_strDisplayName));
+								String.Format("Observer {0} left the lobby", sourceUserData.m_strDisplayName),
+								includeObservers: true, excludeObserverSession: sourceUserSession);
 							observerLobby.DirtyRetransmit();
 						}
 					}
