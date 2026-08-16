@@ -935,6 +935,43 @@ namespace GenOnlineService.Controllers
 						observerSess.QueueWebsocketSend(bytesJSON);
 					}
 				}
+				else if (msgID == EWebSocketMessageID.LOBBY_OBSERVER_LIST_REQUEST)
+				{
+					// Host-only: the players already see join/leave lines as they happen, but
+					// the host can ask for the current roster by name. The list is announced
+					// into the lobby chat, so the whole game sees it.
+					WebSocketMessage_LobbyObserverEvent? listMsg =
+						JsonSerializer.Deserialize<WebSocketMessage_LobbyObserverEvent>(payload, JsonOpts);
+
+					if (listMsg == null)
+					{
+						return;
+					}
+
+					Lobby? observerListLobby = _lobbyManager.GetLobby(listMsg.lobby_id);
+					if (observerListLobby == null)
+					{
+						return;
+					}
+
+					if (observerListLobby.Owner != sourceUserSession.m_UserID)
+					{
+						return;
+					}
+
+					List<string> lstObserverNames = new List<string>();
+					foreach (UserSession observerSession in observerListLobby.PendingObservers.Keys)
+					{
+						SharedUserData? observerData = WebSocketManager.GetSharedDataForUser(observerSession.m_UserID);
+						lstObserverNames.Add(observerData != null ? observerData.m_strDisplayName : "Unknown");
+					}
+
+					string strMessage = lstObserverNames.Count == 0
+						? "No observers are watching this lobby."
+						: String.Format("Observers watching: {0}", String.Join(", ", lstObserverNames));
+
+					observerListLobby.BroadcastSystemChatToMembers(strMessage);
+				}
 				else if (msgID == EWebSocketMessageID.START_GAME_COUNTDOWN_STARTED)
 				{
 					// must be in a lobby
