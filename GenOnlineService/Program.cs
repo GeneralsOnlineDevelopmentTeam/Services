@@ -145,9 +145,9 @@ namespace GenOnlineService
 		}
 	}
 
-	// Shared-key credential for the priority scheduler (config WsBot:api_key, presented as
-	// "Authorization: Discord <key>").
-	public static class WsBotKeyValidator
+	// Shared-key credential for back-end callers (config ServiceApi:api_key, presented as
+	// "Authorization: ServiceApi <key>").
+	public static class ServiceApiKeyValidator
 	{
 		public static bool ValidateKey(string? suppliedKey)
 		{
@@ -156,7 +156,7 @@ namespace GenOnlineService
 				return false;
 			}
 
-			string? expectedKey = Program.g_Config.GetSection("WsBot").GetValue<string>("api_key");
+			string? expectedKey = Program.g_Config.GetSection("ServiceApi").GetValue<string>("api_key");
 			if (string.IsNullOrEmpty(expectedKey))
 			{
 				return false;
@@ -170,9 +170,9 @@ namespace GenOnlineService
 	}
 
 	// Its own scheme because the caller is a back-end service, not a player, and carries no game-client JWT.
-	public class DiscordAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+	public class ServiceApiAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
 	{
-		public DiscordAuthenticationHandler(
+		public ServiceApiAuthenticationHandler(
 			IOptionsMonitor<AuthenticationSchemeOptions> options,
 			ILoggerFactory logger,
 			UrlEncoder encoder,
@@ -187,18 +187,18 @@ namespace GenOnlineService
 			try
 			{
 				string? authHeader = Request.Headers["Authorization"].FirstOrDefault();
-				if (authHeader == null || !authHeader.StartsWith("Discord ", StringComparison.OrdinalIgnoreCase))
+				if (authHeader == null || !authHeader.StartsWith("ServiceApi ", StringComparison.OrdinalIgnoreCase))
 				{
 					return Task.FromResult(AuthenticateResult.Fail("Invalid Authorization Header"));
 				}
 
-				string suppliedKey = authHeader.Substring("Discord ".Length).Trim();
-				if (!WsBotKeyValidator.ValidateKey(suppliedKey))
+				string suppliedKey = authHeader.Substring("ServiceApi ".Length).Trim();
+				if (!ServiceApiKeyValidator.ValidateKey(suppliedKey))
 				{
-					return Task.FromResult(AuthenticateResult.Fail("Invalid Discord key"));
+					return Task.FromResult(AuthenticateResult.Fail("Invalid service key"));
 				}
 
-				var claims = new[] { new Claim(ClaimTypes.Name, "wsbot"), new Claim(ClaimTypes.Role, "WsBot") };
+				var claims = new[] { new Claim(ClaimTypes.Name, "service-api"), new Claim(ClaimTypes.Role, "ServiceApi") };
 				var identity = new ClaimsIdentity(claims, Scheme.Name);
 				var principal = new ClaimsPrincipal(identity);
 				var ticket = new AuthenticationTicket(principal, Scheme.Name);
@@ -1050,7 +1050,7 @@ namespace GenOnlineService
 					OnTokenValidated = AdditionalValidation
 				};
 			}).AddScheme<AuthenticationSchemeOptions, BasicAuthenticationHandler>("Basic", null)
-			.AddScheme<AuthenticationSchemeOptions, DiscordAuthenticationHandler>("Discord", null);
+			.AddScheme<AuthenticationSchemeOptions, ServiceApiAuthenticationHandler>("ServiceApi", null);
 
 			builder.Services.AddAuthorization(options =>
 			{

@@ -169,12 +169,12 @@ namespace GenOnlineService.Controllers
 		}
 
 		// ---- Operator API for user_priority. Authenticated with a shared key
-		// ("Authorization: Discord <WsBot:api_key>"), not a game-client JWT, so an external
+		// ("Authorization: ServiceApi <ServiceApi:api_key>"), not a game-client JWT, so an external
 		// scheduler can grant priority for the duration of an event and restore it afterwards.
 
 		// Body: { "user_id": 12345, "priority": 2 }. previous_priority in the response is what
 		// the caller stores to restore the earlier value later.
-		[Authorize(AuthenticationSchemes = "Discord")]
+		[Authorize(AuthenticationSchemes = "ServiceApi")]
 		[HttpPost("SetPriority")]
 		public async Task<APIResult> SetPriority()
 		{
@@ -244,7 +244,7 @@ namespace GenOnlineService.Controllers
 		// Body: [ { "user_id": 12345, "priority": 2 }, ... ] - the whole roster in one call,
 		// window-open (priority 2) or window-close (priority 0). Invalid entries are reported
 		// per-user; valid ones all apply.
-		[Authorize(AuthenticationSchemes = "Discord")]
+		[Authorize(AuthenticationSchemes = "ServiceApi")]
 		[HttpPost("SetPriorityBatch")]
 		public async Task<APIResult> SetPriorityBatch()
 		{
@@ -332,7 +332,7 @@ namespace GenOnlineService.Controllers
 		//   { "discord_id": 1234567890 }      users.discord_id (website Discord login)
 		//   { "search_parts": ["bob", "x64"]} partial AND search, max 10 rows
 		// All lookups are EF Core parameterised - arbitrary input cannot reach SQL.
-		[Authorize(AuthenticationSchemes = "Discord")]
+		[Authorize(AuthenticationSchemes = "ServiceApi")]
 		[HttpPost("LookupUser")]
 		public async Task<APIResult> LookupUser()
 		{
