@@ -118,9 +118,8 @@ namespace GenOnlineService.Controllers
 		public bool is_live { get; set; } = true;
 	}
 
-	// The relay is optional: when not configured, the POST endpoints must refuse loudly rather
-	// than pretending a stream was set up. Applied per-endpoint, not class-wide, so GET
-	// /livestreams can keep returning its normal empty list instead.
+	// Per-endpoint rather than class-wide: an unconfigured relay must refuse the POSTs, but GET
+	// /livestreams should still answer with its ordinary empty list.
 	public class RequireRelayAttribute : ActionFilterAttribute
 	{
 		public override void OnActionExecuting(ActionExecutingContext context)

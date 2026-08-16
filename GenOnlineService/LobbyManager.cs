@@ -275,14 +275,12 @@ namespace GenOnlineService
 		public int? StreamDelaySeconds { get; private set; } = null;
 		public int ObserverCount { get; private set; } = 0;
 
-		// The INGAME transition moment - clock for the broadcast-delay gate
-		// (TimeMatchStarted + StreamDelaySeconds), learned from GO's own state transition,
-		// not the relay's liveness report.
+		// Clock for the broadcast-delay gate (TimeMatchStarted + StreamDelaySeconds), taken from GO's
+		// own INGAME transition rather than the relay's liveness report.
 		public DateTime? TimeMatchStarted { get; private set; } = null;
 
-		// Priority-player match: latched TRUE when a user_priority = Player creates or joins.
-		// [JsonIgnore]'d here (lobby members have no use for it) - LivestreamsController copies
-		// this into GET_Livestreams_LivestreamEntry.priority by hand for Watch Live sorting.
+		// Latched TRUE when a user_priority = Player creates or joins. Not in the lobby JSON:
+		// LivestreamsController copies it into the Watch Live entry itself, for sorting.
 		[JsonIgnore]
 		public bool IsPriority { get; private set; } = false;
 
@@ -303,9 +301,8 @@ namespace GenOnlineService
 			DirtyRetransmit();
 		}
 
-		// Pre-game observers parked in the read-only lobby view - distinct from ObserverCount
-		// (live-stream watchers, reported by the relay). Keyed by UserSession so a closed
-		// websocket can be swept from every lobby at once.
+		// Pre-game watchers in the read-only lobby view, distinct from ObserverCount (live watchers,
+		// reported by the relay). Keyed by UserSession so one closed socket sweeps every lobby.
 		[JsonIgnore]
 		public ConcurrentDictionary<UserSession, byte> PendingObservers { get; } = new();
 		public int PendingObserverCount => PendingObservers.Count;

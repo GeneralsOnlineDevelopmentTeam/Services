@@ -1381,15 +1381,12 @@ namespace GenOnlineService
 		DevAccount = 3
 	}
 
-	// Per-user livestream privilege (users.user_priority):
-	//   None   = nothing
-	//   Player = the user's matches are highlighted in the Watch Live browser
-	//   Viewer = the user skips the livestream password + broadcast-delay gates
+	// Per-user livestream privilege (users.user_priority).
 	public enum EUserPriority
 	{
 		None = 0,
-		Player = 1,
-		Viewer = 2
+		Player = 1,		// their matches are highlighted in the Watch Live browser
+		Viewer = 2		// skips the livestream password and broadcast-delay gates
 	}
 
 	public class PlayerStats
