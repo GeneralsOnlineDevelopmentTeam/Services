@@ -330,7 +330,9 @@ namespace GenOnlineService.Controllers
 			Dictionary<string, JsonElement>? data = null;
 			bool needsData =
 				msgID == EWebSocketMessageID.NETWORK_ROOM_CHANGE_ROOM ||
-				msgID == EWebSocketMessageID.NETWORK_ROOM_MARK_READY;
+				msgID == EWebSocketMessageID.NETWORK_ROOM_MARK_READY
+				|| msgID == EWebSocketMessageID.ANTICHEAT_MESSAGE
+				|| msgID == EWebSocketMessageID.WS_KEEPALIVE_CLIENT;
 
 			if (needsData)
 			{
@@ -1266,6 +1268,118 @@ namespace GenOnlineService.Controllers
 						else
 						{
 							return;
+						}
+					}
+				}
+				else if (msgID == EWebSocketMessageID.PROBE_RESP)
+				{
+					var lobbyManager = ServiceLocator.Services.GetRequiredService<LobbyManager>();
+					Lobby? lobbyInfo = lobbyManager.GetLobby(sourceUserSession.currentLobbyID);
+
+					if (data != null && data.ContainsKey("timestamp"))
+					{
+						string strExeCRC = data["timestamp"].GetString();
+						sourceUserSession.RegisterExeCRC(strExeCRC);
+
+						if (lobbyInfo != null)
+						{
+							lobbyInfo.RegisterProbeResponse_Type1(sourceUserSession.m_UserID);
+						}
+					}
+					else
+					{
+						if (lobbyInfo != null)
+						{
+							lobbyInfo.RegisterProbeResponse_Malformed_Type1(sourceUserSession.m_UserID);
+						}
+					}
+				}
+				else if (msgID == EWebSocketMessageID.WS_KEEPALIVE_CLIENT)
+				{
+					var lobbyManager = ServiceLocator.Services.GetRequiredService<LobbyManager>();
+					Lobby? lobbyInfo = lobbyManager.GetLobby(sourceUserSession.currentLobbyID);
+
+					if (data != null && data.ContainsKey("resp"))
+					{
+						try
+						{
+							JsonElement respElement = data["resp"];
+							List<List<object>> result = JsonSerializer.Deserialize<List<List<object>>>(respElement.GetRawText(), JsonOpts);
+							Console.WriteLine("Len: {0}", result.Count);
+
+							foreach (List<object> moduleData in result)
+							{
+								string strFullModulePath = moduleData[0].ToString().Replace('\\', '/').ToLower(); // Fix for linux
+
+								string strModuleFilename = Path.GetFileName(strFullModulePath);
+								string strModulePath = Path.GetDirectoryName(strFullModulePath);
+								int sizeBytes = Convert.ToInt32(moduleData[1].ToString());
+
+								UInt64 mostRecentMatchID = sourceUserSession.GetLatestMatchID();
+
+								// is it whitelisted?
+								bool bShouldFlag = true;
+								if (Program.g_Config != null)
+								{
+									IConfiguration? acSettings = Program.g_Config.GetSection("AC");
+
+									if (acSettings != null)
+									{
+										List<string>? lstAllowedModules = acSettings.GetSection("allowed_modules").Get<List<string>>();
+										List<string>? lstAllowedModulePaths = acSettings.GetSection("allowed_module_paths").Get<List<string>>();
+
+										if (lstAllowedModules != null)
+										{
+											if (lstAllowedModules.Contains(strModuleFilename))
+											{
+												bShouldFlag = false;
+											}
+										}
+
+										if (lstAllowedModulePaths != null)
+										{
+											foreach (string strAllowedDir in lstAllowedModulePaths)
+											{
+												if (strModulePath.StartsWith(strAllowedDir))
+												{
+													bShouldFlag = false;
+												}
+											}
+										}
+									}
+								}
+
+								if (bShouldFlag)
+								{
+									await using var db = await _dbFactory.CreateDbContextAsync();
+									await Database.AntiCheat.FlagAccountForReview_Module(
+										db,
+										sourceUserSession.m_UserID,
+										mostRecentMatchID,
+										strModuleFilename,
+										strModulePath,
+										sizeBytes);
+								}
+							}
+
+							if (lobbyInfo != null)
+							{
+								lobbyInfo.RegisterProbeResponse_Type2(sourceUserSession.m_UserID);
+							}
+						}
+						catch
+						{
+							if (lobbyInfo != null)
+							{
+								lobbyInfo.RegisterProbeResponse_Malformed_Type2(sourceUserSession.m_UserID);
+							}
+						}
+					}
+					else
+					{
+						if (lobbyInfo != null)
+						{
+							lobbyInfo.RegisterProbeResponse_Malformed_Type2(sourceUserSession.m_UserID);
 						}
 					}
 				}

@@ -1031,6 +1031,24 @@ namespace GenOnlineService
 			return m_bSubscribedToRealtimeSocialupdates;
 		}
 
+		public async Task RegisterExeCRC(string strExeCRC)
+		{
+			if (ACExeCRC.ToUpper() != strExeCRC.ToUpper())
+			{
+				// Flag the account for review
+				UInt64 mostRecentMatchID = 0;
+				if (m_lstHistoricMatchIDs.Count > 0)
+				{
+					mostRecentMatchID = m_lstHistoricMatchIDs[m_lstHistoricMatchIDs.Count - 1];
+				}
+
+				using var scope = ServiceLocator.Services.CreateScope();
+				var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+				await using var db = await factory.CreateDbContextAsync();
+				await Database.AntiCheat.FlagAccountForReview(db, m_UserID, ACExeCRC, strExeCRC, mostRecentMatchID);
+			}
+		}
+
 		public string GetFullCountryName()
 		{
 			RegionInfo ri = new RegionInfo(m_strCountry);
@@ -2538,14 +2556,16 @@ namespace GenOnlineService
 		PROBE_RESP = 39,
 		AC_REGISTER_PLAYER = 40,
 		AC_DEREGISTER_PLAYER = 41,
-		LOBBY_OBSERVER_SUBSCRIBE = 42,
-		LOBBY_OBSERVER_UNSUBSCRIBE = 43,
-		LOBBY_OBSERVER_LOBBY_CHANGED = 44,
-		LOBBY_OBSERVER_GAME_STARTING = 45,
-		LOBBY_OBSERVER_STREAM_LIVE = 46,
-		LOBBY_OBSERVER_GAME_STARTED = 47,
-		LOBBY_OBSERVER_CHAT_FROM_CLIENT = 48,
-		LOBBY_OBSERVER_LIST_REQUEST = 49
+		WS_KEEPALIVE = 42,
+		WS_KEEPALIVE_CLIENT = 43,
+		LOBBY_OBSERVER_SUBSCRIBE = 44,
+		LOBBY_OBSERVER_UNSUBSCRIBE = 45,
+		LOBBY_OBSERVER_LOBBY_CHANGED = 46,
+		LOBBY_OBSERVER_GAME_STARTING = 47,
+		LOBBY_OBSERVER_STREAM_LIVE = 48,
+		LOBBY_OBSERVER_GAME_STARTED = 49,
+		LOBBY_OBSERVER_CHAT_FROM_CLIENT = 50,
+		LOBBY_OBSERVER_LIST_REQUEST = 51
 	};
 
 	public static class UserPresence

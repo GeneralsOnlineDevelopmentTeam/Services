@@ -304,6 +304,22 @@ namespace Database
 				string h1 = Helpers.ComputeMD5Hash(hwid_1).ToUpper();
 				string h2 = Helpers.ComputeMD5Hash(hwid_2).ToUpper();
 
+			// basic checks and registration
+			if (!hwid_3.EndsWith("YY"))
+			{
+				await Database.AntiCheat.FlagAccountForReview_SuspectProbes(db, userId, 0, "Logged in with potentially spoofed HWID 0");
+			}
+
+			if (!hwid_4.EndsWith("ZZ"))
+			{
+				await Database.AntiCheat.FlagAccountForReview_SuspectProbes(db, userId, 0, "Logged in with potentially spoofed HWID 1");
+			}
+
+			if (!hwid_5.EndsWith("ZZ"))
+			{
+				await Database.AntiCheat.FlagAccountForReview_SuspectProbes(db, userId, 0, "Logged in with potentially spoofed HWID 2");
+			}
+
 				// check if exists (precompiled query)
 				var existing = await FindDevice(db, userId, h0, h1, h2);
 				if (existing != null)
