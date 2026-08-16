@@ -762,6 +762,14 @@ namespace GenOnlineService.Controllers
 									}
 								}
 							}
+
+							// Read-only watchers in the pre-game lobby view get the same bytes.
+							// They are not members, so the announcement rules above cannot apply -
+							// an observer reads the lobby chat exactly as the members see it.
+							foreach (UserSession observerSess in playerLobby.PendingObservers.Keys)
+							{
+								observerSess.QueueWebsocketSend(bytesJSON);
+							}
 						}
 					}
 				}
@@ -777,6 +785,10 @@ namespace GenOnlineService.Controllers
 						if (observerLobby != null && observerLobby.PendingObservers.TryAdd(sourceUserSession, 0))
 						{
 							Console.WriteLine($"[OBSERVER] User {sourceUserSession.m_UserID} subscribed to pre-game lobby {observerLobby.LobbyID}");
+							// The members can be read by this watcher from here on, so say so by
+							// name: the count alone does not tell them who is listening.
+							observerLobby.BroadcastSystemChatToMembers(
+								String.Format("Observer {0} joined the lobby", sourceUserData.m_strDisplayName));
 							// Retransmit so members see the pending-observer count change too.
 							observerLobby.DirtyRetransmit();
 						}
@@ -793,6 +805,8 @@ namespace GenOnlineService.Controllers
 						if (observerLobby != null && observerLobby.PendingObservers.TryRemove(sourceUserSession, out _))
 						{
 							Console.WriteLine($"[OBSERVER] User {sourceUserSession.m_UserID} unsubscribed from pre-game lobby {observerLobby.LobbyID}");
+							observerLobby.BroadcastSystemChatToMembers(
+								String.Format("Observer {0} left the lobby", sourceUserData.m_strDisplayName));
 							observerLobby.DirtyRetransmit();
 						}
 					}

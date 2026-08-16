@@ -307,6 +307,34 @@ namespace GenOnlineService
 		public ConcurrentDictionary<UserSession, byte> PendingObservers { get; } = new();
 		public int PendingObserverCount => PendingObservers.Count;
 
+		// A system line in the lobby's chat box, sent as an ordinary LOBBY_CHAT_FROM_SERVER so
+		// every existing client renders it with no change at all. user_id -2 is the established
+		// "not a player" sender id (see the admin announcement in Discord.cs); it matches no slot,
+		// so clients colour it as a generic action line rather than in some player's colour.
+		public void BroadcastSystemChatToMembers(string message)
+		{
+			WebSocketMessage_LobbyChatMessageOutbound outboundMsg = new WebSocketMessage_LobbyChatMessageOutbound();
+			outboundMsg.msg_id = (int)EWebSocketMessageID.LOBBY_CHAT_FROM_SERVER;
+			outboundMsg.user_id = -2;
+			outboundMsg.message = message;
+			outboundMsg.action = true;
+
+			byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outboundMsg));
+
+			foreach (LobbyMember lobbyMember in Members)
+			{
+				if (lobbyMember == null)
+				{
+					continue;
+				}
+
+				if (lobbyMember.GetSession().TryGetTarget(out UserSession? sess) && sess != null)
+				{
+					sess.QueueWebsocketSend(bytesJSON);
+				}
+			}
+		}
+
 		public UInt32 ExeCRC { get; private set; } = 0;
 		public UInt32 IniCRC { get; private set; } = 0;
 
@@ -1686,9 +1714,21 @@ namespace GenOnlineService
 		// read-only observer subscriptions are dead too. Called from the ws disconnect path.
 		public void RemovePendingObserver(UserSession session)
 		{
+			SharedUserData? observerData = WebSocketManager.GetSharedDataForUser(session.m_UserID);
+			string strObserverName = (observerData != null) ? observerData.m_strDisplayName : "An observer";
+
 			foreach (Lobby lobbyInst in m_dictLobbies.Values)
 			{
-				lobbyInst.PendingObservers.TryRemove(session, out _);
+				if (!lobbyInst.PendingObservers.TryRemove(session, out _))
+				{
+					continue;
+				}
+
+				// Same courtesy as an explicit unsubscribe: the members were told this observer
+				// arrived, so tell them it is gone. DirtyRetransmit keeps the "N observers
+				// waiting" count honest, which the subscribe/unsubscribe paths already do.
+				lobbyInst.BroadcastSystemChatToMembers(String.Format("Observer {0} left the lobby", strObserverName));
+				lobbyInst.DirtyRetransmit();
 			}
 		}
 
