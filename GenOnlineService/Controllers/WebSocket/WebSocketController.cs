@@ -792,6 +792,34 @@ namespace GenOnlineService.Controllers
 							observerLobby.BroadcastSystemChatToMembers(
 								String.Format("Observer {0} joined the lobby", sourceUserData.m_strDisplayName),
 								includeObservers: true, excludeObserverSession: sourceUserSession);
+
+							// Tell the joining observer what they are in for: the broadcast delay
+							// they will hold, or a straight join at match start. Priority viewers
+							// skip the delay, and a lobby without a configured delay holds nobody.
+							// The priority flag never reaches the client, so the server must pick
+							// the message - same authoritative live re-read as the Observe endpoint.
+							await using (var db = await _dbFactory.CreateDbContextAsync())
+							{
+								bool bIsPriority = await Database.Users.GetUserPriority(db, sourceUserSession.m_UserID) == EUserPriority.Viewer;
+
+								string strJoinMessage;
+								if (bIsPriority || observerLobby.StreamDelaySeconds == null || observerLobby.StreamDelaySeconds <= 0)
+								{
+									strJoinMessage = "Joining on match start.";
+								}
+								else
+								{
+									strJoinMessage = String.Format("Broadcast delay: {0}s - joining automatically when it ends", observerLobby.StreamDelaySeconds);
+								}
+
+								WebSocketMessage_LobbyChatMessageOutbound joinMsg = new WebSocketMessage_LobbyChatMessageOutbound();
+								joinMsg.msg_id = (int)EWebSocketMessageID.LOBBY_CHAT_FROM_SERVER;
+								joinMsg.user_id = -2;
+								joinMsg.message = strJoinMessage;
+								joinMsg.action = true;
+								sourceUserSession.QueueWebsocketSend(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(joinMsg)));
+							}
+
 							// Retransmit so members see the pending-observer count change too.
 							observerLobby.DirtyRetransmit();
 						}
