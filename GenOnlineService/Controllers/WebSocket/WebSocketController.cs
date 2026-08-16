@@ -47,21 +47,8 @@ namespace GenOnlineService.Controllers
 			AllowOutOfOrderMetadataProperties = true
 		};
 
-		// Gitignored and absent in fresh clones; null falls back to the lookup defaults rather than failing static init.
-		private static readonly DatabaseReader? GeoIpReader = TryOpenGeoIp();
-
-		private static DatabaseReader? TryOpenGeoIp()
-		{
-			try
-			{
-				return new DatabaseReader("data/GeoLite2-City.mmdb");
-			}
-			catch (Exception ex)
-			{
-				Console.WriteLine($"[WS] GeoIP DB unavailable ({ex.Message}); using fallback coordinates");
-				return null;
-			}
-		}
+		// GeoIP DB is designed to be reused; opening per request is expensive
+		private static readonly DatabaseReader GeoIpReader = new("data/GeoLite2-City.mmdb");
 
 		private struct WSMessageEnvelope
 		{
@@ -99,22 +86,19 @@ namespace GenOnlineService.Controllers
 
 			try
 			{
-				if (GeoIpReader != null)
+				var city = GeoIpReader.City(ipAddress);
+
+				ipContinent = city.Continent.Code;
+				ipCountry = city.Country.IsoCode;
+
+				if (city.Location.Longitude != null)
 				{
-					var city = GeoIpReader.City(ipAddress);
+					dLongitude = (double)city.Location.Longitude;
+				}
 
-					ipContinent = city.Continent.Code;
-					ipCountry = city.Country.IsoCode;
-
-					if (city.Location.Longitude != null)
-					{
-						dLongitude = (double)city.Location.Longitude;
-					}
-
-					if (city.Location.Latitude != null)
-					{
-						dLatitude = (double)city.Location.Latitude;
-					}
+				if (city.Location.Latitude != null)
+				{
+					dLatitude = (double)city.Location.Latitude;
 				}
 			}
 			catch
