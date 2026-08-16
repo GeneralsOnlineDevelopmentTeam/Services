@@ -576,23 +576,6 @@ namespace Database
 			}
 		}
 
-		// Discord login mapping: the website writes users.discord_id when the account was
-		// created/used through Discord OAuth. Resolves a reactor's GO account.
-		public static async Task<User?> GetUserByDiscordID(AppDbContext db, long discordId)
-		{
-			try
-			{
-				return await db.Users.AsNoTracking()
-					.FirstOrDefaultAsync(u => u.DiscordID != null && u.DiscordID.Value == discordId);
-			}
-			catch (Exception ex)
-			{
-				Console.WriteLine($"[ERROR] GetUserByDiscordID failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
-				return null;
-			}
-		}
-
 		public static async Task<User?> GetUserById(AppDbContext db, long userId)
 		{
 			try

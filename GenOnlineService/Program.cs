@@ -145,72 +145,6 @@ namespace GenOnlineService
 		}
 	}
 
-	// Shared-key credential for back-end callers (config ServiceApi:api_key, presented as
-	// "Authorization: ServiceApi <key>").
-	public static class ServiceApiKeyValidator
-	{
-		public static bool ValidateKey(string? suppliedKey)
-		{
-			if (string.IsNullOrEmpty(suppliedKey) || Program.g_Config == null)
-			{
-				return false;
-			}
-
-			string? expectedKey = Program.g_Config.GetSection("ServiceApi").GetValue<string>("api_key");
-			if (string.IsNullOrEmpty(expectedKey))
-			{
-				return false;
-			}
-
-			// Fixed-time so a wrong key doesn't leak how many leading bytes were right.
-			return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
-				Encoding.UTF8.GetBytes(suppliedKey),
-				Encoding.UTF8.GetBytes(expectedKey));
-		}
-	}
-
-	// Its own scheme because the caller is a back-end service, not a player, and carries no game-client JWT.
-	public class ServiceApiAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
-	{
-		public ServiceApiAuthenticationHandler(
-			IOptionsMonitor<AuthenticationSchemeOptions> options,
-			ILoggerFactory logger,
-			UrlEncoder encoder,
-			TimeProvider timeProvider)
-			: base(options, logger, encoder) { }
-
-		protected override Task<AuthenticateResult> HandleAuthenticateAsync()
-		{
-			if (!Request.Headers.ContainsKey("Authorization"))
-				return Task.FromResult(AuthenticateResult.Fail("Missing Authorization Header"));
-
-			try
-			{
-				string? authHeader = Request.Headers["Authorization"].FirstOrDefault();
-				if (authHeader == null || !authHeader.StartsWith("ServiceApi ", StringComparison.OrdinalIgnoreCase))
-				{
-					return Task.FromResult(AuthenticateResult.Fail("Invalid Authorization Header"));
-				}
-
-				string suppliedKey = authHeader.Substring("ServiceApi ".Length).Trim();
-				if (!ServiceApiKeyValidator.ValidateKey(suppliedKey))
-				{
-					return Task.FromResult(AuthenticateResult.Fail("Invalid service key"));
-				}
-
-				var claims = new[] { new Claim(ClaimTypes.Name, "service-api"), new Claim(ClaimTypes.Role, "ServiceApi") };
-				var identity = new ClaimsIdentity(claims, Scheme.Name);
-				var principal = new ClaimsPrincipal(identity);
-				var ticket = new AuthenticationTicket(principal, Scheme.Name);
-
-				return Task.FromResult(AuthenticateResult.Success(ticket));
-			}
-			catch
-			{
-				return Task.FromResult(AuthenticateResult.Fail("Invalid Authorization Header"));
-			}
-		}
-	}
 	public static class CertHelpers
 	{
 		public static X509Certificate2 LoadPemWithPrivateKey(string certPath, string keyPath)
@@ -1049,8 +983,7 @@ namespace GenOnlineService
 				{
 					OnTokenValidated = AdditionalValidation
 				};
-			}).AddScheme<AuthenticationSchemeOptions, BasicAuthenticationHandler>("Basic", null)
-			.AddScheme<AuthenticationSchemeOptions, ServiceApiAuthenticationHandler>("ServiceApi", null);
+			}).AddScheme<AuthenticationSchemeOptions, BasicAuthenticationHandler>("Basic", null);
 
 			builder.Services.AddAuthorization(options =>
 			{
