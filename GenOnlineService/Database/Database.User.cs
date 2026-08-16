@@ -77,6 +77,10 @@ public class User
 	public bool IsAdmin { get; set; } = false;
 	public bool IsBanned { get; set; } = false;
 
+	// Livestream privilege: 0 none / 1 player (highlight their matches) / 2 viewer (skip
+	// the password + broadcast-delay gates). See EUserPriority.
+	public int UserPriority { get; set; } = 0;
+
 	// ELO
 	public int EloRating { get; set; } = EloConfig.BaseRating;
 	public int MonthlyEloRating { get; set; } = EloConfig.BaseRating;
@@ -162,6 +166,7 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
 		builder.Property(e => e.LimitSuperweapons).HasColumnName("favorite_limit_superweapons");
 		builder.Property(e => e.IsAdmin).HasColumnName("admin");
 		builder.Property(e => e.IsBanned).HasColumnName("banned");
+		builder.Property(e => e.UserPriority).HasColumnName("user_priority");
 		builder.Property(e => e.EloRating).HasColumnName("elo_rating");
 		builder.Property(e => e.MonthlyEloRating).HasColumnName("monthly_elo_rating");
 		builder.Property(e => e.EloNumberOfMatches).HasColumnName("elo_num_matches");
@@ -499,6 +504,105 @@ namespace Database
 				Console.WriteLine($"[ERROR] IsUserAdmin failed: {ex.Message}");
 				SentrySdk.CaptureException(ex);
 				return false;
+			}
+		}
+
+		private static readonly Func<AppDbContext, long, Task<int>> _getUserPriorityQuery =
+			EF.CompileAsyncQuery((AppDbContext db, long userId) =>
+				db.Users
+				  .AsNoTracking()
+				  .Where(u => u.ID == userId)
+				  .Select(u => u.UserPriority)
+				  .FirstOrDefault());
+
+		public static async Task<EUserPriority> GetUserPriority(AppDbContext db, long userId)
+		{
+			try
+			{
+				return (EUserPriority)await _getUserPriorityQuery(db, userId);
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[ERROR] GetUserPriority failed: {ex.Message}");
+				SentrySdk.CaptureException(ex);
+				return EUserPriority.None;
+			}
+		}
+
+		public static async Task<bool> SetUserPriority(AppDbContext db, long userId, int priority)
+		{
+			try
+			{
+				// Reject out-of-range values.
+				if (priority < (int)EUserPriority.None || priority > (int)EUserPriority.Viewer)
+				{
+					return false;
+				}
+
+				int updated = await db.Users
+					.Where(u => u.ID == userId)
+					.ExecuteUpdateAsync(setters => setters.SetProperty(u => u.UserPriority, priority));
+				// False here means "no such user id" - distinct from the range check above.
+				return updated > 0;
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[ERROR] SetUserPriority failed: {ex.Message}");
+				SentrySdk.CaptureException(ex);
+				return false;
+			}
+		}
+
+		// Exact match - display names are unique (SetDisplayName enforces it), and the MySQL
+		// collation makes it case-insensitive.
+		public static async Task<User?> GetUserByDisplayName(AppDbContext db, string displayName)
+		{
+			try
+			{
+				return await db.Users.AsNoTracking()
+					.FirstOrDefaultAsync(u => u.DisplayName == displayName);
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[ERROR] GetUserByDisplayName failed: {ex.Message}");
+				SentrySdk.CaptureException(ex);
+				return null;
+			}
+		}
+
+		// Partial display-name search for Discord !searchuserid: every part must match (AND).
+		// Parameterised through EF Core, so arbitrary input cannot reach SQL.
+		public static async Task<List<User>> SearchUsersByDisplayName(AppDbContext db, List<string> nameParts, int limit)
+		{
+			try
+			{
+				IQueryable<User> query = db.Users.AsNoTracking();
+				foreach (string part in nameParts)
+				{
+					query = query.Where(u => u.DisplayName != null && u.DisplayName.Contains(part));
+				}
+
+				return await query.Take(limit).ToListAsync();
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[ERROR] SearchUsersByDisplayName failed: {ex.Message}");
+				SentrySdk.CaptureException(ex);
+				return new List<User>();
+			}
+		}
+
+		public static async Task<User?> GetUserById(AppDbContext db, long userId)
+		{
+			try
+			{
+				return await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.ID == userId);
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[ERROR] GetUserById failed: {ex.Message}");
+				SentrySdk.CaptureException(ex);
+				return null;
 			}
 		}
 

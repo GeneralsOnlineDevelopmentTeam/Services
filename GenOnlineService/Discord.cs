@@ -23,6 +23,7 @@ using Discord;
 using Discord.Rest;
 using Discord.WebSocket;
 using GenOnlineService;
+using Microsoft.EntityFrameworkCore;
 using MySqlX.XDevAPI;
 using System;
 using System.Collections.Generic;
@@ -111,7 +112,7 @@ public class DiscordBot
 
 	public DiscordBot()
 	{
-#if !DEBUG
+#if !DEBUG || USE_DISCORD_IN_DEBUG
 		_ = InitAsync().ContinueWith(t =>
 		{
 			if (t.IsFaulted)
@@ -272,6 +273,35 @@ public class DiscordBot
 		}
 
 		return false;
+	}
+
+	private bool IsDiscordAdmin(UInt64 userId)
+	{
+		try
+		{
+			if (Program.g_Config == null)
+			{
+				return false;
+			}
+
+			IConfiguration? discordSettings = Program.g_Config.GetSection("Discord");
+			if (discordSettings == null)
+			{
+				return false;
+			}
+
+			List<UInt64>? discord_admins = discordSettings.GetSection("discord_admins").Get<List<UInt64>>();
+			if (discord_admins == null)
+			{
+				return false;
+			}
+
+			return discord_admins.Contains(userId);
+		}
+		catch
+		{
+			return false;
+		}
 	}
 
 	private uint g_cooldownLengthSeconds = 20;
@@ -680,6 +710,48 @@ public class DiscordBot
 								}
 							}
 						}
+						else if (message.Content.ToLower().StartsWith("!setpriority") || message.Content.ToLower().StartsWith("!user_setpriority"))
+						{
+							if (message.Channel.Id == g_dictChannelIDs[EDiscordChannelIDs.AdminCommands])
+							{
+								if (IsDiscordAdmin(message.Author.Id))
+								{
+									await HandleSetPriorityCommand(message);
+								}
+								else
+								{
+									PushDM(message.Author, "You don't have access to staff commands.");
+								}
+							}
+						}
+						else if (message.Content.ToLower().StartsWith("!getuserid"))
+						{
+							if (message.Channel.Id == g_dictChannelIDs[EDiscordChannelIDs.AdminCommands])
+							{
+								if (IsDiscordAdmin(message.Author.Id))
+								{
+									await HandleGetUserIdCommand(message);
+								}
+								else
+								{
+									PushDM(message.Author, "You don't have access to staff commands.");
+								}
+							}
+						}
+						else if (message.Content.ToLower().StartsWith("!searchuserid"))
+						{
+							if (message.Channel.Id == g_dictChannelIDs[EDiscordChannelIDs.AdminCommands])
+							{
+								if (IsDiscordAdmin(message.Author.Id))
+								{
+									await HandleSearchUserIdCommand(message);
+								}
+								else
+								{
+									PushDM(message.Author, "You don't have access to staff commands.");
+								}
+							}
+						}
 
 
 						//JSONRequest_PushCommand requestToSend = new JSONRequest_PushCommand(new DiscordUser(message.Author.Id, message.Author.Username), message.Content, enumChannelID);
@@ -716,6 +788,99 @@ public class DiscordBot
 		{
 
 		}
+	}
+
+	// ---- Staff commands: user priority + user lookup --------------------------------------
+
+	private async Task HandleSetPriorityCommand(SocketMessage message)
+	{
+		string[] strComponents = message.Content.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+		if (strComponents.Length == 2 && strComponents[1].ToLower() == "help")
+		{
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands,
+				"!setpriority <user_id> <priority>\nPriority types:\n0 = none\n1 = player (their matches are highlighted in the Watch Live browser)\n2 = viewer (skips the livestream password + broadcast-delay gates)\nExample: !setpriority 12345 2");
+			return;
+		}
+
+		if (strComponents.Length != 3 ||
+			!Int64.TryParse(strComponents[1], out Int64 targetUserId) ||
+			!Int32.TryParse(strComponents[2], out Int32 priority))
+		{
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !setpriority <user_id> <0|1|2> (e.g. !setpriority 12345 2). Use !setpriority help for the priority types.");
+			return;
+		}
+
+		using var scope = ServiceLocator.Services.CreateScope();
+		var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+		await using var db = await factory.CreateDbContextAsync();
+
+		User? user = await Database.Users.GetUserById(db, targetUserId);
+		if (user == null)
+		{
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"User {targetUserId} does not exist.");
+			return;
+		}
+
+		if (await Database.Users.SetUserPriority(db, targetUserId, priority))
+		{
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"User {targetUserId} ({user.DisplayName}) priority set to {priority}.");
+		}
+		else
+		{
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"Invalid priority type {priority}. Use 0, 1 or 2 (see !setpriority help).");
+		}
+	}
+
+	private async Task HandleGetUserIdCommand(SocketMessage message)
+	{
+		string[] strComponents = message.Content.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+		if (strComponents.Length < 2)
+		{
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !getuserid <display name> (e.g. !getuserid x64)");
+			return;
+		}
+
+		string strName = string.Join(' ', strComponents.Skip(1));
+
+		using var scope = ServiceLocator.Services.CreateScope();
+		var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+		await using var db = await factory.CreateDbContextAsync();
+
+		User? user = await Database.Users.GetUserByDisplayName(db, strName);
+		if (user == null)
+		{
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"No user found with display name '{strName}'.");
+			return;
+		}
+
+		PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"{user.DisplayName} is user ID {user.ID} (priority {user.UserPriority}, account type {user.AccountType}).");
+	}
+
+	private async Task HandleSearchUserIdCommand(SocketMessage message)
+	{
+		string[] strComponents = message.Content.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+		if (strComponents.Length < 2)
+		{
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !searchuserid <part1> [part2 ...] (e.g. !searchuserid bob x64)");
+			return;
+		}
+
+		List<string> parts = strComponents.Skip(1).ToList();
+
+		using var scope = ServiceLocator.Services.CreateScope();
+		var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+		await using var db = await factory.CreateDbContextAsync();
+
+		List<User> users = await Database.Users.SearchUsersByDisplayName(db, parts, 10);
+		if (users.Count == 0)
+		{
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"No users match '{String.Join(" ", parts)}'.");
+			return;
+		}
+
+		string strResults = String.Join("\n", users.Select(u => $"`{u.ID}` {u.DisplayName} (priority {u.UserPriority})"));
+		PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"Search results ({users.Count} shown):\n{strResults}");
 	}
 
 	private static Task LogAsync(LogMessage log)

@@ -330,6 +330,10 @@ namespace GenOnlineService.Controllers
 						bool bPassworded = data["passworded"].GetBoolean();
 						string? strPassword = data["password"].GetString();
 						bool bAllowObservers = data["allow_observers"].GetBoolean();
+						// Optional: an older client that does not send it opts out of being
+						// watchable, which is also the server default.
+						bool bAllowStreamers = data.TryGetValue("allow_streamers", out var allowStreamersEl)
+							? allowStreamersEl.GetBoolean() : false;
 						UInt16 maxCamHeight = Convert.ToUInt16(data["max_cam_height"].GetDouble()); // client sends this as a float...
 						UInt32 exe_crc = data["exe_crc"].GetUInt32();
 						UInt32 ini_crc = data["ini_crc"].GetUInt32();
@@ -381,12 +385,21 @@ namespace GenOnlineService.Controllers
 								string strDisplayName = await Database.Users.GetDisplayName(db, user_id);
 
 								Int64 newLobbyID = await _lobbyManager.CreateLobby(db, playerSession, strDisplayName, strName, strMapName, strMapPath, bMapOfficial, maxPlayers, strIPAddr,
-									hostPreferredPort, bVanillaTeamsOnly, bTrackStats, starting_cash, bPassworded, strPassword, playerSession.networkRoomID, bAllowObservers, maxCamHeight, exe_crc, ini_crc, ELobbyType.CustomGame, anticheatID);
+									hostPreferredPort, bVanillaTeamsOnly, bTrackStats, starting_cash, bPassworded, strPassword, playerSession.networkRoomID, bAllowObservers, bAllowStreamers, maxCamHeight, exe_crc, ini_crc, ELobbyType.CustomGame, anticheatID);
 
 								if (newLobbyID >= 0)
 								{
 									result.result = 1;
 									result.lobby_id = newLobbyID;
+
+									// A priority Player hosting marks the lobby for Watch Live.
+									EUserPriority userPriority = TokenHelper.GetUserPriority(this);
+									Lobby? newLobby = _lobbyManager.GetLobby(newLobbyID);
+									newLobby?.GetMemberFromUserID(user_id)?.SetPriority(userPriority);
+									if (userPriority == EUserPriority.Player)
+									{
+										newLobby?.SetPriority(true);
+									}
 
 									// mark lobby list as dirty
 									await WebSocketManager.SendNewOrDeletedLobbyToAllNetworkRoomMembers(playerSession.networkRoomID);

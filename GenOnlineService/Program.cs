@@ -144,6 +144,7 @@ namespace GenOnlineService
 			return bMatched;
 		}
 	}
+
 	public static class CertHelpers
 	{
 		public static X509Certificate2 LoadPemWithPrivateKey(string certPath, string keyPath)
@@ -311,6 +312,18 @@ namespace GenOnlineService
 		public static bool IsAdmin(ControllerBase controller)
 		{
 			return controller.User.IsInRole("Admin");
+		}
+
+		// Signed at login from users.user_priority - a client cannot forge it.
+		public static EUserPriority GetUserPriority(ControllerBase controller)
+		{
+			var claim = controller.User.FindFirst("priority");
+			if (claim != null && Int32.TryParse(claim.Value, out int value))
+			{
+				return (EUserPriority)value;
+			}
+
+			return EUserPriority.None;
 		}
 
 		public static KnownClients.EKnownClients GetClientID(ControllerBase controller)
@@ -678,12 +691,12 @@ namespace GenOnlineService
 
 			public const string TokenGenerationClaim = "tgen";
 
-			public string GenerateToken(string displayname, Int64 userID, string ipAddr, ETokenType tokenType, KnownClients.EKnownClients knownClientID, EUserSessionType sessionType, bool bIsAdmin)
+			public string GenerateToken(string displayname, Int64 userID, string ipAddr, ETokenType tokenType, KnownClients.EKnownClients knownClientID, EUserSessionType sessionType, bool bIsAdmin, EUserPriority userPriority = EUserPriority.None)
 			{
-				return GenerateToken(displayname, userID, ipAddr, tokenType, knownClientID, sessionType, bIsAdmin, out _);
+				return GenerateToken(displayname, userID, ipAddr, tokenType, knownClientID, sessionType, bIsAdmin, userPriority, out _);
 			}
 
-			public string GenerateToken(string displayname, Int64 userID, string ipAddr, ETokenType tokenType, KnownClients.EKnownClients knownClientID, EUserSessionType sessionType, bool bIsAdmin, out string jti)
+			public string GenerateToken(string displayname, Int64 userID, string ipAddr, ETokenType tokenType, KnownClients.EKnownClients knownClientID, EUserSessionType sessionType, bool bIsAdmin, EUserPriority userPriority, out string jti)
 			{
 				var jwtSettings = _configuration.GetSection("JwtSettings");
 
@@ -742,6 +755,10 @@ namespace GenOnlineService
 				{
 					claims.Add(new Claim(ClaimTypes.Role, "Admin"));
 				}
+
+				// Signed like every other claim - a client cannot alter it without breaking
+				// the HMAC signature.
+				claims.Add(new Claim("priority", ((int)userPriority).ToString()));
 
 
 				var token = new JwtSecurityToken(
@@ -860,6 +877,21 @@ namespace GenOnlineService
 			if (bEnableDiscord)
 			{
 				g_Discord = new DiscordBot();
+			}
+
+			// A misconfigured optional integration must not take the server down - warn and
+			// continue, same as Discord's own startup check.
+			var relaySettings = Program.g_Config.GetSection("Relay");
+			if (relaySettings.GetValue<bool>("enabled"))
+			{
+				string? relayBaseUrl = relaySettings.GetValue<string>("base_url");
+				string? relayApiKey = relaySettings.GetValue<string>("api_key");
+				string? relayIngressKey = relaySettings.GetValue<string>("ingress_api_key");
+				if (string.IsNullOrEmpty(relayBaseUrl) || string.IsNullOrEmpty(relayApiKey) || string.IsNullOrEmpty(relayIngressKey))
+				{
+					Console.WriteLine($"[WARNING] Relay is enabled in config but base_url, api_key and/or ingress_api_key are missing - " +
+						$"livestream endpoints will return 503 until the Relay section is completed.");
+				}
 			}
 
 			builder.Services.AddSingleton<LobbyManager>();

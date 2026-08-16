@@ -359,6 +359,108 @@ namespace GenOnlineService
 		public string Password { get; private set; } = String.Empty;
 
 		public bool AllowObservers { get; private set; } = false;
+
+		// Host decision at creation: may this game be watched at all, regardless of any
+		// individual player's own streamer role? When off, hidden from Watch Live entirely.
+		public bool AllowStreamers { get; private set; } = false;
+
+		public void SetAllowStreamers(bool allowed)
+		{
+			if (AllowStreamers == allowed)
+				return;
+			AllowStreamers = allowed;
+			DirtyRetransmit();
+		}
+
+		// Host decision: may pre-game observers send chat into the lobby? On by default; the host
+		// opts out. Public so it lands in GET /Lobby/{id} (which returns the live object).
+		public bool AllowObserverChat { get; private set; } = true;
+
+		public void SetAllowObserverChat(bool allowed)
+		{
+			if (AllowObserverChat == allowed)
+				return;
+			AllowObserverChat = allowed;
+			DirtyRetransmit();
+		}
+
+		// Livestream state, owned by the relay session.
+		public bool IsStreaming { get; private set; } = false;
+		public int? StreamDelaySeconds { get; private set; } = null;
+		public int ObserverCount { get; private set; } = 0;
+
+		// Clock for the broadcast-delay gate (TimeMatchStarted + StreamDelaySeconds), taken from GO's
+		// own INGAME transition rather than the relay's liveness report.
+		public DateTime? TimeMatchStarted { get; private set; } = null;
+
+		// Latched TRUE when a user_priority = Player creates or joins. Not in the lobby JSON:
+		// LivestreamsController copies it into the Watch Live entry itself, for sorting.
+		[JsonIgnore]
+		public bool IsPriority { get; private set; } = false;
+
+		public void SetPriority(bool priority)
+		{
+			IsPriority = priority;
+		}
+
+		// True while the host's match-start countdown is running. Rides the lobby JSON so
+		// members/observers mirror it via the ordinary refetch - no separate countdown message.
+		public bool CountdownStarted { get; private set; } = false;
+
+		public void SetCountdownStarted(bool started)
+		{
+			if (CountdownStarted == started)
+				return;
+			CountdownStarted = started;
+			DirtyRetransmit();
+		}
+
+		// Pre-game watchers in the read-only lobby view, distinct from ObserverCount (live watchers,
+		// reported by the relay). Keyed by UserSession so one closed socket sweeps every lobby.
+		[JsonIgnore]
+		public ConcurrentDictionary<UserSession, byte> PendingObservers { get; } = new();
+		public int PendingObserverCount => PendingObservers.Count;
+
+		// A system line in the lobby's chat box, sent as an ordinary LOBBY_CHAT_FROM_SERVER so
+		// every existing client renders it with no change at all. user_id -2 is the established
+		// "not a player" sender id (see the admin announcement in Discord.cs); it matches no slot,
+		// so clients colour it as a generic action line rather than in some player's colour.
+		public void BroadcastSystemChatToMembers(string message, bool includeObservers = false, UserSession? excludeObserverSession = null)
+		{
+			WebSocketMessage_LobbyChatMessageOutbound outboundMsg = new WebSocketMessage_LobbyChatMessageOutbound();
+			outboundMsg.msg_id = (int)EWebSocketMessageID.LOBBY_CHAT_FROM_SERVER;
+			outboundMsg.user_id = -2;
+			outboundMsg.message = message;
+			outboundMsg.action = true;
+
+			byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outboundMsg));
+
+			foreach (LobbyMember lobbyMember in Members)
+			{
+				if (lobbyMember == null)
+				{
+					continue;
+				}
+
+				if (lobbyMember.GetSession().TryGetTarget(out UserSession? sess) && sess != null)
+				{
+					sess.QueueWebsocketSend(bytesJSON);
+				}
+			}
+
+			if (includeObservers)
+			{
+				foreach (UserSession observerSession in PendingObservers.Keys)
+				{
+					if (observerSession == excludeObserverSession)
+					{
+						continue;
+					}
+					observerSession.QueueWebsocketSend(bytesJSON);
+				}
+			}
+		}
+
 		public UInt32 ExeCRC { get; private set; } = 0;
 		public UInt32 IniCRC { get; private set; } = 0;
 
@@ -385,20 +487,12 @@ namespace GenOnlineService
 		[JsonIgnore]
 		public ConcurrentDictionary<Int64, DateTime> TimeMemberLeft { get; private set; } = new();
 
-		// Records the first time each player's in-game WebSocket connection dropped (i.e., when they first "quit"
-		// while the match was in progress). Only the first disconnect is stored � reconnects do not reset it.
-		// Used by DetermineLobbyWinnerIfNotPresent to find who abandoned first (= loser) vs last (= winner).
-		// NOTE: These are mutated from HTTP/websocket threads and the lobby tick loop at the same time, so they must
-		// be concurrent collections.
+		// First in-game disconnect per player; DetermineLobbyWinnerIfNotPresent reads it to tell who quit first.
+		// Concurrent because HTTP/websocket threads and the lobby tick loop mutate it at the same time.
 		[JsonIgnore]
 		public ConcurrentDictionary<Int64, DateTime> TimePlayerAbandonedIngame { get; private set; } = new();
 
-		/// <summary>
-		/// Records the moment a player's WebSocket dropped while the lobby was in INGAME state.
-		/// Only the FIRST disconnect is stored; subsequent reconnect/disconnect cycles are ignored
-		/// so that a player who briefly loses connection is not penalised more than the player who
-		/// intentionally killed the game first.
-		/// </summary>
+		// Only the first disconnect is kept, so a brief drop is not penalised over the player who quit first.
 		public void RecordPlayerIngameAbandon(Int64 userId)
 		{
 			DateTime abandonTime = DateTime.UtcNow;
@@ -408,10 +502,7 @@ namespace GenOnlineService
 			}
 		}
 
-		/// <summary>
-		/// Removes the in-game abandon timestamp for a player who successfully reconnected.
-		/// This ensures a future disconnect records the correct (later) quit time.
-		/// </summary>
+		// Cleared on reconnect so a later disconnect records the real quit time.
 		public void ClearPlayerIngameAbandon(Int64 userId)
 		{
 			if (TimePlayerAbandonedIngame.TryRemove(userId, out _))
@@ -707,6 +798,21 @@ public async Task FinalizeACChecks()
 					}
 				}
 
+				// Ping pending observers too - they are not lobby members, so they get no
+				// LOBBY_CURRENT_LOBBY_UPDATE, and they refetch GET /Lobby/{id} on the ping.
+				if (PendingObservers.Count > 0)
+				{
+					WebSocketMessage_LobbyObserverEvent observerPing = new WebSocketMessage_LobbyObserverEvent();
+					observerPing.msg_id = (int)EWebSocketMessageID.LOBBY_OBSERVER_LOBBY_CHANGED;
+					observerPing.lobby_id = LobbyID;
+					byte[] observerBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(observerPing));
+
+					foreach (UserSession sess in PendingObservers.Keys)
+					{
+						sess.QueueWebsocketSend(observerBytes);
+					}
+				}
+
 				// transmit to those in network room
 				//WebSocketManager.SendNewOrDeletedLobbyToAllNetworkRoomMembers(NetworkRoomID);
 
@@ -968,6 +1074,30 @@ public async Task FinalizeACChecks()
 
 			await OnAfterPlayerLeft(UserID);
 
+			// Any departure cancels the host's countdown client-side - follow suit or
+			// observers keep waiting for a match that isn't starting.
+			CountdownStarted = false;
+
+			// Demote the lobby if the leaver was the last priority Player - in-memory scan,
+			// no DB lookup, since each member already carries its grant from the JWT.
+			if (IsPriority)
+			{
+				bool stillHasPriorityPlayer = false;
+				foreach (LobbyMember memberEntry in Members)
+				{
+					if (memberEntry.IsHuman() && memberEntry.Priority == EUserPriority.Player)
+					{
+						stillHasPriorityPlayer = true;
+						break;
+					}
+				}
+
+				if (!stillHasPriorityPlayer)
+				{
+					IsPriority = false;
+				}
+			}
+
 			DirtyRetransmit();
 		}
 
@@ -1159,7 +1289,15 @@ public async Task FinalizeACChecks()
 
 		public async Task UpdateState(ELobbyState state)
 		{
+			bool wasIngame = State == ELobbyState.INGAME;
 			State = state;
+
+			// One-shot latch: every start path (host START_GAME, quickmatch) lands here, and a
+			// repeated INGAME update must not reset it.
+			if (state == ELobbyState.INGAME && !wasIngame)
+			{
+				TimeMatchStarted = DateTime.UtcNow;
+			}
 
 			// if start, init our AC probe
 			if (state == ELobbyState.INGAME)
@@ -1207,6 +1345,37 @@ public async Task FinalizeACChecks()
 			{
                 LobbyJoinability = newJoinability;
             }
+		}
+
+		// Liveness and observer count both come from the relay, which is the only party that can
+		// see whether a stream has data and who is watching it.
+		public void SetStreaming(bool isStreaming, int? observerCount = null)
+		{
+			// Retransmit on the live/not-live edge only: the observer lobby view mirrors
+			// IsStreaming, but the relay reports counts continuously and those must not each
+			// cost a lobby transmit.
+			bool bStateChanged = IsStreaming != isStreaming;
+
+			IsStreaming = isStreaming;
+			if (observerCount.HasValue)
+			{
+				ObserverCount = observerCount.Value;
+			}
+
+			if (bStateChanged)
+			{
+				DirtyRetransmit();
+			}
+		}
+
+		// The delay is set separately, at registration, because it is known before the stream is
+		// live and is reported by the host rather than observed by the relay.
+		public void SetStreamDelay(int? delaySeconds)
+		{
+			if (delaySeconds.HasValue)
+			{
+				StreamDelaySeconds = delaySeconds;
+			}
 		}
 
 		public void UpdateMaxCameraHeight(UInt16 maxCamHeight)
@@ -1275,6 +1444,15 @@ public async Task FinalizeACChecks()
 		public UInt16 SlotIndex { get; private set; } = 0;
 		public string Region { get; private set; } = "Unknown";
 		public string MiddlewareUserID { get; private set; } = String.Empty;
+
+		// Livestream privilege grant, carried from the member's JWT at create/join - lets the
+		// lobby's priority latch be recomputed on leave without a DB lookup.
+		public EUserPriority Priority { get; private set; } = EUserPriority.None;
+
+		public void SetPriority(EUserPriority priority)
+		{
+			Priority = priority;
+		}
 
 		[JsonIgnore] // cant serialize refs
 		private WeakReference<Lobby?> CurrentLobby = new(null);
@@ -1442,9 +1620,8 @@ public async Task FinalizeACChecks()
             }
 		}
 
-		// Lobbies that asked to be destroyed from a synchronous event callback. They are deleted from the tick loop so
-		// the delete is properly awaited and its exceptions are observed (an `async void` handler would let a failure
-		// escape unobserved and leave the lobby leaked in m_dictLobbies forever).
+		// Destroyed from the tick loop so the delete is awaited and its exceptions observed; an async void
+		// handler would let a failure escape and leak the lobby in m_dictLobbies.
 		private readonly ConcurrentQueue<Lobby> m_queueLobbiesNeedingDestroyed = new();
 
 		private void HandleLobbyNeedsDestroyed(Lobby lobby)
@@ -1474,7 +1651,7 @@ public async Task FinalizeACChecks()
 		}
 
 		public async Task<Int64> CreateLobby(AppDbContext _db, UserSession owningSession, string strOwnerDisplayName, string strName, string strMapName, string strMapPath, bool bMapOfficial, int maxPlayers, string HostIPAddr,
-			UInt16 hostPreferredPort, bool bVanillaTeams, bool bTrackStats, UInt32 default_starting_cash, bool bPassworded, String strPassword, Int16 parentNetworkRoom, bool bAllowObservers,
+			UInt16 hostPreferredPort, bool bVanillaTeams, bool bTrackStats, UInt32 default_starting_cash, bool bPassworded, String strPassword, Int16 parentNetworkRoom, bool bAllowObservers, bool bAllowStreamers,
 			UInt16 maxCamHeight, UInt32 exe_crc, UInt32 ini_crc, ELobbyType lobbyType, EKnownAnticheatID anticheatID)
 		{
 			Console.WriteLine("Created lobby");
@@ -1505,6 +1682,7 @@ public async Task FinalizeACChecks()
 			}
 
 			Lobby newLobby = new Lobby(newLobbyID, owningSession, strName, ELobbyState.GAME_SETUP, strMapName, strMapPath, bVanillaTeams, starting_cash, bLimitSuperweapons, bTrackStats, bPassworded, strPassword, bMapOfficial, rng_seed, parentNetworkRoom, bAllowObservers, maxCamHeight, exe_crc, ini_crc, maxPlayers, lobbyType, anticheatID);
+			newLobby.SetAllowStreamers(bAllowStreamers);
 			m_dictLobbies[newLobbyID] = newLobby;
 
 			
@@ -1609,6 +1787,11 @@ public async Task FinalizeACChecks()
 			}
 
 			return listLobbies;
+		}
+
+		public List<Lobby> GetAllLobbies()
+		{
+			return m_dictLobbies.Values.ToList();
 		}
 
 		public Lobby? GetLobby(Int64 lobbyID)
@@ -1716,6 +1899,31 @@ public async Task FinalizeACChecks()
 			}
 		}
 
+		// A closed websocket means the client is gone (or reconnecting elsewhere) - its
+		// read-only observer subscriptions are dead too. Called from the ws disconnect path.
+		public void RemovePendingObserver(UserSession session)
+		{
+			SharedUserData? observerData = WebSocketManager.GetSharedDataForUser(session.m_UserID);
+			string strObserverName = (observerData != null) ? observerData.m_strDisplayName : "An observer";
+
+			foreach (Lobby lobbyInst in m_dictLobbies.Values)
+			{
+				if (!lobbyInst.PendingObservers.TryRemove(session, out _))
+				{
+					continue;
+				}
+
+// Same courtesy as an explicit unsubscribe: the members were told this observer
+			// arrived, so tell them it is gone, and the remaining observers in the same lobby
+			// see it too. DirtyRetransmit keeps the "N observers waiting" count honest, which
+			// the subscribe/unsubscribe paths already do. The swept session is already out of
+			// PendingObservers, so the exclusion is moot but keeps the shape uniform.
+			lobbyInst.BroadcastSystemChatToMembers(String.Format("Observer {0} left the lobby", strObserverName),
+				includeObservers: true, excludeObserverSession: session);
+				lobbyInst.DirtyRetransmit();
+			}
+		}
+
 		public async Task<bool> DeleteLobby(Lobby lobby)
 		{
 			try
@@ -1732,6 +1940,23 @@ public async Task FinalizeACChecks()
 				// delete
 				bool bRemoved = m_dictLobbies.Remove(lobby.LobbyID, out _);
 				await WebSocketManager.SendNewOrDeletedLobbyToAllNetworkRoomMembers(lobby.NetworkRoomID);
+
+				// Pending observers get one last lobby-changed ping; their next GET /Lobby/{id}
+				// refetch 404s and they leave the read-only lobby view cleanly.
+				if (lobby.PendingObservers.Count > 0)
+				{
+					WebSocketMessage_LobbyObserverEvent observerEvent = new WebSocketMessage_LobbyObserverEvent();
+					observerEvent.msg_id = (int)EWebSocketMessageID.LOBBY_OBSERVER_LOBBY_CHANGED;
+					observerEvent.lobby_id = lobby.LobbyID;
+					byte[] observerBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(observerEvent));
+
+					foreach (UserSession sess in lobby.PendingObservers.Keys)
+					{
+						sess.QueueWebsocketSend(observerBytes);
+					}
+
+					lobby.PendingObservers.Clear();
+				}
 
 				// only do this once
 				if (bRemoved)

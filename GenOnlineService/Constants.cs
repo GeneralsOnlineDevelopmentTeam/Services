@@ -1156,6 +1156,10 @@ namespace GenOnlineService
 
 		// lobby id
 		public Int64 currentLobbyID = -1;
+
+		// Observer-chat rate gate: last time this session sent an observer chat message
+		// (Environment.TickCount64). Dies with the socket, so no cleanup is needed.
+		public long m_timeLastObserverChatSent = -1;
 	}
 
 	public class UserWebSocketInstance
@@ -1397,6 +1401,14 @@ namespace GenOnlineService
 		Discord = 1,
 		Ghost = 2,
 		DevAccount = 3
+	}
+
+	// Per-user livestream privilege (users.user_priority).
+	public enum EUserPriority
+	{
+		None = 0,
+		Player = 1,		// their matches are highlighted in the Watch Live browser
+		Viewer = 2		// skips the livestream password and broadcast-delay gates
 	}
 
 	public class PlayerStats
@@ -2545,7 +2557,15 @@ namespace GenOnlineService
 		AC_REGISTER_PLAYER = 40,
 		AC_DEREGISTER_PLAYER = 41,
 		WS_KEEPALIVE = 42,
-		WS_KEEPALIVE_CLIENT = 43
+		WS_KEEPALIVE_CLIENT = 43,
+		LOBBY_OBSERVER_SUBSCRIBE = 44,
+		LOBBY_OBSERVER_UNSUBSCRIBE = 45,
+		LOBBY_OBSERVER_LOBBY_CHANGED = 46,
+		LOBBY_OBSERVER_GAME_STARTING = 47,
+		LOBBY_OBSERVER_STREAM_LIVE = 48,
+		LOBBY_OBSERVER_GAME_STARTED = 49,
+		LOBBY_OBSERVER_CHAT_FROM_CLIENT = 50,
+		LOBBY_OBSERVER_LIST_REQUEST = 51
 	};
 
 	public static class UserPresence
@@ -2641,6 +2661,24 @@ namespace GenOnlineService
 	public class WebSocketMessage_StartMatch : WebSocketMessage
 	{
 		public string screenshot_url { get; set; } = String.Empty;
+	}
+
+	// All six observer events share one shape; msg_id distinguishes them. Only GAME_STARTED sets
+	// delay_seconds, which is what a waiting observer times its watch-key request against.
+	public class WebSocketMessage_LobbyObserverEvent : WebSocketMessage
+	{
+		public Int64 lobby_id { get; set; } = -1;
+		public int? delay_seconds { get; set; } = null;
+	}
+
+	// Observer chat into a pre-game lobby. Deliberately no action / announcement /
+	// show_announcement_to_host fields: the member path trusts those verbatim (letting a member
+	// post an unprefixed line that looks like a system message); this path has the server decide
+	// the formatting instead.
+	public class WebSocketMessage_LobbyObserverChatInbound : WebSocketMessage
+	{
+		public Int64 lobby_id { get; set; } = -1;
+		public string? message { get; set; }
 	}
 
 	public abstract class WebSocketMessage

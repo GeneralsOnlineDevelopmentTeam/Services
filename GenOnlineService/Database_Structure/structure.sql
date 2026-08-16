@@ -211,6 +211,7 @@ CREATE TABLE IF NOT EXISTS `users` (
   `favorite_limit_superweapons` int(11) NOT NULL DEFAULT -1,
   `admin` tinyint(4) NOT NULL DEFAULT 0,
   `banned` tinyint(4) NOT NULL DEFAULT 0,
+  `user_priority` tinyint(4) NOT NULL DEFAULT 0,
   `elo_rating` int(11) NOT NULL DEFAULT 1000,
   `monthly_elo_rating` int(11) NOT NULL DEFAULT 1000,
   `elo_num_matches` int(11) NOT NULL DEFAULT 0,

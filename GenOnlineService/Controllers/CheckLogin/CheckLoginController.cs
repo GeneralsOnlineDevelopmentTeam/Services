@@ -155,6 +155,7 @@ namespace GenOnlineService.Controllers
 							}
 
 							bool bIsAdmin = await Database.Users.IsUserAdmin(db, user_id);
+							EUserPriority userPriority = await Database.Users.GetUserPriority(db, user_id);
 #else
 							EPendingLoginState? loginState = await Database.PendingLogins.GetPendingLoginState(db, gameCode.ToUpper());
 
@@ -166,6 +167,7 @@ namespace GenOnlineService.Controllers
 									string strDisplayName = await Database.Users.GetDisplayName(db, user_id);
 
 								bool bIsAdmin = await Database.Users.IsUserAdmin(db, user_id);
+								EUserPriority userPriority = await Database.Users.GetUserPriority(db, user_id);
 #endif
 
 							if (state == EPendingLoginState.Waiting)
@@ -207,8 +209,8 @@ namespace GenOnlineService.Controllers
 										string exe_crc = data.ContainsKey("exe_crc") ? data["exe_crc"].ToString() : "NONE";
 										Helpers.RegisterInitialPlayerExeCRC(user_id, exe_crc);
 
-										var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, knownClientID, sessionType, bIsAdmin);
-										var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, knownClientID, sessionType, false, out string refreshJti);
+										var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, knownClientID, sessionType, bIsAdmin, userPriority);
+										var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, knownClientID, sessionType, false, EUserPriority.None, out string refreshJti);
 
 										// rotation: only this refresh token is accepted from now on
 										await TokenRevocationManager.OnTokensIssued(user_id, sessionType, refreshJti);

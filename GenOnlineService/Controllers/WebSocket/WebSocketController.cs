@@ -252,6 +252,14 @@ namespace GenOnlineService.Controllers
 			// close the session
 			if (wsSess != null)
 			{
+				// A closed websocket stopped watching - sweep its pending-observer subscriptions
+				// so the count doesn't keep counting it.
+				UserSession? closingSession = WebSocketManager.GetSessionFromUser(user_id, wsSess.m_SessionType);
+				if (closingSession != null)
+				{
+					_lobbyManager.RemovePendingObserver(closingSession);
+				}
+
 				await WebSocketManager.DeleteSession(user_id, wsSess.m_SessionType, wsSess, false);
 			}
 
@@ -740,8 +748,215 @@ namespace GenOnlineService.Controllers
 									}
 								}
 							}
+
+							// Read-only watchers in the pre-game lobby view get the same bytes.
+							// They are not members, so the announcement rules above cannot apply -
+							// an observer reads the lobby chat exactly as the members see it.
+							foreach (UserSession observerSess in playerLobby.PendingObservers.Keys)
+							{
+								observerSess.QueueWebsocketSend(bytesJSON);
+							}
 						}
 					}
+				}
+				else if (msgID == EWebSocketMessageID.LOBBY_OBSERVER_SUBSCRIBE)
+				{
+					// Read-only registration: no membership, password, or lobby-state check.
+					WebSocketMessage_LobbyObserverEvent? subscribeMsg =
+						JsonSerializer.Deserialize<WebSocketMessage_LobbyObserverEvent>(payload, JsonOpts);
+
+					if (subscribeMsg != null)
+					{
+						Lobby? observerLobby = _lobbyManager.GetLobby(subscribeMsg.lobby_id);
+						if (observerLobby != null && observerLobby.PendingObservers.TryAdd(sourceUserSession, 0))
+						{
+							Console.WriteLine($"[OBSERVER] User {sourceUserSession.m_UserID} subscribed to pre-game lobby {observerLobby.LobbyID}");
+							// The members can be read by this watcher from here on, so say so by
+							// name: the count alone does not tell them who is listening. Other
+							// observers in the same lobby see the line too - except the one who
+							// just joined, who knows.
+							observerLobby.BroadcastSystemChatToMembers(
+								String.Format("Observer {0} joined the lobby", sourceUserData.m_strDisplayName),
+								includeObservers: true, excludeObserverSession: sourceUserSession);
+
+							// Tell the joining observer what they are in for: the broadcast delay
+							// they will hold, or a straight join at match start. Priority viewers
+							// skip the delay, and a lobby without a configured delay holds nobody.
+							// The priority flag never reaches the client, so the server must pick
+							// the message - same authoritative live re-read as the Observe endpoint.
+							await using (var db = await _dbFactory.CreateDbContextAsync())
+							{
+								bool bIsPriority = await Database.Users.GetUserPriority(db, sourceUserSession.m_UserID) == EUserPriority.Viewer;
+
+								string strJoinMessage;
+								if (bIsPriority || observerLobby.StreamDelaySeconds == null || observerLobby.StreamDelaySeconds <= 0)
+								{
+									strJoinMessage = "Joining on match start.";
+								}
+								else
+								{
+									strJoinMessage = String.Format("Broadcast delay: {0}s - joining automatically when it ends", observerLobby.StreamDelaySeconds);
+								}
+
+								WebSocketMessage_LobbyChatMessageOutbound joinMsg = new WebSocketMessage_LobbyChatMessageOutbound();
+								joinMsg.msg_id = (int)EWebSocketMessageID.LOBBY_CHAT_FROM_SERVER;
+								joinMsg.user_id = -2;
+								joinMsg.message = strJoinMessage;
+								joinMsg.action = true;
+								sourceUserSession.QueueWebsocketSend(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(joinMsg)));
+							}
+
+							// Retransmit so members see the pending-observer count change too.
+							observerLobby.DirtyRetransmit();
+						}
+					}
+				}
+				else if (msgID == EWebSocketMessageID.LOBBY_OBSERVER_UNSUBSCRIBE)
+				{
+					WebSocketMessage_LobbyObserverEvent? unsubscribeMsg =
+						JsonSerializer.Deserialize<WebSocketMessage_LobbyObserverEvent>(payload, JsonOpts);
+
+					if (unsubscribeMsg != null)
+					{
+						Lobby? observerLobby = _lobbyManager.GetLobby(unsubscribeMsg.lobby_id);
+						if (observerLobby != null && observerLobby.PendingObservers.TryRemove(sourceUserSession, out _))
+						{
+							Console.WriteLine($"[OBSERVER] User {sourceUserSession.m_UserID} unsubscribed from pre-game lobby {observerLobby.LobbyID}");
+							// The leaving session is already out of PendingObservers, so the
+							// remaining observers and the members all get the line.
+							observerLobby.BroadcastSystemChatToMembers(
+								String.Format("Observer {0} left the lobby", sourceUserData.m_strDisplayName),
+								includeObservers: true, excludeObserverSession: sourceUserSession);
+							observerLobby.DirtyRetransmit();
+						}
+					}
+				}
+				else if (msgID == EWebSocketMessageID.LOBBY_OBSERVER_CHAT_FROM_CLIENT)
+				{
+					// Observer sends chat into a pre-game lobby. Own lane because the member
+					// path is gated on currentLobbyID != -1 and an observer is not in a lobby.
+					WebSocketMessage_LobbyObserverChatInbound? observerChatMsg =
+						JsonSerializer.Deserialize<WebSocketMessage_LobbyObserverChatInbound>(payload, JsonOpts);
+
+					if (observerChatMsg == null)
+					{
+						return;
+					}
+
+					Lobby? observerChatLobby = _lobbyManager.GetLobby(observerChatMsg.lobby_id);
+					if (observerChatLobby == null)
+					{
+						return;
+					}
+
+					// Authorization: only sessions actually observing this lobby may post into
+					// it. This is what stops someone from writing into an arbitrary lobby by
+					// guessing an id; lobby_id selects which observed lobby this is for.
+					if (!observerChatLobby.PendingObservers.ContainsKey(sourceUserSession))
+					{
+						return;
+					}
+
+					// Host kill switch. A stale client that still shows an enabled entry gets
+					// an explanation rather than silence.
+					if (!observerChatLobby.AllowObserverChat)
+					{
+						WebSocketMessage_LobbyChatMessageOutbound refusalMsg = new WebSocketMessage_LobbyChatMessageOutbound();
+						refusalMsg.msg_id = (int)EWebSocketMessageID.LOBBY_CHAT_FROM_SERVER;
+						refusalMsg.user_id = -2;
+						refusalMsg.message = "Observer chat is disabled by the host.";
+						refusalMsg.action = true;
+						sourceUserSession.QueueWebsocketSend(
+							Encoding.UTF8.GetBytes(JsonSerializer.Serialize(refusalMsg)));
+						return;
+					}
+
+					string strText = observerChatMsg.message ?? String.Empty;
+					strText = strText.Trim();
+					if (strText.Length == 0)
+					{
+						return;
+					}
+					if (strText.Length > 200)
+					{
+						strText = strText.Substring(0, 200);
+					}
+
+					// Server-side rate gate (3000 ms, matching the client's network-room
+					// slowmode): the client-side slowmode is only courtesy, a modded client
+					// ignores it. The timestamp lives on the session and dies with the socket.
+					long timeNow = Environment.TickCount64;
+					if (sourceUserSession.m_timeLastObserverChatSent != -1 &&
+						timeNow - sourceUserSession.m_timeLastObserverChatSent < 3000)
+					{
+						return;
+					}
+					sourceUserSession.m_timeLastObserverChatSent = timeNow;
+
+					// Server-controlled formatting: exactly the member path's [Name] message,
+					// but with the flags fixed so a client can never smuggle in an action or
+					// announcement line through this lane.
+					WebSocketMessage_LobbyChatMessageOutbound outboundMsg = new WebSocketMessage_LobbyChatMessageOutbound();
+					outboundMsg.msg_id = (int)EWebSocketMessageID.LOBBY_CHAT_FROM_SERVER;
+					outboundMsg.user_id = sourceUserSession.m_UserID;
+					outboundMsg.message = String.Format("[{0}] {1}", sourceUserData.m_strDisplayName, strText);
+					outboundMsg.action = false;
+					outboundMsg.announcement = false;
+					outboundMsg.show_announcement_to_host = false;
+
+					byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outboundMsg));
+
+					foreach (LobbyMember lobbyMember in observerChatLobby.Members)
+					{
+						if (lobbyMember != null && lobbyMember.GetSession().TryGetTarget(out UserSession? sess) && sess != null)
+						{
+							sess.QueueWebsocketSend(bytesJSON);
+						}
+					}
+
+					// Observers get the same bytes; the sender's own copy comes back this way,
+					// so no local echo is needed.
+					foreach (UserSession observerSess in observerChatLobby.PendingObservers.Keys)
+					{
+						observerSess.QueueWebsocketSend(bytesJSON);
+					}
+				}
+				else if (msgID == EWebSocketMessageID.LOBBY_OBSERVER_LIST_REQUEST)
+				{
+					// Host-only: the players already see join/leave lines as they happen, but
+					// the host can ask for the current roster by name. The list is announced
+					// into the lobby chat, so the whole game sees it.
+					WebSocketMessage_LobbyObserverEvent? listMsg =
+						JsonSerializer.Deserialize<WebSocketMessage_LobbyObserverEvent>(payload, JsonOpts);
+
+					if (listMsg == null)
+					{
+						return;
+					}
+
+					Lobby? observerListLobby = _lobbyManager.GetLobby(listMsg.lobby_id);
+					if (observerListLobby == null)
+					{
+						return;
+					}
+
+					if (observerListLobby.Owner != sourceUserSession.m_UserID)
+					{
+						return;
+					}
+
+					List<string> lstObserverNames = new List<string>();
+					foreach (UserSession observerSession in observerListLobby.PendingObservers.Keys)
+					{
+						SharedUserData? observerData = WebSocketManager.GetSharedDataForUser(observerSession.m_UserID);
+						lstObserverNames.Add(observerData != null ? observerData.m_strDisplayName : "Unknown");
+					}
+
+					string strMessage = lstObserverNames.Count == 0
+						? "No observers are watching this lobby."
+						: String.Format("Observers watching: {0}", String.Join(", ", lstObserverNames));
+
+					observerListLobby.BroadcastSystemChatToMembers(strMessage);
 				}
 				else if (msgID == EWebSocketMessageID.START_GAME_COUNTDOWN_STARTED)
 				{
@@ -765,6 +980,26 @@ namespace GenOnlineService.Controllers
 
 					// lock slots
 					lobbyInfo.CloseOpenSlots();
+
+					// Observers mirror this through the ordinary lobby-changed refetch; the
+					// eager push below is just the instant cue.
+					lobbyInfo.SetCountdownStarted(true);
+
+					// Push it now so observers' countdown starts in sync with the lobby's,
+					// rather than only on the START_GAME forward below (kept as a fallback
+					// for observers that subscribed too late to catch this one).
+					if (lobbyInfo.PendingObservers.Count > 0)
+					{
+						WebSocketMessage_LobbyObserverEvent observerEvent = new WebSocketMessage_LobbyObserverEvent();
+						observerEvent.msg_id = (int)EWebSocketMessageID.LOBBY_OBSERVER_GAME_STARTING;
+						observerEvent.lobby_id = lobbyInfo.LobbyID;
+						byte[] observerBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(observerEvent));
+
+						foreach (UserSession sess in lobbyInfo.PendingObservers.Keys)
+						{
+							sess.QueueWebsocketSend(observerBytes);
+						}
+					}
 				}
 				else if (msgID == EWebSocketMessageID.START_GAME)
 				{
@@ -789,6 +1024,10 @@ namespace GenOnlineService.Controllers
 					// start match + create placeholder match
 					await lobbyInfo.UpdateState(ELobbyState.INGAME);
 
+					// Not a cancel: UpdateState already flipped State to INGAME above, so
+					// observers' next refetch reads "started", not "countdown cleared".
+					lobbyInfo.SetCountdownStarted(false);
+
 					// simple websocket msg, has no data, so dont even read anything
 
 
@@ -811,6 +1050,22 @@ namespace GenOnlineService.Controllers
 									sess.QueueWebsocketSend(bytesJSON);
 								}
 							}
+						}
+					}
+
+					// Tell pending observers to queue their join now - the delay rides along so
+					// the client can show the broadcast-delay wait from the start.
+					if (lobbyInfo.PendingObservers.Count > 0)
+					{
+						WebSocketMessage_LobbyObserverEvent observerEvent = new WebSocketMessage_LobbyObserverEvent();
+						observerEvent.msg_id = (int)EWebSocketMessageID.LOBBY_OBSERVER_GAME_STARTED;
+						observerEvent.lobby_id = lobbyInfo.LobbyID;
+						observerEvent.delay_seconds = lobbyInfo.StreamDelaySeconds;
+						byte[] observerBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(observerEvent));
+
+						foreach (UserSession sess in lobbyInfo.PendingObservers.Keys)
+						{
+							sess.QueueWebsocketSend(observerBytes);
 						}
 					}
 				}

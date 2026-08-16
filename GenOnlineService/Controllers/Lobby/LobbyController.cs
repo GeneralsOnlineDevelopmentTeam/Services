@@ -134,7 +134,9 @@ namespace GenOnlineService.Controllers
 		AI_START_POS = 16,
 		MAX_CAMERA_HEIGHT = 17,
         JOINABILITY = 18,
-		HOST_ACTION_BULK_SLOT_UPDATE = 19
+		HOST_ACTION_BULK_SLOT_UPDATE = 19,
+		LOBBY_STREAM_DELAY = 20,
+		LOBBY_ALLOW_OBSERVER_CHAT = 21
     };
 
 	public class RouteHandler_PUT_Lobby_Result : APIResult
@@ -389,7 +391,9 @@ namespace GenOnlineService.Controllers
 			[ELobbyUpdateField.AI_START_POS] = ELobbyUpdatePermissions.LobbyOwner,
 			[ELobbyUpdateField.MAX_CAMERA_HEIGHT] = ELobbyUpdatePermissions.LobbyOwner,
 			[ELobbyUpdateField.JOINABILITY] = ELobbyUpdatePermissions.LobbyOwner,
-			[ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE] = ELobbyUpdatePermissions.LobbyOwner
+			[ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE] = ELobbyUpdatePermissions.LobbyOwner,
+			[ELobbyUpdateField.LOBBY_STREAM_DELAY] = ELobbyUpdatePermissions.LobbyOwner,
+			[ELobbyUpdateField.LOBBY_ALLOW_OBSERVER_CHAT] = ELobbyUpdatePermissions.LobbyOwner
 		};
 
 
@@ -535,6 +539,32 @@ namespace GenOnlineService.Controllers
 
 										await using var db = await _dbFactory.CreateDbContextAsync();
 										await lobby.UpdateLimitSuperweapons(db, bLimitSuperweapons);
+									}
+								}
+								else if (field == ELobbyUpdateField.LOBBY_STREAM_DELAY)
+								{
+									// Members see it read-only; reported to the relay at
+									// registration via StreamDelaySeconds.
+									if (data.ContainsKey("delay_seconds"))
+									{
+										int delaySeconds = data["delay_seconds"].GetInt32();
+										delaySeconds = Math.Clamp(delaySeconds, 0, 600);
+										lobby.SetStreamDelay(delaySeconds);
+										lobby.DirtyRetransmit();
+									}
+								}
+								else if (field == ELobbyUpdateField.LOBBY_ALLOW_OBSERVER_CHAT)
+								{
+									// Host-only kill switch for pre-game observer chat; on by
+									// default. The setter self-dirties, so no explicit
+									// DirtyRetransmit here.
+									if (data.ContainsKey("allow_observer_chat"))
+									{
+										bool bAllowObserverChat = data["allow_observer_chat"].GetBoolean();
+										lobby.SetAllowObserverChat(bAllowObserverChat);
+										lobby.BroadcastSystemChatToMembers(
+											String.Format("The host has {0} observer chat.", bAllowObserverChat ? "enabled" : "disabled"),
+											includeObservers: true);
 									}
 								}
 								else if (field == ELobbyUpdateField.HOST_ACTION_FORCE_START)
@@ -724,6 +754,13 @@ namespace GenOnlineService.Controllers
 										lobby.DirtyRetransmit();
 									}
 								}
+
+								// Unknown fields throw on the permission-table lookup above and
+								// never reach here, so this only fires for a field actually stored.
+								result.success = true;
+
+								// Any field update cancels the host's countdown client-side.
+								lobby.SetCountdownStarted(false);
                             }
                         }
 
@@ -825,6 +862,17 @@ namespace GenOnlineService.Controllers
 									await using var db = await _dbFactory.CreateDbContextAsync();
 									string strDisplayName = await Database.Users.GetDisplayName(db, user_id);
 									bool bJoinedSuccessfully = await _lobbyManager.JoinLobby(db, lobby, playerSession, strDisplayName, userPreferredPort, bHasMap);
+
+									// A priority Player joining marks the lobby for Watch Live.
+									if (bJoinedSuccessfully)
+									{
+										EUserPriority userPriority = TokenHelper.GetUserPriority(this);
+										lobby.GetMemberFromUserID(user_id)?.SetPriority(userPriority);
+										if (userPriority == EUserPriority.Player)
+										{
+											lobby.SetPriority(true);
+										}
+									}
 
 									result.success = bJoinedSuccessfully;
 
