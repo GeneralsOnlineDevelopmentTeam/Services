@@ -467,7 +467,10 @@ namespace Database
 					jsonSlots[member.SlotIndex] = JsonSerializer.Serialize(model);
 
 					// Observers are not active players
-					if (model.side != Constants.OBSERVER_SIDE_VALUE)
+					// This function runs at the start of a match, before observers are assigned
+					// their actual side value. Observers have PLAYERTEMPLATE_RANDOM (-2) at this
+					// point, so use that value to identify and exclude them.
+					if (model.side != -2)
 					{
 						if (playersPerTeam.ContainsKey(model.team))
 						{
