@@ -16,7 +16,6 @@
 **    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-using Google.Protobuf.WellKnownTypes;
 using MaxMind.GeoIP2;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -30,10 +29,6 @@ using Microsoft.AspNetCore.WebSockets;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
-using Org.BouncyCastle.Crypto;
-using Org.BouncyCastle.OpenSsl;
-using Org.BouncyCastle.Pkcs;
-using Org.BouncyCastle.Security;
 using Sentry;
 using System.Collections.Concurrent;
 using System.Configuration;
@@ -187,37 +182,6 @@ namespace GenOnlineService
 			return false;
 		}
 	}
-	public static class CertHelpers
-	{
-		public static X509Certificate2 LoadPemWithPrivateKey(string certPath, string keyPath)
-		{
-			using (var certReader = new StreamReader(certPath))
-			using (var keyReader = new StreamReader(keyPath))
-			{
-				var pemCertReader = new PemReader(certReader);
-				var pemKeyReader = new PemReader(keyReader);
-
-				var certificate = (Org.BouncyCastle.X509.X509Certificate)pemCertReader.ReadObject();
-				var privateKey = (AsymmetricKeyParameter)pemKeyReader.ReadObject();
-
-				//var store = new Pkcs12Store();
-				var store = new Pkcs12StoreBuilder().Build(); // Fix for CS1729  
-				var certEntry = new X509CertificateEntry(certificate);
-				store.SetCertificateEntry("cert", certEntry);
-				store.SetKeyEntry("key", new AsymmetricKeyEntry(privateKey), new[] { certEntry });
-
-				using (var ms = new MemoryStream())
-				{
-					store.Save(ms, new char[0], new SecureRandom());
-#pragma warning disable SYSLIB0057 // Type or member is obsolete
-					return new X509Certificate2(ms.ToArray(), string.Empty);
-#pragma warning restore SYSLIB0057 // Type or member is obsolete
-				}
-			}
-		}
-	}
-
-
 	public class BasicAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
 	{
 		public BasicAuthenticationHandler(
@@ -439,7 +403,7 @@ namespace GenOnlineService
 			string? password = dbSettings.GetValue<string>("db_password");
 			UInt16? port = dbSettings.GetValue<UInt16>("db_port");
 
-			// Fall back to MySql.Data's own defaults when a key is absent, rather than silently
+			// Fall back to MySqlConnector's own defaults when a key is absent, rather than silently
 			// disabling pooling / zeroing the pool size for deployments predating these settings.
 			int db_min_poolsize = dbSettings.GetValue<int?>("db_min_poolsize") ?? 0;
 			int db_max_poolsize = dbSettings.GetValue<int?>("db_max_poolsize") ?? 100;
@@ -483,7 +447,7 @@ namespace GenOnlineService
 			{
 				//var builder = WebApplication.CreateBuilder(args);
 
-				var csb = new MySql.Data.MySqlClient.MySqlConnectionStringBuilder
+				var csb = new MySqlConnector.MySqlConnectionStringBuilder
 				{
 					Server = hostname,
 					Port = (uint)port,
@@ -492,7 +456,7 @@ namespace GenOnlineService
 					Password = password,
 					ConnectionTimeout = (uint)db_connect_timeout,
 					DefaultCommandTimeout = (uint)db_command_timeout,
-					SslMode = MySql.Data.MySqlClient.MySqlSslMode.Preferred,
+					SslMode = MySqlConnector.MySqlSslMode.Preferred,
 					Pooling = db_use_pooling,
 					MinimumPoolSize = (uint)db_min_poolsize,
 					MaximumPoolSize = (uint)db_max_poolsize,
@@ -1255,8 +1219,6 @@ namespace GenOnlineService
 				}
 				else
 				{
-					//X509Certificate2 = CertHelpers.LoadPemWithPrivateKey(cert_pem_path, cert_key_path);
-
 					X509Certificate2 = X509Certificate2.CreateFromPemFile(cert_pem_path, cert_key_path);
 
 

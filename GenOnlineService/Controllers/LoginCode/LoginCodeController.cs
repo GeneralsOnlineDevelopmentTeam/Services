@@ -20,7 +20,6 @@ using GenOnlineService;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using MySqlX.XDevAPI.Common;
 using System;
 using System.Collections.Concurrent;
 using System.Net;

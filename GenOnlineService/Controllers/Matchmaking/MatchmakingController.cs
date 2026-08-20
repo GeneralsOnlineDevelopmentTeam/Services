@@ -22,8 +22,6 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
-using MySqlX.XDevAPI.Common;
-using Org.BouncyCastle.Tls;
 using System;
 using System.Net;
 using System.Net.WebSockets;
