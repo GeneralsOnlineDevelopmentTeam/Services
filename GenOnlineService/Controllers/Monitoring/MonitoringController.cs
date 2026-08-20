@@ -224,7 +224,7 @@ namespace GenOnlineService.Controllers
 					var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
 
 					GenOnlineService.Controllers.LoginWithToken.LoginWithToken loginWithTokenController = new GenOnlineService.Controllers.LoginWithToken.LoginWithToken(factory);
-					GenOnlineService.Controllers.LoginWithToken.POST_LoginWithToken_Result internalResult = (GenOnlineService.Controllers.LoginWithToken.POST_LoginWithToken_Result)await loginWithTokenController.Post_InternalHandler("{\"challenge\": \"abc\", \"token\": \"iamatest\", \"client_id\": \"gen_online_60hz\"}", IPAddress.Loopback.ToString(), true);
+					GenOnlineService.Controllers.LoginWithToken.POST_LoginWithToken_Result internalResult = (GenOnlineService.Controllers.LoginWithToken.POST_LoginWithToken_Result)await loginWithTokenController.Post_InternalHandler("{\"challenge\": \"abc\", \"token\": \"iamatest\", \"client_id\": \"gen_online_60hz\"}", IPAddress.Loopback.ToString(), Program.BuildWebSocketUrl(Request));
 					return internalResult;
 				}
 				catch
@@ -302,7 +302,7 @@ namespace GenOnlineService.Controllers
 				try
 				{
 					GenOnlineService.Controllers.CheckLoginController checkLoginController = new GenOnlineService.Controllers.CheckLoginController(_dbFactory);
-					APIResult internalResult = await checkLoginController.Post_InternalHandler("{\"challenge\": \"abc\", \"nonce\": \"def\", \"code\": \"iamatest\", \"client_id\": \"gen_online_30hz\"}", IPAddress.Loopback.ToString(), true);
+					APIResult internalResult = await checkLoginController.Post_InternalHandler("{\"challenge\": \"abc\", \"nonce\": \"def\", \"code\": \"iamatest\", \"client_id\": \"gen_online_30hz\"}", IPAddress.Loopback.ToString(), Program.BuildWebSocketUrl(Request));
 					return internalResult;
 				}
 				catch

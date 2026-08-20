@@ -66,18 +66,15 @@ namespace GenOnlineService.Controllers.LoginWithToken
 			{
 				string jsonData = await reader.ReadToEndAsync();
 
-				bool bSecureWS = true;
-				//if (ipCountry2LISO.ToLower() == "ru")
-				{
-					//bSecureWS = false;
-				}
-
-				POST_LoginWithToken_Result result = (POST_LoginWithToken_Result)await Post_InternalHandler(jsonData, IPHelpers.NormalizeIP(HttpContext.Connection.RemoteIpAddress?.ToString()), bSecureWS);
+				POST_LoginWithToken_Result result = (POST_LoginWithToken_Result)await Post_InternalHandler(
+					jsonData,
+					IPHelpers.NormalizeIP(HttpContext.Connection.RemoteIpAddress?.ToString()),
+					Program.BuildWebSocketUrl(Request));
 				return result;
 			}
 		}
 
-		public async Task<APIResult> Post_InternalHandler(string jsonData, string ipAddr, bool bSecureWS, bool bWasMonitor = false)
+		public async Task<APIResult> Post_InternalHandler(string jsonData, string ipAddr, string webSocketUrl, bool bWasMonitor = false)
 		{
 			if (bWasMonitor)
 			{
@@ -164,7 +161,7 @@ namespace GenOnlineService.Controllers.LoginWithToken
 						result.user_id = user_id;
 						result.display_name = strDisplayName;
 
-						result.ws_uri = Program.GetWebSocketAddress(bSecureWS);
+						result.ws_uri = webSocketUrl;
 
 						// This endpoint re-establishes a session, so tear down any state the previous
 						// one left behind (lobby membership, matchmaking, cached session data). Must

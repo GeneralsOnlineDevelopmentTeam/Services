@@ -20,7 +20,10 @@ using Google.Protobuf.WellKnownTypes;
 using MaxMind.GeoIP2;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http.Extensions;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.WebSockets;
@@ -36,6 +39,7 @@ using System.Collections.Concurrent;
 using System.Configuration;
 using System.Drawing;
 using System.IdentityModel.Tokens.Jwt;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.WebSockets;
 using System.Security.Claims;
@@ -789,31 +793,131 @@ namespace GenOnlineService
 			}
 		}
 
-		public static string GetWebSocketAddress(bool bSecure)
+		private static CorsPolicy BuildCorsPolicy(IConfiguration configuration)
 		{
-			if (Program.g_Config == null)
+			string[] configuredOrigins = configuration
+				.GetSection("AllowedOrigins")
+				.Get<string[]>() ?? Array.Empty<string>();
+
+			string[] allowedOrigins = configuredOrigins
+				.Select(origin => origin.Trim())
+				.Where(origin => origin.Length > 0)
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.ToArray();
+
+			bool allowAnyOrigin = allowedOrigins.Contains("*");
+			if (allowAnyOrigin && allowedOrigins.Length > 1)
 			{
-				throw new Exception("g_Config is null.");
+				throw new InvalidOperationException("AllowedOrigins cannot combine '*' with explicit origins.");
 			}
 
-			IConfiguration? coreSettings = Program.g_Config.GetSection("Core");
+			var policyBuilder = new CorsPolicyBuilder()
+				.AllowAnyHeader()
+				.AllowAnyMethod();
 
-			if (coreSettings == null)
+			if (allowAnyOrigin)
 			{
-				throw new Exception("Core section of config is null.");
+				// CORS forbids combining any-origin with credential sharing.
+				policyBuilder.AllowAnyOrigin();
+			}
+			else if (allowedOrigins.Length > 0)
+			{
+				policyBuilder.WithOrigins(allowedOrigins)
+					.SetIsOriginAllowedToAllowWildcardSubdomains()
+					.AllowCredentials();
 			}
 
+			return policyBuilder.Build();
+		}
 
-			string configKey = bSecure ? "ws_address" : "ws_address_insecure";
+		private static bool TryConfigureForwardedHeaders(IServiceCollection services, IConfiguration configuration)
+		{
+			string[] trustedProxyValues = (configuration.GetSection("TrustedProxies").Get<string[]>() ?? Array.Empty<string>())
+				.Where(value => !string.IsNullOrWhiteSpace(value))
+				.Select(value => value.Trim())
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.ToArray();
 
-			string? ws_address = coreSettings.GetValue<string>(configKey);
-
-			if (ws_address == null)
+			if (trustedProxyValues.Length == 0)
 			{
-				throw new Exception(String.Format("{0} in Core section of config is null.", configKey));
+				return false;
 			}
 
-			return ws_address;
+			bool trustAnyProxy = trustedProxyValues.Contains("*");
+			if (trustAnyProxy && trustedProxyValues.Length > 1)
+			{
+				throw new InvalidOperationException("TrustedProxies cannot combine '*' with IP addresses or CIDR networks.");
+			}
+
+			var trustedProxyAddresses = new List<IPAddress>();
+			var trustedProxyNetworks = new List<System.Net.IPNetwork>();
+
+			foreach (string value in trustedProxyValues.Where(value => value != "*"))
+			{
+				if (IPAddress.TryParse(value, out IPAddress? address))
+				{
+					trustedProxyAddresses.Add(address);
+				}
+				else if (System.Net.IPNetwork.TryParse(value, out System.Net.IPNetwork network))
+				{
+					trustedProxyNetworks.Add(network);
+				}
+				else
+				{
+					throw new InvalidOperationException($"TrustedProxies contains invalid IP address or CIDR network '{value}'.");
+				}
+			}
+
+			services.Configure<ForwardedHeadersOptions>(options =>
+			{
+				options.ForwardedHeaders = ForwardedHeaders.XForwardedFor
+					| ForwardedHeaders.XForwardedProto
+					| ForwardedHeaders.XForwardedHost
+					| ForwardedHeaders.XForwardedPrefix;
+				options.KnownProxies.Clear();
+				options.KnownIPNetworks.Clear();
+
+				if (trustAnyProxy)
+				{
+					return;
+				}
+
+				foreach (IPAddress trustedProxyAddress in trustedProxyAddresses)
+				{
+					options.KnownProxies.Add(trustedProxyAddress);
+				}
+
+				foreach (System.Net.IPNetwork trustedProxyNetwork in trustedProxyNetworks)
+				{
+					options.KnownIPNetworks.Add(trustedProxyNetwork);
+				}
+			});
+
+			return true;
+		}
+
+		public static string BuildWebSocketUrl(HttpRequest request)
+		{
+			string webSocketScheme;
+			if (request.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
+			{
+				webSocketScheme = "wss";
+			}
+			else if (request.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase))
+			{
+				webSocketScheme = "ws";
+			}
+			else
+			{
+				throw new InvalidOperationException($"Cannot build a WebSocket URL from request scheme '{request.Scheme}'.");
+			}
+
+			if (!request.Host.HasValue)
+			{
+				throw new InvalidOperationException("Cannot build a WebSocket URL because the request Host is empty.");
+			}
+
+			return UriHelper.BuildAbsolute(webSocketScheme, request.Host, request.PathBase, new PathString("/ws"));
 		}
 
 		public static async Task Main(string[] args)
@@ -830,6 +934,10 @@ namespace GenOnlineService
 			// Add services to the container.
 
 			g_Config = builder.Configuration;
+
+			// Process the original client IP, request scheme, and host only when
+			// one or more trusted reverse proxies are configured.
+			bool useForwardedHeaders = TryConfigureForwardedHeaders(builder.Services, builder.Configuration);
 
 			ShowLogo();
 
@@ -924,19 +1032,11 @@ namespace GenOnlineService
 				});
 			}
 
+			CorsPolicy corsPolicy = BuildCorsPolicy(builder.Configuration);
+
 			builder.Services.AddCors(options =>
 			{
-				options.AddDefaultPolicy(policy =>
-				{
-					policy.WithOrigins(
-						"https://localhost:9000",
-						"http://localhost:9001",
-						"https://*.playgenerals.online"
-					)
-					.AllowAnyHeader()
-					.AllowAnyMethod()
-					.AllowCredentials();
-				});
+				options.AddDefaultPolicy(corsPolicy);
 			});
 
 
@@ -1138,35 +1238,6 @@ namespace GenOnlineService
 				}
 			}
 
-			var kestrelSettings = Program.g_Config.GetSection("Kestrel");
-			var endpointSettings = kestrelSettings.GetSection("Endpoints");
-			var httpsSettings = endpointSettings.GetSection("HTTPS");
-			string? serverURI = httpsSettings.GetValue<string>("Url");
-
-			if (serverURI == null)
-			{
-				Console.WriteLine("FATAL ERROR: serverURI is not set in the config");
-				Console.ReadKey(true);
-				return;
-			}
-
-			// Parse the port number out of serverURI
-			int port = -1;
-			try
-			{
-				if (!string.IsNullOrEmpty(serverURI))
-				{
-					var uri = new Uri(serverURI);
-					port = uri.Port;
-				}
-			}
-			catch
-			{
-				Console.WriteLine("ERROR: Failed to parse port from serverURI: " + serverURI);
-			}
-
-
-
 			// options
 			builder.WebHost.ConfigureKestrel(options =>
 			{
@@ -1195,6 +1266,12 @@ namespace GenOnlineService
 			var app = builder.Build();
 			ServiceLocator.Services = app.Services;
 
+			if (useForwardedHeaders)
+			{
+				// Must run before anything that consumes client IP or request scheme.
+				app.UseForwardedHeaders();
+			}
+
 			if (bUseBuiltinRateLimiter)
 			{
 				app.UseRateLimiter();
@@ -1211,6 +1288,21 @@ namespace GenOnlineService
 			};
 
 			app.UseWebSockets(webSocketOptions);
+
+			// WebSockets do not use CORS, so apply the same origin policy to browser
+			// handshakes explicitly. Native clients may omit Origin.
+			app.Use(async (context, next) =>
+			{
+				if (context.WebSockets.IsWebSocketRequest
+					&& context.Request.Headers.TryGetValue("Origin", out var originHeaders)
+					&& (originHeaders.Count != 1 || !corsPolicy.IsOriginAllowed(originHeaders[0]!)))
+				{
+					context.Response.StatusCode = StatusCodes.Status403Forbidden;
+					return;
+				}
+
+				await next(context);
+			});
 
 			// end websocket
 
@@ -1235,8 +1327,7 @@ namespace GenOnlineService
 			{
 				app.UseHsts();
 
-				// Websocket upgrades are exempt: ws_address_insecure is an intentional fallback for
-				// clients that can't do TLS, and redirecting the upgrade request would break it.
+				// WebSocket upgrades are exempt because redirecting an upgrade request breaks the handshake.
 				app.UseWhen(context => !context.WebSockets.IsWebSocketRequest, branch =>
 				{
 					branch.UseHttpsRedirection();

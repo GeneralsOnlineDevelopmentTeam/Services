@@ -64,18 +64,15 @@ namespace GenOnlineService.Controllers
 			{
 				string jsonData = await reader.ReadToEndAsync();
 
-				bool bSecureWS = true;
-				//if (ipCountry2LISO.ToLower() == "ru")
-				{
-					//bSecureWS = false;
-				}
-
-				POST_CheckLogin_Result result = (POST_CheckLogin_Result)await Post_InternalHandler(jsonData, IPHelpers.NormalizeIP(HttpContext.Connection.RemoteIpAddress?.ToString()), bSecureWS);
+				POST_CheckLogin_Result result = (POST_CheckLogin_Result)await Post_InternalHandler(
+					jsonData,
+					IPHelpers.NormalizeIP(HttpContext.Connection.RemoteIpAddress?.ToString()),
+					Program.BuildWebSocketUrl(Request));
 				return result;
 			}
 		}
 
-		public async Task<APIResult> Post_InternalHandler(string jsonData, string ipAddr, bool bSecureWS, bool bIsMonitor = false)
+		public async Task<APIResult> Post_InternalHandler(string jsonData, string ipAddr, string webSocketUrl, bool bIsMonitor = false)
 		{
 			POST_CheckLogin_Result result = new POST_CheckLogin_Result();
 
@@ -218,7 +215,7 @@ namespace GenOnlineService.Controllers
 											result.refresh_token = refreshtoken;
 											result.user_id = user_id;
 											result.display_name = strDisplayName;
-											result.ws_uri = Program.GetWebSocketAddress(bSecureWS);
+											result.ws_uri = webSocketUrl;
 
 											// clear cached data, its a new session and the client reconnects its
 											// websocket using the ws_uri below - must be awaited so the teardown
