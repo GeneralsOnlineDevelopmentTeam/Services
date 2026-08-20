@@ -62,7 +62,7 @@ namespace GenOnlineService
             postToken = sectionPostToken;
         }
 
-        private static void GetExternalLeaderboardsGetConfig(out string getUrl, out string getToken)
+        private static void GetExternalLeaderboardsConfig(out string getUrl, out string getToken)
         {
             IConfigurationSection configSection = GetExternalLeaderboardsConfigSection();
 
@@ -166,7 +166,7 @@ namespace GenOnlineService
         {
             try
             {
-                GetExternalLeaderboardsGetConfig(out string getUrl, out string getToken);
+                GetExternalLeaderboardsConfig(out string getUrl, out string getToken);
 
                 string requestUrl = getUrl.Replace("{playerId}", playerId.ToString());
 
