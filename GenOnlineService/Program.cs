@@ -997,6 +997,7 @@ namespace GenOnlineService
 				g_Discord = new DiscordBot();
 			}
 
+			builder.Services.AddHostedService<ExternalLeaderboardPublicationWorker>();
 			builder.Services.AddSingleton<LobbyManager>();
 
 			var rateLimitingSettings = Program.g_Config.GetSection("RateLimiting");

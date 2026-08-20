@@ -31,6 +31,7 @@ public class AppDbContext : DbContext
 	public DbSet<ServiceStat> ServiceStats => Set<ServiceStat>();
 	public DbSet<PendingLogin> PendingLogins => Set<PendingLogin>();
 	public DbSet<MatchHistoryEntry> MatchHistory => Set<MatchHistoryEntry>();
+	public DbSet<ExternalPublicationEntry> ExternalPublications => Set<ExternalPublicationEntry>();
 	public DbSet<UserStatsEntry> UserStats => Set<UserStatsEntry>();
 
 	public DbSet<FriendEntry> Friends => Set<FriendEntry>();
@@ -65,6 +66,7 @@ public class AppDbContext : DbContext
 		modelBuilder.ApplyConfiguration(new ServiceStatsConfiguration());
 		modelBuilder.ApplyConfiguration(new PendingLoginConfiguration());
 		modelBuilder.ApplyConfiguration(new MatchHistoryConfiguration());
+		modelBuilder.ApplyConfiguration(new ExternalPublicationConfiguration());
 		modelBuilder.ApplyConfiguration(new UserStatsConfiguration());
 		modelBuilder.ApplyConfiguration(new FriendConfiguration());
 		modelBuilder.ApplyConfiguration(new FriendRequestConfiguration());

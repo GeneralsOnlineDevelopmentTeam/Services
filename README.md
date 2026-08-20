@@ -39,4 +39,5 @@ GeneralsOnline Game Services Code provides RESTful web services which act as a r
 - Build the solution for x64, Windows (or your architecture & OS if different)
 - Edit appsettings.json and fill out any TODO sections (e.g. token settings, database settings)
 - Import the SQL structure to your database (GenOnlineService\Database_Structure\structure.sql)
+- When upgrading an existing database, apply new `GenOnlineService\Database_Structure\upgrade_*.sql` files in date order before starting the updated service
 - Run GenOnlineService.exe
