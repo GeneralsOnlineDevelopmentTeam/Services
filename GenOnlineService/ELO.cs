@@ -16,35 +16,100 @@
 **    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+/// <summary>
+/// Configuration settings for the Elo rating system.
+/// </summary>
 public static class EloConfig
 {
+    /// <summary>
+    /// The base rating for new players in the Elo system.
+    /// </summary>
     public const int BaseRating = 1000;
-    public const int KFactor = 24; // base for per game volatility, increases for first 10 matches, lower after that
+
+    /// <summary>
+    /// The K-factor used in the Elo rating calculation,
+    /// which determines the volatility of rating changes.
+    /// </summary>
+    /// <remarks>
+    /// The KFactor is the maximum number of points a player can
+    /// gain or lose in a single match. The KFactor may be modified, e.g.
+    /// for new players or players with fewer matches, to allow for faster rating adjustments.
+    /// </remarks>
+    public const int KFactor = 24;
+
+    /// <summary>
+    /// The Elo expansion value for standard players, used to adjust ratings over time.
+    /// </summary>
     public const int EloExpansionValue_Standard = 50;
+
+    /// <summary>
+    /// The Elo expansion value for high ELO players, used to adjust ratings over time.
+    /// </summary>
     public const int EloExpansionValue_HighELO = 150;
+
+    /// <summary>
+    /// The number of seconds between Elo expansions in matchmaking, which controls how frequently ratings are adjusted.
+    /// </summary>
     public const int SecondsBetweenEloExpansionsInMatchmaking = 10;
+
+    /// <summary>
+    /// The threshold rating that defines a high ELO player. Players with ratings above this value are considered high ELO players.
+    /// </summary>
     public const int HighEloThreshold = 2000;
 }
 
+/// <summary>
+/// Represents a player's Elo rating data.
+/// </summary>
+/// <param name="rating">The player's current Elo rating.</param>
+/// <param name="monthlyRating">The player's Elo rating for the current month.</param>
+/// <param name="matchCount">The number of matches the player has played.</param>
 public sealed class EloData(int rating, int monthlyRating, int matchCount)
 {
+    /// <summary>
+    /// Gets or sets the player's current Elo rating.
+    /// </summary>
     public int Rating { get; set; } = rating;
+
+    /// <summary>
+    /// Gets or sets the number of matches the player has played.
+    /// </summary>
     public int NumMatches { get; set; } = matchCount;
+
+    /// <summary>
+    /// Gets or sets the player's Elo rating for the current month.
+    /// </summary>
     public int MonthlyRating { get; set; } = monthlyRating;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="EloData"/> class with default values.
+    /// </summary>
     public EloData()
         : this(EloConfig.BaseRating, EloConfig.BaseRating, 0)
     {
     }
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="EloData"/> class with the specified rating and number of matches.
+    /// </summary>
+    /// <param name="rating">The player's current Elo rating.</param>
+    /// <param name="numMatches">The number of matches the player has played.</param>
     public EloData(int rating, int numMatches)
         : this(rating, EloConfig.BaseRating, numMatches)
     {
     }
 }
 
+/// <summary>
+/// Provides methods for calculating and updating Elo ratings based on match results.
+/// </summary>
 public static class Elo
 {
+    /// <summary>
+    /// Applies the result of a match between two players, updating their Elo ratings accordingly.
+    /// </summary>
+    /// <param name="winner">The player who won the match.</param>
+    /// <param name="loser">The player who lost the match.</param>
     public static void ApplyResult(EloData winner, EloData loser)
     {
         var winnerScore = GetExpectedScore(winner.Rating, loser.Rating);
