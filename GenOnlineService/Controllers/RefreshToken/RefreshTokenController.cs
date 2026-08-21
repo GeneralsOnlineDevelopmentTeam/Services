@@ -35,6 +35,7 @@ namespace GenOnlineService.Controllers.RefreshToken
 		public string refresh_token { get; set; } = "";
 		public Int64 user_id { get; set; } = -1;
 		public string display_name { get; set; } = "";
+		public string ban_reason { get; set; } = "";
 	}
 
 	// Pure token rotation. Unlike LoginWithToken this does NOT establish a session - the caller's
@@ -97,13 +98,15 @@ namespace GenOnlineService.Controllers.RefreshToken
 
 				// re-check the ban on every rotation so a ban applied since the last refresh takes
 				// effect immediately rather than waiting for the periodic reconcile
-				bool bIsBanned = await Database.Users.IsUserBanned(db, user_id);
-				if (bIsBanned)
+				UserBanStatus? banStatus = await Database.Users.GetUserBanStatus(db, user_id);
+				if (banStatus?.IsBanned == true)
 				{
 					// kill every token they hold, not just this request
 					await TokenRevocationManager.RevokeAllTokensForUser(user_id, "user is banned");
+					await ModerationManager.DisconnectUser(user_id, EModerationAction.Ban, banStatus.BanReason);
 
 					result.result = EPendingLoginState.LoginFailed;
+					result.ban_reason = banStatus.BanReason;
 					Response.StatusCode = (int)HttpStatusCode.Locked;
 					return result;
 				}

@@ -409,6 +409,8 @@ namespace GenOnlineService
 
 	public class Program
 	{
+		private const string BannedUserContextKey = "GenOnlineService.BannedUserID";
+
 		public static IConfiguration? g_Config = null;
 		public static DiscordBot? g_Discord = null;
 
@@ -632,6 +634,7 @@ namespace GenOnlineService
 				// Revocation checks. All in-memory, no database access per request.
 				if (TokenRevocationManager.IsUserBanned(userID))
 				{
+					context.HttpContext.Items[BannedUserContextKey] = userID;
 					context.Fail("Failed Validation #12 - User is banned");
 					return Task.CompletedTask;
 				}
@@ -692,6 +695,28 @@ namespace GenOnlineService
 			}
 
 			return Task.CompletedTask;
+		}
+
+		private static async Task HandleJwtChallenge(JwtBearerChallengeContext context)
+		{
+			if (!context.HttpContext.Items.TryGetValue(BannedUserContextKey, out object? value)
+				|| value is not Int64 userID)
+			{
+				return;
+			}
+
+			IDbContextFactory<AppDbContext> dbFactory = context.HttpContext.RequestServices.GetRequiredService<IDbContextFactory<AppDbContext>>();
+			await using var db = await dbFactory.CreateDbContextAsync();
+			UserBanStatus? banStatus = await Database.Users.GetUserBanStatus(db, userID);
+
+			if (banStatus?.IsBanned != true)
+			{
+				return;
+			}
+
+			context.HandleResponse();
+			context.Response.StatusCode = StatusCodes.Status423Locked;
+			await context.Response.WriteAsJsonAsync(new { ban_reason = banStatus.BanReason });
 		}
 
 		public class JwtTokenGenerator
@@ -988,7 +1013,8 @@ namespace GenOnlineService
 
 				options.Events = new JwtBearerEvents
 				{
-					OnTokenValidated = AdditionalValidation
+					OnTokenValidated = AdditionalValidation,
+					OnChallenge = HandleJwtChallenge
 				};
 			}).AddScheme<AuthenticationSchemeOptions, BasicAuthenticationHandler>("Basic", null);
 
@@ -1404,9 +1430,9 @@ namespace GenOnlineService
 				timerTick.Start();
 			}
 
-			// keep token revocation state in sync with bans applied directly in the database
+			// Pick up bans applied directly in the database.
 			{
-				System.Timers.Timer timerTick = new System.Timers.Timer(60000); // 60s tick
+				System.Timers.Timer timerTick = new System.Timers.Timer(5000); // 5s tick
 				timerTick.AutoReset = false;
 				timerTick.Elapsed += async (sender, e) =>
 				{

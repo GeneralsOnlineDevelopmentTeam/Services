@@ -111,7 +111,7 @@ namespace Database
 			{
 				Console.WriteLine($"[ERROR] UserTokens.GetBannedUserIDs failed: {ex.Message}");
 				SentrySdk.CaptureException(ex);
-				return new List<Int64>();
+				throw;
 			}
 		}
 	}
@@ -244,8 +244,7 @@ namespace GenOnlineService
 			await Persist(userID, sessionType, newState);
 		}
 
-		// Invalidates every token previously issued to this user, across all session types, and drops
-		// any live websockets they hold.
+		// Invalidates every token previously issued to this user across all session types.
 		public static async Task RevokeAllTokensForUser(Int64 userID, string reason)
 		{
 			Console.WriteLine($"[TokenRevocation] Revoking all tokens for user {userID} ({reason}).");
@@ -260,7 +259,6 @@ namespace GenOnlineService
 				await Persist(userID, sessionType, newState);
 			}
 
-			await DisconnectUser(userID);
 		}
 
 		// Picks up bans applied directly in the database (there is no in-process ban API).
@@ -291,7 +289,9 @@ namespace GenOnlineService
 
 			foreach (Int64 userID in newlyBanned)
 			{
+				UserBanStatus? banStatus = await Database.Users.GetUserBanStatus(db, userID);
 				await RevokeAllTokensForUser(userID, "user was banned");
+				await ModerationManager.DisconnectUser(userID, EModerationAction.Ban, banStatus?.BanReason);
 			}
 		}
 
@@ -314,22 +314,5 @@ namespace GenOnlineService
 			}
 		}
 
-		private static async Task DisconnectUser(Int64 userID)
-		{
-			try
-			{
-				List<UserSession> lstUserSessions = WebSocketManager.GetAllDataFromUser(userID);
-				foreach (UserSession userSession in lstUserSessions)
-				{
-					UserWebSocketInstance? oldWS = WebSocketManager.GetWebSocketForSession(userSession);
-					await WebSocketManager.DeleteSession(userID, userSession.GetSessionType(), oldWS, true);
-				}
-			}
-			catch (Exception ex)
-			{
-				Console.WriteLine($"[ERROR] TokenRevocation.DisconnectUser failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
-			}
-		}
 	}
 }

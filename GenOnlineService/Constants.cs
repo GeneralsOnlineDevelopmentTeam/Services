@@ -658,6 +658,30 @@ namespace GenOnlineService
 			return lstRet;
 		}
 
+		public static async Task DisconnectUser(Int64 userID, byte[] finalMessage)
+		{
+			List<UserSession> userSessions = GetAllDataFromUser(userID);
+
+			foreach (UserSession userSession in userSessions)
+			{
+				try
+				{
+					UserWebSocketInstance? oldWS = GetWebSocketForSession(userSession);
+					if (oldWS != null)
+					{
+						await oldWS.SendAsync(finalMessage, WebSocketMessageType.Text);
+					}
+
+					await DeleteSession(userID, userSession.GetSessionType(), oldWS, true);
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"[ERROR] DisconnectUser failed for user {userID}, session {userSession.GetSessionType()}: {ex.Message}");
+					SentrySdk.CaptureException(ex);
+				}
+			}
+		}
+
 		public static async Task<bool> ClearDataFromUser(Int64 userID, EUserSessionType sessionType)
 		{
 			// NOTE: This is when a player is truly disconnected and we can destroy session, remove form lobby etc, websocket disconnect doesnt mean that because the clietn reconnects
@@ -2545,7 +2569,8 @@ namespace GenOnlineService
 		AC_REGISTER_PLAYER = 40,
 		AC_DEREGISTER_PLAYER = 41,
 		WS_KEEPALIVE = 42,
-		WS_KEEPALIVE_CLIENT = 43
+		WS_KEEPALIVE_CLIENT = 43,
+		MODERATION_ACTION = 46
 	};
 
 	public static class UserPresence
@@ -2641,6 +2666,12 @@ namespace GenOnlineService
 	public class WebSocketMessage_StartMatch : WebSocketMessage
 	{
 		public string screenshot_url { get; set; } = String.Empty;
+	}
+
+	public class WebSocketMessage_ModerationAction : WebSocketMessage
+	{
+		public string action_type { get; set; } = String.Empty;
+		public string reason { get; set; } = String.Empty;
 	}
 
 	public abstract class WebSocketMessage
