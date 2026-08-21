@@ -963,6 +963,8 @@ static class MatchmakingManager
 						await quickMatchLobby.RemoveMember(lobbyMember);
 					}
 				}
+
+				await lobbyManager.DeleteLobby(quickMatchLobby);
 			}
 
 			WebSocketMessage_Simple requeueAction = new WebSocketMessage_Simple();
