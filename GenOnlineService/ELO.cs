@@ -18,14 +18,12 @@
 
 public static class EloConfig
 {
-    public static int BaseRating { get; } = 1000;
-    public static int KFactor { get; } = 24; // base for per game volatility, increases for first 10 matches, lower after that
-
-    public static int EloExpansionValue_Standard = 50;
-	public static int EloExpansionValue_HighELO = 150;
-	public static int SecondsBetweenEloExpansionsInMatchmaking = 10;
-
-    public static int HighEloThreshold = 2000;
+    public const int BaseRating = 1000;
+    public const int KFactor = 24; // base for per game volatility, increases for first 10 matches, lower after that
+    public const int EloExpansionValue_Standard = 50;
+    public const int EloExpansionValue_HighELO = 150;
+    public const int SecondsBetweenEloExpansionsInMatchmaking = 10;
+    public const int HighEloThreshold = 2000;
 }
 
 public sealed class EloData(int rating, int monthlyRating, int matchCount)
