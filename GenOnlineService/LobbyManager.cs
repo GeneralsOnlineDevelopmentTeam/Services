@@ -958,6 +958,11 @@ public async Task FinalizeACChecks()
 			await g_SlotLock.WaitAsync();
 			try
 			{
+				if (State != ELobbyState.GAME_SETUP)
+				{
+					return false;
+				}
+
 				// NOTE: this must be inside the lock, otherwise two concurrent joins for the same user can both pass
 				// the check and end up occupying two slots
 				LobbyMember? existingMember = GetMemberFromUserID(playerSession.m_UserID);
@@ -1448,7 +1453,15 @@ public async Task FinalizeACChecks()
 
 		public async Task UpdateState(ELobbyState state)
 		{
-			State = state;
+			await g_SlotLock.WaitAsync();
+			try
+			{
+				State = state;
+			}
+			finally
+			{
+				g_SlotLock.Release();
+			}
 
 			// if start, init our AC probe
 			if (state == ELobbyState.INGAME)
