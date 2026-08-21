@@ -15,9 +15,6 @@
 **    You should have received a copy of the GNU Affero General Public License
 **    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
-using GenOnlineService;
-
-public enum MatchResult { PlayerAWins, PlayerBWins }
 
 public static class EloConfig
 {
@@ -50,34 +47,39 @@ public sealed class EloData(int rating, int monthlyRating, int matchCount)
 
 public static class Elo
 {
-    public static double ExpectedScore(int ra, int rb)
+    public static void ApplyResult(EloData winner, EloData loser)
     {
-        // E_A = 1 / (1 + 10^((R_B - R_A)/400))
-        return 1.0 / (1.0 + Math.Pow(10.0, (rb - ra) / 400.0));
+        var winnerScore = GetExpectedScore(winner.Rating, loser.Rating);
+        var loserScore = 1.0 - winnerScore;
+
+        var winnerKFactor = GetEffectiveKFactor(EloConfig.KFactor, winner.NumMatches);
+        var loserKFactor = GetEffectiveKFactor(EloConfig.KFactor, loser.NumMatches);
+
+        winner.Rating += (int)Math.Round(winnerKFactor * (1.0 - winnerScore));
+        loser.Rating -= (int)Math.Round(loserKFactor * loserScore);
     }
 
-    public static void ApplyResult(ref EloData playerDataA, ref EloData playerDataB, MatchResult result)
+    private static double GetExpectedScore(int player, int opponent)
     {
-        double ea = ExpectedScore(playerDataA.Rating, playerDataB.Rating);
-        double eb = 1.0 - ea;
+        return 1.0 / (1.0 + Math.Pow(10.0, (opponent - player) / 400.0));
+    }
 
-        double sa = result switch
+    private static int GetEffectiveKFactor(int baseK, int numberOfGames)
+    {
+        // Brand new players get a higher K factor to
+        // allow their rating to adjust more quickly
+        if (numberOfGames < 10)
         {
-            MatchResult.PlayerAWins => 1.0,
-            MatchResult.PlayerBWins => 0.0,
-            _ => 0.5
-        };
-        double sb = 1.0 - sa;
+            return baseK * 2;
+        }
 
-        int kA = DynamicK(EloConfig.KFactor, playerDataA.NumMatches);
-        int kB = DynamicK(EloConfig.KFactor, playerDataB.NumMatches);
+        // Players with less than 100 games may still improve their game skill
+        // and therefore get a slightly higher K factor
+        if (numberOfGames< 100)
+        {
+            return (int) (baseK* 1.25);
+        }
 
-        playerDataA.Rating = playerDataA.Rating + (int)Math.Round(kA * (sa - ea));
-
-        playerDataB.Rating = playerDataB.Rating + (int)Math.Round(kB * (sb - eb));
+        return baseK;
     }
-
-    // note: higher K for new players; dampen after 100 games
-    private static int DynamicK(int baseK, int games)
-        => games < 10 ? baseK * 2 : (games < 100 ? (int)(baseK * 1.25) : baseK);
 }
