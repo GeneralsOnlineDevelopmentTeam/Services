@@ -31,23 +31,20 @@ public static class EloConfig
     public static int HighEloThreshold = 2000;
 }
 
-public class EloData
+public sealed class EloData(int rating, int monthlyRating, int matchCount)
 {
-    public int Rating { get; set; } = 1000;
-    public int NumMatches { get; set; } = 0;
-    public int MonthlyRating { get; set; } = 1000;
+    public int Rating { get; set; } = rating;
+    public int NumMatches { get; set; } = matchCount;
+    public int MonthlyRating { get; set; } = monthlyRating;
 
-    public EloData(int rating, int numMatches)
+    public EloData()
+        : this(EloConfig.BaseRating, EloConfig.BaseRating, 0)
     {
-        Rating = rating;
-        NumMatches = numMatches;
     }
 
-    public EloData(int rating, int monthlyRating, int numMatches)
+    public EloData(int rating, int numMatches)
+        : this(rating, EloConfig.BaseRating, numMatches)
     {
-        Rating = rating;
-        MonthlyRating = monthlyRating;
-        NumMatches = numMatches;
     }
 }
 
