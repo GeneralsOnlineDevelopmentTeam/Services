@@ -96,52 +96,91 @@ namespace GenOnlineService
 		}
 	}
 
+	public enum EApiKeyType
+	{
+		PartnerKey,
+		WebServerKey
+	}
+
+
 	public static class APIKeyHelpers
 	{
+		private static string? s_cachedWebServerAPIKey = null;
 		private static List<string>? s_cachedApiKeys = null;
 		private static readonly object s_cacheLock = new object();
 
-		public static bool ValidateKey(string strKey)
+		public static bool ValidateKey(string strKey, EApiKeyType keyType)
 		{
 			if (Program.g_Config == null)
 			{
 				return false;
 			}
 
-			if (s_cachedApiKeys == null)
+			if (keyType == EApiKeyType.PartnerKey)
 			{
-				lock (s_cacheLock)
+				if (s_cachedApiKeys == null)
 				{
-					if (s_cachedApiKeys == null)
+					lock (s_cacheLock)
 					{
-						IConfiguration? apiSettings = Program.g_Config.GetSection("API");
-						if (apiSettings == null)
+						if (s_cachedApiKeys == null)
 						{
-							return false;
-						}
+							IConfiguration? apiSettings = Program.g_Config.GetSection("API");
+							if (apiSettings == null)
+							{
+								return false;
+							}
+							List<string>? api_keys = apiSettings.GetSection("keys").Get<List<string>>();
+							if (api_keys == null)
+							{
+								return false;
+							}
 
-						List<string>? api_keys = apiSettings.GetSection("keys").Get<List<string>>();
-						if (api_keys == null)
-						{
-							return false;
+							s_cachedApiKeys = api_keys.Select(k => k.ToUpperInvariant()).ToList();
 						}
-
-						s_cachedApiKeys = api_keys.Select(k => k.ToUpperInvariant()).ToList();
 					}
 				}
+
+				string strKeyUpper = strKey.ToUpperInvariant();
+
+				// Compare against every key without short-circuiting, so timing doesn't leak which key
+				// (or how much of a key) matched.
+				bool bMatched = false;
+				foreach (string strKnownKey in s_cachedApiKeys)
+				{
+					bMatched |= SecretComparer.FixedTimeEquals(strKnownKey, strKeyUpper);
+				}
+
+				return bMatched;
 			}
-
-			string strKeyUpper = strKey.ToUpperInvariant();
-
-			// Compare against every key without short-circuiting, so timing doesn't leak which key
-			// (or how much of a key) matched.
-			bool bMatched = false;
-			foreach (string strKnownKey in s_cachedApiKeys)
+			else if (keyType == EApiKeyType.WebServerKey)
 			{
-				bMatched |= SecretComparer.FixedTimeEquals(strKnownKey, strKeyUpper);
+				if (s_cachedWebServerAPIKey == null)
+				{
+					lock (s_cacheLock)
+					{
+						if (s_cachedWebServerAPIKey == null)
+						{
+							IConfiguration? apiSettings = Program.g_Config.GetSection("API");
+							if (apiSettings == null)
+							{
+								return false;
+							}
+							string? webserverkey = apiSettings.GetSection("webserver_key").Get<string>();
+							if (webserverkey == null)
+							{
+								return false;
+							}
+
+							s_cachedWebServerAPIKey = webserverkey.ToUpper();
+						}
+					}
+				}
+
+				string strKeyUpper = strKey.ToUpperInvariant();
+				return strKeyUpper == s_cachedWebServerAPIKey;
 			}
 
-			return bMatched;
+			return false;
 		}
 	}
 	public static class CertHelpers
@@ -372,12 +411,6 @@ namespace GenOnlineService
 	{
 		public static IConfiguration? g_Config = null;
 		public static DiscordBot? g_Discord = null;
-
-		// TODO_EFCORE: Do this regularly
-		static async Task DoCleanup(AppDbContext db, bool bStartup)
-		{
-			await Database.PendingLogins.Cleanup(db, bStartup);
-		}
 
 		private static async Task InitializeDatabase(WebApplicationBuilder builder)
 		{
@@ -972,7 +1005,7 @@ namespace GenOnlineService
 						var httpContext = context.Resource as HttpContext;
 						if (httpContext?.Request.Headers.TryGetValue("x-api-key", out var apiKey) == true)
 						{
-							return APIKeyHelpers.ValidateKey(apiKey);
+							return APIKeyHelpers.ValidateKey(apiKey, EApiKeyType.PartnerKey) || APIKeyHelpers.ValidateKey(apiKey, EApiKeyType.WebServerKey);
 						}
 
 						return false;
@@ -998,7 +1031,7 @@ namespace GenOnlineService
 						var httpContext = context.Resource as HttpContext;
 						if (httpContext?.Request.Headers.TryGetValue("x-api-key", out var apiKey) == true)
 						{
-							return APIKeyHelpers.ValidateKey(apiKey);
+							return APIKeyHelpers.ValidateKey(apiKey, EApiKeyType.PartnerKey) || APIKeyHelpers.ValidateKey(apiKey, EApiKeyType.WebServerKey);
 						}
 
 						return false;
@@ -1238,6 +1271,8 @@ namespace GenOnlineService
 					await StatsTracker.Update(numLobbies, WebSocketManager.GetNumberOfUsersOnline());
 
 					await lobbyManager.Cleanup();
+
+					PendingLoginManager.CleanupExpiredLogins();
 				}
 				catch (Exception ex)
 				{
@@ -1412,7 +1447,6 @@ namespace GenOnlineService
 				await using var db = await factory.CreateDbContextAsync();
 
 				// do a cleanup on startup
-				await DoCleanup(db, true);
 				await DailyStatsManager.LoadFromDB(db);
 
 				// must happen before any token is issued or validated

@@ -144,7 +144,7 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
-			if (!APIKeyHelpers.ValidateKey(apiKey))
+			if (!APIKeyHelpers.ValidateKey(apiKey, EApiKeyType.PartnerKey))
 			{
 				Response.StatusCode = (int)HttpStatusCode.Forbidden;
 				return result;
@@ -170,7 +170,7 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
-			if (!APIKeyHelpers.ValidateKey(apiKey))
+			if (!APIKeyHelpers.ValidateKey(apiKey, EApiKeyType.PartnerKey))
 			{
 				Response.StatusCode = (int)HttpStatusCode.Forbidden;
 				return result;
@@ -196,7 +196,7 @@ namespace GenOnlineService.Controllers
 				return result;
 			}
 
-			if (!APIKeyHelpers.ValidateKey(apiKey))
+			if (!APIKeyHelpers.ValidateKey(apiKey, EApiKeyType.PartnerKey))
 			{
 				Response.StatusCode = (int)HttpStatusCode.Forbidden;
 				return result;

@@ -117,15 +117,11 @@ namespace GenOnlineService.Controllers
 								Response.StatusCode = (int)HttpStatusCode.InternalServerError;
 								return result;
 							}
-#if DEBUG
-							EPendingLoginState state = EPendingLoginState.Waiting;
-							UInt32 user_id = 0;
-							string strDisplayName = String.Empty;
-							if (gameCode == "ILOVECODE")
-							{
-								state = EPendingLoginState.LoginSuccess;
 
-								UInt32 highestIDFound = 0;
+							// in DEBUG, just accept any token for dev...
+#if DEBUG
+							{
+								Int64 highestIDFound = 0;
 								// which account should we use?
 								var sessions = WebSocketManager.GetUserDataCache();
 								foreach (var sessionDataByClient in sessions)
@@ -135,134 +131,143 @@ namespace GenOnlineService.Controllers
 										UserSession sessIter = sessionData.Value;
 										if (sessIter.m_UserID > highestIDFound)
 										{
-											highestIDFound = (UInt32)sessIter.m_UserID;
+											highestIDFound = (Int64)sessIter.m_UserID;
 										}
 									}
 								}
 
-								user_id = highestIDFound + 1;
+								// for dev, it wont have a user_id because it didnt go through the normal flow, so make one
+								Int64 user_id = highestIDFound + 1;
 
 								bool bTestSPOP = false;
 								if (bTestSPOP)
 								{
 									user_id = 0;
 								}
-								strDisplayName = String.Format("DEV_ACCOUNT_{0}", Math.Abs(user_id) - 1);
+								string strDisplayName = String.Format("DEV_ACCOUNT_{0}", Math.Abs(user_id) - 1);
 
 
 								// make user
 								await Database.Users.CreateUserIfNotExists_DevAccount(db, user_id, strDisplayName);
+
+								// for dev, just mark it as logged in, code further down will consume it
+								PendingLoginManager.UpdatePendingLogin(gameCode, EPendingLoginState.LoginSuccess, user_id);
 							}
-
-							bool bIsAdmin = await Database.Users.IsUserAdmin(db, user_id);
-#else
-							EPendingLoginState? loginState = await Database.PendingLogins.GetPendingLoginState(db, gameCode.ToUpper());
-
-							if (loginState != null)
-							{
-									EPendingLoginState state = loginState.Value;
-
-									Int64 user_id = await Database.PendingLogins.GetUserIDFromPendingLogin(db, gameCode);
-									string strDisplayName = await Database.Users.GetDisplayName(db, user_id);
-
-								bool bIsAdmin = await Database.Users.IsUserAdmin(db, user_id);
 #endif
 
-							if (state == EPendingLoginState.Waiting)
-							{
-								result.result = EPendingLoginState.Waiting;
-							}
-							else if (state == EPendingLoginState.LoginSuccess)
-							{
-								// create a session
-								string? clientID = data["client_id"].GetString();
+							PendingLoginEntry loginEntry = PendingLoginManager.GetPendingLogin(gameCode);
 
-								if (clientID != null && Program.g_tokenGenerator != null)
+							if (loginEntry != null)
+							{
+								if (loginEntry.state == EPendingLoginState.Waiting)
 								{
-									// ban check
-									bool bIsBanned = await Database.Users.IsUserBanned(db, user_id);
-									if (bIsBanned)
-									{
-										await TokenRevocationManager.RevokeAllTokensForUser(user_id, "user is banned");
+									result.result = EPendingLoginState.Waiting;
+								}
+								else if (loginEntry.state == EPendingLoginState.LoginSuccess)
+								{
+									// consume
+									PendingLoginManager.ConsumePendingLogin(gameCode);
 
-										result.result = EPendingLoginState.LoginFailed;
-										Response.StatusCode = (int)HttpStatusCode.Locked;
-										return result;
-									}
+									// create a session
+									string? clientID = data["client_id"].GetString();
 
-									// full login (known clients)
-									// Enum.TryParse also accepts "unknown" and arbitrary numeric strings, neither of which is mapped.
-									if (Enum.TryParse(clientID, ignoreCase: true, out KnownClients.EKnownClients knownClientID)
-										&& KnownClients.KnownClientSessionTypes.TryGetValue(knownClientID, out EUserSessionType sessionType))
+									if (clientID != null && Program.g_tokenGenerator != null)
 									{
-										// Game clients should register the user device
-										if (sessionType == EUserSessionType.GameClient)
+										Int64 user_id = loginEntry.user_id;
+
+										// ban check
+										bool bIsBanned = await Database.Users.IsUserBanned(db, user_id);
+										if (bIsBanned)
 										{
-											string hwid_0 = data.ContainsKey("machine_guid") ? data["machine_guid"].ToString() : "NONE";
-											string hwid_1 = data.ContainsKey("mac_addr") ? data["mac_addr"].ToString() : "NONE";
-											string hwid_2 = data.ContainsKey("vol_serial") ? data["vol_serial"].ToString() : "NONE";
-											await Database.UserDevices.RegisterUserDevice(db, user_id, hwid_0, hwid_1, hwid_2, ipAddr);
+											await TokenRevocationManager.RevokeAllTokensForUser(user_id, "user is banned");
+
+											result.result = EPendingLoginState.LoginFailed;
+											Response.StatusCode = (int)HttpStatusCode.Locked;
+											return result;
 										}
 
-										string exe_crc = data.ContainsKey("exe_crc") ? data["exe_crc"].ToString() : "NONE";
-										Helpers.RegisterInitialPlayerExeCRC(user_id, exe_crc);
+										string strDisplayName = await Database.Users.GetDisplayName(db, user_id);
 
-										var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, knownClientID, sessionType, bIsAdmin);
-										var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, knownClientID, sessionType, false, out string refreshJti);
+										bool bIsAdmin = await Database.Users.IsUserAdmin(db, user_id);
 
-										// rotation: only this refresh token is accepted from now on
-										await TokenRevocationManager.OnTokensIssued(user_id, sessionType, refreshJti);
+										// full login (known clients)
+										// Enum.TryParse also accepts "unknown" and arbitrary numeric strings, neither of which is mapped.
+										if (Enum.TryParse(clientID, ignoreCase: true, out KnownClients.EKnownClients knownClientID)
+											&& KnownClients.KnownClientSessionTypes.TryGetValue(knownClientID, out EUserSessionType sessionType))
+										{
+											// Game clients should register the user device
+											if (sessionType == EUserSessionType.GameClient)
+											{
+												string hwid_0 = data.ContainsKey("machine_guid") ? data["machine_guid"].ToString() : "NONE";
+												string hwid_1 = data.ContainsKey("mac_addr") ? data["mac_addr"].ToString() : "NONE";
+												string hwid_2 = data.ContainsKey("vol_serial") ? data["vol_serial"].ToString() : "NONE";
+												await Database.UserDevices.RegisterUserDevice(db, user_id, hwid_0, hwid_1, hwid_2, ipAddr);
+											}
 
-										result.result = EPendingLoginState.LoginSuccess;
-										result.session_token = sessiontoken;
-										result.refresh_token = refreshtoken;
-										result.user_id = user_id;
-										result.display_name = strDisplayName;
-										result.ws_uri = Program.GetWebSocketAddress(bSecureWS);
+											string exe_crc = data.ContainsKey("exe_crc") ? data["exe_crc"].ToString() : "NONE";
+											Helpers.RegisterInitialPlayerExeCRC(user_id, exe_crc);
 
-										// clear cached data, its a new session and the client reconnects its
-										// websocket using the ws_uri below - must be awaited so the teardown
-										// can't race and destroy that new session
-										await WebSocketManager.ClearDataFromUser(user_id, sessionType);
+											var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, knownClientID, sessionType, bIsAdmin);
+											var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, knownClientID, sessionType, false, out string refreshJti);
+
+											// rotation: only this refresh token is accepted from now on
+											await TokenRevocationManager.OnTokensIssued(user_id, sessionType, refreshJti);
+
+											result.result = EPendingLoginState.LoginSuccess;
+											result.session_token = sessiontoken;
+											result.refresh_token = refreshtoken;
+											result.user_id = user_id;
+											result.display_name = strDisplayName;
+											result.ws_uri = Program.GetWebSocketAddress(bSecureWS);
+
+											// clear cached data, its a new session and the client reconnects its
+											// websocket using the ws_uri below - must be awaited so the teardown
+											// can't race and destroy that new session
+											await WebSocketManager.ClearDataFromUser(user_id, sessionType);
+										}
+										else // limited login (auth partners)
+										{
+											result.result = EPendingLoginState.LoginSuccess;
+											result.session_token = null;
+											result.refresh_token = null;
+											result.user_id = user_id;
+											result.display_name = strDisplayName;
+											result.ws_uri = null;
+										}
+
+
+										return result;
 									}
-									else // limited login (auth partners)
+									else
 									{
-										result.result = EPendingLoginState.LoginSuccess;
-										result.session_token = null;
-										result.refresh_token = null;
-										result.user_id = user_id;
-										result.display_name = strDisplayName;
-										result.ws_uri = null;
+										result.result = EPendingLoginState.LoginFailed;
+										Response.StatusCode = (int)HttpStatusCode.Forbidden;
+										return result;
 									}
-
-									await Database.PendingLogins.CleanupPendingLogin(db, gameCode);
-
-									return result;
 								}
-								else
+								else if (loginEntry.state == EPendingLoginState.LoginFailed)
 								{
+									// consume
+									PendingLoginManager.ConsumePendingLogin(gameCode);
+
 									result.result = EPendingLoginState.LoginFailed;
 									Response.StatusCode = (int)HttpStatusCode.Forbidden;
-									return result;
 								}
 							}
-							else if (state == EPendingLoginState.LoginFailed)
+							else
 							{
 								result.result = EPendingLoginState.LoginFailed;
 								Response.StatusCode = (int)HttpStatusCode.Forbidden;
-								await Database.PendingLogins.CleanupPendingLogin(db, gameCode);
+								return result;
 							}
-#if !DEBUG
-							}
-#endif
 						}
-						else
-						{
-							// TODO: Log this
-							result.result = EPendingLoginState.LoginFailed;
-							Response.StatusCode = (int)HttpStatusCode.Forbidden;
-							return result;
-						}
+					}
+					else
+					{
+						// TODO: Log this
+						result.result = EPendingLoginState.LoginFailed;
+						Response.StatusCode = (int)HttpStatusCode.Forbidden;
+						return result;
 					}
 				}
 			}
