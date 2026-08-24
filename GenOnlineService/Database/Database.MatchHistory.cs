@@ -534,6 +534,47 @@ namespace Database
 			}
 		}
 
+		/// <summary>
+		/// The slots allowed to win the timestamp fallback below. A player who reported won=false has
+		/// conceded, so when they disconnected says nothing about the result - drop them and let the
+		/// remaining player take it. Only a reported LOSS drops a player: a reported win that never
+		/// reached the row is why we are in this fallback at all, and must not count against them.
+		///
+		/// 1v1 only. In teams or FFA a concession does not identify a winner, so those keep comparing
+		/// every active slot as before. Same if every player conceded, or if none did - there is either
+		/// nothing left to choose between or nothing to go on.
+		/// </summary>
+		public static List<int> BuildFallbackCandidates(
+			IReadOnlyDictionary<int, MatchdataMemberModel> members,
+			string strMatchRosterType,
+			IReadOnlyDictionary<Int64, bool> reportedOutcomes)
+		{
+			// Observers and AI/placeholder slots (user_id <= 0) never quit the game and must not be
+			// selected as "last to leave = winner" - the same filter the fallback loop applies.
+			List<int> lstActiveSlots = new();
+			List<int> lstCandidateSlots = new();
+
+			foreach (var member in members)
+			{
+				if (member.Value.side == Constants.OBSERVER_SIDE_VALUE || member.Value.user_id <= 0)
+					continue;
+
+				lstActiveSlots.Add(member.Key);
+
+				if (reportedOutcomes.TryGetValue(member.Value.user_id, out bool bReportedWon) && !bReportedWon)
+					continue;
+
+				lstCandidateSlots.Add(member.Key);
+			}
+
+			// Roster type was computed back at match start, so leaving early cannot change it. The slot
+			// count is checked too, in case the stored value and the actual slots disagree.
+			if (strMatchRosterType != "1v1" || lstActiveSlots.Count != 2)
+				return lstActiveSlots;
+
+			return lstCandidateSlots.Count > 0 ? lstCandidateSlots : lstActiveSlots;
+		}
+
 		public static async Task DetermineLobbyWinnerIfNotPresent(
 	AppDbContext db,
 	GenOnlineService.Lobby lobby)
@@ -644,6 +685,15 @@ namespace Database
 					Console.WriteLine($"[WinnerDet]   IngameAbandon: user={_kv.Key} at={_kv.Value:O}");
 				foreach (var _kv in lobby.TimeMemberLeft)
 					Console.WriteLine($"[WinnerDet]   MemberLeft:    user={_kv.Key} at={_kv.Value:O}");
+				// 6a. In a 1v1, drop anyone who reported a loss - see BuildFallbackCandidates.
+				string strRosterType = await db.MatchHistory
+					.Where(m => m.MatchId == (long)lobby.MatchID)
+					.Select(m => m.MatchRosterType)
+					.FirstOrDefaultAsync() ?? String.Empty;
+
+				List<int> lstCandidateSlots = BuildFallbackCandidates(members, strRosterType, lobby.ReportedOutcomes);
+				Console.WriteLine($"[WinnerDet] Match={lobby.MatchID}: rosterType='{strRosterType}' reported={lobby.ReportedOutcomes.Count} candidates=[{String.Join(",", lstCandidateSlots)}]");
+
 				DateTime latestLeave = DateTime.MinValue;
 				MatchdataMemberModel? lastPlayerNullable = null;
 				int lastSlot = -1;
@@ -652,9 +702,9 @@ namespace Database
 				{
 					var model = kv.Value;
 
-					// Skip observer slots and AI/placeholder slots (user_id <= 0);
-					// they never quit the game and must not be selected as "last to leave = winner".
-					if (model.side == Constants.OBSERVER_SIDE_VALUE || model.user_id <= 0)
+					// Skips observer slots, AI/placeholder slots (user_id <= 0) and players who conceded;
+					// none of them may be selected as "last to leave = winner".
+					if (!lstCandidateSlots.Contains(kv.Key))
 						continue;
 
 					DateTime abandonTime = DateTime.MinValue;
@@ -680,6 +730,15 @@ namespace Database
 						lastPlayerNullable = model;
 						lastSlot = kv.Key;
 					}
+				}
+
+				// A player who exited cleanly can have no timestamp at all, and MinValue never beats the
+				// MinValue seed above. If conceding left exactly one candidate they win regardless.
+				if (lastPlayerNullable == null && lstCandidateSlots.Count == 1)
+				{
+					lastSlot = lstCandidateSlots[0];
+					lastPlayerNullable = members[lastSlot];
+					Console.WriteLine($"[WinnerDet] Match={lobby.MatchID}: sole remaining candidate slot={lastSlot} user={lastPlayerNullable.Value.user_id} has no abandon timestamp — awarding anyway.");
 				}
 
 				if (lastPlayerNullable == null)

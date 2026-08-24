@@ -278,6 +278,10 @@ namespace GenOnlineService
 			MatchID = a_matchID;
 #endif
 
+			// Reported outcomes are per-match, not per-lobby. Nothing guards a lobby from entering INGAME
+			// more than once, so drop anything carried over from a previous match on this lobby.
+			ReportedOutcomes.Clear();
+
 			// store on each player
 			foreach (LobbyMember member in Members)
 			{
@@ -393,6 +397,14 @@ namespace GenOnlineService
 		[JsonIgnore]
 		public ConcurrentDictionary<Int64, DateTime> TimePlayerAbandonedIngame { get; private set; } = new();
 
+		// Records which players submitted their own /Outcome for this match, and what they claimed.
+		// Kept here rather than on UserSession because a disconnected player's session is destroyed before
+		// the lobby closes - and that player is exactly the one the winner determination needs to reason
+		// about. Used by DetermineLobbyWinnerIfNotPresent to tell "reported a loss" apart from "never
+		// reported", which the stored won flag alone cannot express (it defaults to false).
+		[JsonIgnore]
+		public ConcurrentDictionary<Int64, bool> ReportedOutcomes { get; private set; } = new();
+
 		/// <summary>
 		/// Records the moment a player's WebSocket dropped while the lobby was in INGAME state.
 		/// Only the FIRST disconnect is stored; subsequent reconnect/disconnect cycles are ignored
@@ -420,6 +432,18 @@ namespace GenOnlineService
 			}
 		}
 
+		/// <summary>
+		/// Records that a player reported their own match outcome. Only the FIRST report is kept: the
+		/// outcome endpoint can be called repeatedly for the same match, and a later call must not be
+		/// able to flip a result that was already reported.
+		/// </summary>
+		public void RecordPlayerOutcome(Int64 userId, bool bWon)
+		{
+			if (ReportedOutcomes.TryAdd(userId, bWon))
+			{
+				Console.WriteLine("[Lobby {0}] Recorded reported outcome for user {1}: won={2}", LobbyID, userId, bWon);
+			}
+		}
 
 		private bool m_bIsDirty = false;
 
