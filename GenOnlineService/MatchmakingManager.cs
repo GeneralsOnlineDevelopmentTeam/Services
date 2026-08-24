@@ -181,6 +181,19 @@ public class Playlist
 
 static class MatchmakingManager
 {
+	// World Series 2026 Qualification in September requires the matchmaking to be
+	// based off the monthly ELO.
+	internal static int GetMatchmakingElo(PlayerStats stats)
+	{
+		DateTimeOffset now = DateTimeOffset.UtcNow;
+		DateTimeOffset septemberStart = new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
+		DateTimeOffset octoberStart = new DateTimeOffset(2026, 10, 1, 0, 0, 0, TimeSpan.Zero);
+
+		return now >= septemberStart && now < octoberStart
+			? stats.MonthlyEloRating
+			: stats.EloRating;
+	}
+
 	public static void PlayerWidenSearch(UserSession playerSession)
 	{
 		// NOTE: we dont check the state of the bucket here, but it doesn't really matter since expanding the maps after it started won't do anything anyway
@@ -703,7 +716,7 @@ static class MatchmakingManager
 
 					if (memberUserData != null)
 					{
-						avgElo += memberUserData.GameStats.EloRating;
+						avgElo += MatchmakingManager.GetMatchmakingElo(memberUserData.GameStats);
 						++numContributingMembers;
 					}
                 }
@@ -1383,8 +1396,9 @@ static class MatchmakingManager
 									}
 
 									// must be within initial elo threshold for a join, otherwise we'll make a bucket and try to merge buckets using the elo iteration expansion algorithm
-									int eloExpansionToUse = (mmBucket.GetAvgElo() >= EloConfig.HighEloThreshold || thisSessionUserData.GameStats.EloRating >= EloConfig.HighEloThreshold) ? EloConfig.EloExpansionValue_HighELO : EloConfig.EloExpansionValue_Standard;
-									if (mmBucket.IsAvgEloWithinThreshold(thisSessionUserData.GameStats.EloRating, eloExpansionToUse))
+									int matchmakingElo = MatchmakingManager.GetMatchmakingElo(thisSessionUserData.GameStats);
+									int eloExpansionToUse = (mmBucket.GetAvgElo() >= EloConfig.HighEloThreshold || matchmakingElo >= EloConfig.HighEloThreshold) ? EloConfig.EloExpansionValue_HighELO : EloConfig.EloExpansionValue_Standard;
+									if (mmBucket.IsAvgEloWithinThreshold(matchmakingElo, eloExpansionToUse))
 									{
 										// TODO_MATCHMAKING: Squads
 										if (mmBucket.HasSpaceForUsers(1, thisSession.ExeCRC, thisSession.IniCRC, thisSession.AnticheatID))
