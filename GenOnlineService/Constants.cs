@@ -1258,16 +1258,16 @@ namespace GenOnlineService
 					{
 						try
 						{
-							// Disarm the pending CancelAfter timer before disposing to prevent a race condition
-						// where the timer fires concurrently with Dispose(), causing ObjectDisposedException
-						// in CancellationTokenSource.ExecuteCallbackHandlers.
-						cts.CancelAfter(Timeout.InfiniteTimeSpan);
-						cts.Dispose();
+							// cts is intentionally not disposed: disposing it races with the parent token's
+							// timer callback (ThreadPool thread), causing ObjectDisposedException. GC reclaims it.
+	
+	
+	
 						}
 						catch (ObjectDisposedException)
 						{
-							// The linked token may be disposed if the external token (parent CancellationTokenSource)
-							// fires its timeout while we're disposing this instance. This is safe to ignore.
+		
+	
 						}
 					}
 				}
