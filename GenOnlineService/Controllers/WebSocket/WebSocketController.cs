@@ -17,6 +17,7 @@
 */
 
 using Discord;
+using GenOnlineService.NameFilter;
 using MaxMind.GeoIP2;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -34,11 +35,13 @@ namespace GenOnlineService.Controllers
 	{
 		private readonly LobbyManager _lobbyManager;
 		private readonly IDbContextFactory<AppDbContext> _dbFactory;
+		private readonly NameFilterService _nameFilter;
 
-		public WebSocketController(LobbyManager lobbyManager, IDbContextFactory<AppDbContext> dbFactory)
+		public WebSocketController(LobbyManager lobbyManager, IDbContextFactory<AppDbContext> dbFactory, NameFilterService nameFilter)
 		{
 			_lobbyManager = lobbyManager;
 			_dbFactory = dbFactory;
+			_nameFilter = nameFilter;
 		}
 
 		private static readonly JsonSerializerOptions JsonOpts = new()
@@ -530,59 +533,23 @@ namespace GenOnlineService.Controllers
 
 					if (nameChangeRequest != null)
 					{
-						// TODO: Move this to a file or DB
-						List<string> lstProtectedNames = new List<string>()
+						// dont allow numeric (X) endings, those are protected
+						if (System.Text.RegularExpressions.Regex.IsMatch(nameChangeRequest.name, @"\((1[0-9]|20|[0-9])\)$"))
 						{
-							"admin",
-							"staff",
-							"mass^",
-							"mas^",
-							"m4ss^",
-							"m4s^",
-							"moderator",
-							"hitler",
-							"h1tler",
-							"h1tl3r",
-							"hittler",
-							"h1ttler",
-							"h1ttl3r",
-							"olda",
-							"oldanalytics",
-							"ibra",
-							"x64",
-							"ronin"
-						};
-
-						string strNameRequestLower = nameChangeRequest.name.ToLower();
-
-						// dont allow protected names
-						if (!sourceUserData.IsAdmin())
-						{
-							foreach (string strProtectedName in lstProtectedNames)
-							{
-								if (strNameRequestLower.Contains(strProtectedName))
-								{
-									// response back to user
-									WebSocketMessage_NetworkRoomChatMessageOutbound outboundMsg = new WebSocketMessage_NetworkRoomChatMessageOutbound();
-									outboundMsg.msg_id = (int)EWebSocketMessageID.NETWORK_ROOM_CHAT_FROM_SERVER;
-									outboundMsg.message = String.Format("--NAME CHANGE-- The display name you tried to set contains a protected word/phrase ({0} - {1})", nameChangeRequest.name, strProtectedName);
-									outboundMsg.admin = true; // dont care for actions
-									outboundMsg.action = false;
-									outboundMsg.name_change = true;
-									byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outboundMsg));
-									sourceUserSession.QueueWebsocketSend(bytesJSON);
-
-									return;
-								}
-							}
+							// Remove the protected numeric ending
+							nameChangeRequest.name = System.Text.RegularExpressions.Regex.Replace(nameChangeRequest.name, @"\((1[0-9]|20|[0-9])\)$", "");
 						}
 
-						if (strNameRequestLower.StartsWith(" ") || strNameRequestLower.EndsWith(" "))
+						await using var db = await _dbFactory.CreateDbContextAsync();
+
+						NameCheck nameCheck = await _nameFilter.CheckNameChange(db, sourceUserSession.m_UserID, nameChangeRequest.name, sourceUserData.IsAdmin());
+
+						if (!nameCheck.IsAccepted())
 						{
-							// response back to user
+							// response back to user - which rule matched stays server side, see NameFilterService
 							WebSocketMessage_NetworkRoomChatMessageOutbound outboundMsg = new WebSocketMessage_NetworkRoomChatMessageOutbound();
 							outboundMsg.msg_id = (int)EWebSocketMessageID.NETWORK_ROOM_CHAT_FROM_SERVER;
-							outboundMsg.message = String.Format("--NAME CHANGE-- Display names cannot begin or end with spaces ({0})", nameChangeRequest.name);
+							outboundMsg.message = NameFilterService.GetUserMessage(nameCheck, nameChangeRequest.name);
 							outboundMsg.admin = true; // dont care for actions
 							outboundMsg.action = false;
 							outboundMsg.name_change = true;
@@ -592,71 +559,63 @@ namespace GenOnlineService.Controllers
 							return;
 						}
 
-						// dont allow numeric (X) endings, those are protected
-						if (System.Text.RegularExpressions.Regex.IsMatch(nameChangeRequest.name, @"\((1[0-9]|20|[0-9])\)$"))
+						bool nameSet = await Database.Users.SetDisplayName(db, sourceUserSession.m_UserID, nameChangeRequest.name);
+						if (nameSet)
 						{
-							// Remove the protected numeric ending
-							nameChangeRequest.name = System.Text.RegularExpressions.Regex.Replace(nameChangeRequest.name, @"\((1[0-9]|20|[0-9])\)$", "");
-						}
+							_nameFilter.RegisterAcceptedChange(sourceUserSession.m_UserID);
+							_nameFilter.ReportForReview(nameCheck, sourceUserSession.m_UserID, nameChangeRequest.name);
 
-						if (nameChangeRequest.name.Length >= 3 && nameChangeRequest.name.Length <= 16)
-						{
-							await using var db = await _dbFactory.CreateDbContextAsync();
-							bool nameSet = await Database.Users.SetDisplayName(db, sourceUserSession.m_UserID, nameChangeRequest.name);
-							if (nameSet)
+							// response
+							WebSocketMessage_NetworkRoomChatMessageOutbound outboundMsg = new WebSocketMessage_NetworkRoomChatMessageOutbound();
+							outboundMsg.msg_id = (int)EWebSocketMessageID.NETWORK_ROOM_CHAT_FROM_SERVER;
+
+							outboundMsg.message = String.Format("--NAME CHANGE-- {0} has changed their display name to {1}", sourceUserData.m_strDisplayName, nameChangeRequest.name);
+							outboundMsg.admin = true;
+							outboundMsg.action = false;
+							outboundMsg.name_change = true;
+
+							// Serialize once before broadcasting
+							byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outboundMsg));
+
+							// send it to the person doing the name change and everyone in the room
+							foreach (var sessionDataByClient in WebSocketManager.GetUserDataCache())
 							{
-								// response
-								WebSocketMessage_NetworkRoomChatMessageOutbound outboundMsg = new WebSocketMessage_NetworkRoomChatMessageOutbound();
-								outboundMsg.msg_id = (int)EWebSocketMessageID.NETWORK_ROOM_CHAT_FROM_SERVER;
-
-								outboundMsg.message = String.Format("--NAME CHANGE-- {0} has changed their display name to {1}", sourceUserData.m_strDisplayName, nameChangeRequest.name);
-								outboundMsg.admin = true;
-								outboundMsg.action = false;
-								outboundMsg.name_change = true;
-
-								// Serialize once before broadcasting
-								byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outboundMsg));
-
-								// send it to the person doing the name change and everyone in the room
-								foreach (var sessionDataByClient in WebSocketManager.GetUserDataCache())
+								foreach (var sessionData in sessionDataByClient.Value)
 								{
-									foreach (var sessionData in sessionDataByClient.Value)
+									UserSession targetSess = sessionData.Value;
+									if (targetSess.networkRoomID == sourceUserSession.networkRoomID)
 									{
-										UserSession targetSess = sessionData.Value;
-										if (targetSess.networkRoomID == sourceUserSession.networkRoomID)
+										SharedUserData? targetUserSharedData = WebSocketManager.GetSharedDataForUser(targetSess.m_UserID);
+
+										if (targetUserSharedData != null)
 										{
-											SharedUserData? targetUserSharedData = WebSocketManager.GetSharedDataForUser(targetSess.m_UserID);
+											// is it blocked by either side? dont deliver the chat
+											bool bBlocked = targetUserSharedData.GetSocialContainer().Blocked.Contains(sourceUserSession.m_UserID) ||
+												sourceUserData.GetSocialContainer().Blocked.Contains(targetSess.m_UserID);
 
-											if (targetUserSharedData != null)
+											if (!bBlocked)
 											{
-												// is it blocked by either side? dont deliver the chat
-												bool bBlocked = targetUserSharedData.GetSocialContainer().Blocked.Contains(sourceUserSession.m_UserID) ||
-													sourceUserData.GetSocialContainer().Blocked.Contains(targetSess.m_UserID);
-
-												if (!bBlocked)
-												{
-													targetSess.QueueWebsocketSend(bytesJSON);
-												}
+												targetSess.QueueWebsocketSend(bytesJSON);
 											}
 										}
 									}
 								}
+							}
 
-								sourceUserData.m_strDisplayName = nameChangeRequest.name;
-								await WebSocketManager.MarkRoomMemberListAsDirty(sourceUserSession.networkRoomID);
-							}
-							else
-							{
-								// response back to user
-								WebSocketMessage_NetworkRoomChatMessageOutbound outboundMsg = new WebSocketMessage_NetworkRoomChatMessageOutbound();
-								outboundMsg.msg_id = (int)EWebSocketMessageID.NETWORK_ROOM_CHAT_FROM_SERVER;
-								outboundMsg.message = String.Format("--NAME CHANGE-- The display name you tried to set is already in use by another user ({0})", nameChangeRequest.name);
-								outboundMsg.admin = true; // dont care for actions
-								outboundMsg.action = false;
-								outboundMsg.name_change = true;
-								byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outboundMsg));
-								sourceUserSession.QueueWebsocketSend(bytesJSON);
-							}
+							sourceUserData.m_strDisplayName = nameChangeRequest.name;
+							await WebSocketManager.MarkRoomMemberListAsDirty(sourceUserSession.networkRoomID);
+						}
+						else
+						{
+							// response back to user
+							WebSocketMessage_NetworkRoomChatMessageOutbound outboundMsg = new WebSocketMessage_NetworkRoomChatMessageOutbound();
+							outboundMsg.msg_id = (int)EWebSocketMessageID.NETWORK_ROOM_CHAT_FROM_SERVER;
+							outboundMsg.message = String.Format("--NAME CHANGE-- The display name you tried to set is already in use by another user ({0})", nameChangeRequest.name);
+							outboundMsg.admin = true; // dont care for actions
+							outboundMsg.action = false;
+							outboundMsg.name_change = true;
+							byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outboundMsg));
+							sourceUserSession.QueueWebsocketSend(bytesJSON);
 						}
 					}	
 				}

@@ -46,6 +46,8 @@ public class AppDbContext : DbContext
 	public DbSet<AcReviewNewAccountGame> AcReviewsNewAccountGames => Set<AcReviewNewAccountGame>();
 	public DbSet<AcReviewProbe> AcReviewsProbes => Set<AcReviewProbe>();
 
+	public DbSet<NameFilterReject> NameFilterRejects => Set<NameFilterReject>();
+
 	public AppDbContext(DbContextOptions<AppDbContext> options)
 		: base(options)
 	{
@@ -75,5 +77,6 @@ public class AppDbContext : DbContext
 		modelBuilder.ApplyConfiguration(new AcReviewModuleConfiguration());
 		modelBuilder.ApplyConfiguration(new AcReviewNewAccountGameConfiguration());
 		modelBuilder.ApplyConfiguration(new AcReviewProbeConfiguration());
+		modelBuilder.ApplyConfiguration(new NameFilterRejectConfiguration());
 	}
 }

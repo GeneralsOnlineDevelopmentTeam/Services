@@ -23,6 +23,8 @@ using Discord;
 using Discord.Rest;
 using Discord.WebSocket;
 using GenOnlineService;
+using GenOnlineService.NameFilter;
+using Microsoft.EntityFrameworkCore;
 using MySqlX.XDevAPI;
 using System;
 using System.Collections.Generic;
@@ -680,6 +682,20 @@ public class DiscordBot
 								}
 							}
 						}
+						else if (message.Content.ToLower().StartsWith("!namefilter"))
+						{
+							if (message.Channel.Id == g_dictChannelIDs[EDiscordChannelIDs.AdminCommands])
+							{
+								if (IsDiscordAdmin(message.Author.Id))
+								{
+									await HandleNameFilterCommand(message);
+								}
+								else
+								{
+									PushDM(message.Author, "You don't have access to staff commands.");
+								}
+							}
+						}
 
 
 						//JSONRequest_PushCommand requestToSend = new JSONRequest_PushCommand(new DiscordUser(message.Author.Id, message.Author.Username), message.Content, enumChannelID);
@@ -716,6 +732,215 @@ public class DiscordBot
 		{
 
 		}
+	}
+
+	// ---- Staff commands: display name filter -----------------------------------------------
+
+	private bool IsDiscordAdmin(UInt64 discordUserID)
+	{
+		if (Program.g_Config == null)
+		{
+			return false;
+		}
+
+		List<UInt64>? discord_admins = Program.g_Config.GetSection("Discord").GetSection("discord_admins").Get<List<UInt64>>();
+
+		return discord_admins != null && discord_admins.Contains(discordUserID);
+	}
+
+	private async Task HandleNameFilterCommand(SocketMessage message)
+	{
+		string[] strComponents = message.Content.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+		string strSubCommand = strComponents.Length > 1 ? strComponents[1].ToLower() : "help";
+
+		NameFilterService nameFilter = ServiceLocator.Services.GetRequiredService<NameFilterService>();
+
+		if (strSubCommand == "test")
+		{
+			if (strComponents.Length < 3)
+			{
+				PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !namefilter test <name>");
+				return;
+			}
+
+			string strName = String.Join(' ', strComponents.Skip(2));
+			NameCheck check = nameFilter.Check(strName);
+
+			string strVerdict = check.MatchedRule != null
+				? $"rule {check.MatchedRule.ID} `{check.MatchedRule.Pattern}` ({check.MatchedRule.MatchType}, {check.MatchedRule.Action}, {check.MatchedRule.Category})"
+				: "no rule matched";
+
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands,
+				$"`{strName}`\nnormalized: `{check.Normalized}`\nskeleton: `{check.Skeleton}`\nresult: {check.Result}\n{strVerdict}");
+			return;
+		}
+
+		if (strSubCommand == "list")
+		{
+			string strCategory = strComponents.Length > 2 ? strComponents[2] : String.Empty;
+
+			List<NameFilterRule> lstRules = nameFilter.GetRules();
+			if (strCategory.Length > 0)
+			{
+				lstRules = lstRules.Where(r => r.Category == strCategory).ToList();
+			}
+
+			if (lstRules.Count == 0)
+			{
+				PushChannelMessage(EDiscordChannelIDs.AdminCommands, "No rules found.");
+				return;
+			}
+
+			// a rule id is its line in data/namefilter_rules.txt, so the listing points at the edit
+			int numTotal = lstRules.Count;
+			lstRules = lstRules.Take(30).ToList();
+
+			string strResults = String.Join("\n", lstRules.Select(r => $"`{r.ID}` {r.Pattern} ({r.MatchType}, {r.Action}, {r.Category})"));
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"Name filter rules ({lstRules.Count} of {numTotal} shown, ids are line numbers in data/namefilter_rules.txt):\n{strResults}");
+			return;
+		}
+
+		if (strSubCommand == "reload")
+		{
+			int numRules = nameFilter.ReloadRules();
+			if (numRules < 0)
+			{
+				PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Could not read data/namefilter_rules.txt. The rules already loaded stay in force - check the service log.");
+				return;
+			}
+
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"Reloaded data/namefilter_rules.txt, {numRules} rules active.");
+			return;
+		}
+
+		if (strSubCommand == "rescan")
+		{
+			// renaming is destructive and touches accounts that did nothing today, so it needs the
+			// word rename plus an explicit confirm - a bare rescan only reports
+			bool bRename = strComponents.Length > 2 && strComponents[2].ToLower() == "rename";
+			bool bConfirmed = strComponents.Length > 3 && strComponents[3].ToLower() == "confirm";
+
+			// renaming can be limited to one rule, so a rule set can be worked through a decision
+			// at a time instead of all at once
+			int? renameRuleID = null;
+			if (strComponents.Length > 5 && strComponents[4].ToLower() == "rule" && Int32.TryParse(strComponents[5], out int scopedRuleID))
+			{
+				renameRuleID = scopedRuleID;
+			}
+
+			if (bRename && !bConfirmed)
+			{
+				PushChannelMessage(EDiscordChannelIDs.AdminCommands,
+					"!namefilter rescan rename replaces every display name a block rule matches with `Player<user id>`. Run `!namefilter rescan` and `!namefilter scanreport` first, then `!namefilter rescan rename confirm [rule <id>]` to apply it.");
+				return;
+			}
+
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands, bRename ? "Rescanning and renaming, this takes a while..." : "Rescanning, this takes a while...");
+
+			NameScanResult scan = await nameFilter.ScanExistingNames(bRename, renameRuleID, message.Author.Username);
+
+			if (scan.NumHits == 0)
+			{
+				PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"Rescanned {scan.NumScanned} display names, no hits.");
+				return;
+			}
+
+			string strResults = String.Join("\n", scan.Samples);
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands,
+				$"Rescanned {scan.NumScanned} display names, {scan.NumHits} hits, {scan.NumRenamed} renamed ({scan.Samples.Count} shown):\n{strResults}\nRun `!namefilter scanreport` for the breakdown and the CSV.");
+			return;
+		}
+
+		if (strSubCommand == "categories")
+		{
+			List<string> lstCategories = nameFilter.GetCategories();
+
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands,
+				lstCategories.Count == 0 ? "No categories." : $"Categories: {String.Join(", ", lstCategories)}");
+			return;
+		}
+
+		if (strSubCommand == "decisions")
+		{
+			if (strComponents.Length < 3)
+			{
+				PushChannelMessage(EDiscordChannelIDs.AdminCommands,
+					"Invalid Command Syntax. !namefilter decisions <file> [confirm]. The file goes in data/namefilter_decisions/ and is the scanreport CSV with a verdict column of keep, remove or unsure. Without confirm this only reports what it would do.");
+				return;
+			}
+
+			string strFileName = Path.GetFileName(strComponents[2]);
+			bool bApply = strComponents.Length > 3 && strComponents[3].ToLower() == "confirm";
+
+			NameDecisionResult decisions = await nameFilter.ApplyDecisions(strFileName, bApply, message.Author.Username);
+
+			if (!String.IsNullOrEmpty(decisions.Error))
+			{
+				PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"Could not read the decisions: {decisions.Error}");
+				return;
+			}
+
+			string strVerb = bApply ? "Applied" : "Would apply";
+
+			// the service does not write the rules file, so allow lines come back as text to paste
+			string strAllow = String.Empty;
+			if (decisions.AllowLines.Count > 0)
+			{
+				strAllow = $"\nAdd these {decisions.AllowLines.Count} lines to data/namefilter_rules.txt and run `!namefilter reload`:\n```\n{String.Join("\n", decisions.AllowLines)}\n```";
+			}
+
+			PushChannelMessage(EDiscordChannelIDs.AdminCommands,
+				$"{strVerb} {strFileName}: {decisions.NumRows} rows, {decisions.NumRenamed} accounts renamed, {decisions.NumUnsure} left for a human, {decisions.NumSkipped} skipped, {decisions.NumFailed} failed."
+				+ (bApply ? String.Empty : "\nRun it again with `confirm` to apply.")
+				+ strAllow);
+			return;
+		}
+
+		if (strSubCommand == "scanreport")
+		{
+			int? reportRuleID = null;
+			if (strComponents.Length > 2 && Int32.TryParse(strComponents[2], out int parsedRuleID))
+			{
+				reportRuleID = parsedRuleID;
+			}
+
+			using var scope = ServiceLocator.Services.CreateScope();
+			var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+			await using var db = await factory.CreateDbContextAsync();
+
+			List<NameScanRuleGroup> lstGroups = await Database.NameFilter.GetScanSummary(db, nameFilter.GetRuleDictionary());
+			if (lstGroups.Count == 0)
+			{
+				PushChannelMessage(EDiscordChannelIDs.AdminCommands, "No scan results. Run `!namefilter rescan` first.");
+				return;
+			}
+
+			int numTotal = lstGroups.Sum(g => g.NumHits);
+
+			// The breakdown is the decision list: one rule, or one skeleton inside it, usually
+			// accounts for hundreds of names, so this is tens of decisions rather than thousands.
+			string strSummary = String.Join("\n", lstGroups.Select(g =>
+				$"rule `{g.RuleID}` {g.Pattern} ({g.MatchType}, {g.Action}) - {g.NumHits} accounts, {g.NumSkeletons} distinct names"));
+
+			string strCsv = await nameFilter.BuildScanCsv(reportRuleID, 5000);
+			string strFileName = reportRuleID.HasValue ? $"namescan_rule{reportRuleID.Value}.csv" : "namescan.csv";
+
+			PushChannelFile(EDiscordChannelIDs.AdminCommands, strFileName, strCsv,
+				$"{numTotal} accounts hit, grouped by rule:\n{strSummary}\nThe CSV is one row per distinct name with a severity, not one per account.");
+			return;
+		}
+
+		PushChannelMessage(EDiscordChannelIDs.AdminCommands,
+			"The rules live in data/namefilter_rules.txt. Edit that file and run `!namefilter reload` to change them.\n" +
+			"!namefilter test <name> - show the normalized form, the skeleton and the rule that fires\n" +
+			"!namefilter list [category] - the loaded rules, by their line number in the file\n" +
+			"!namefilter categories\n" +
+			"!namefilter reload - re-read data/namefilter_rules.txt\n" +
+			"!namefilter rescan - run every existing display name through the filter and record the hits\n" +
+			"!namefilter scanreport [rule id] - breakdown per rule plus a CSV of the distinct names\n" +
+			"!namefilter decisions <file> [confirm] - read that CSV back with a verdict column filled in\n" +
+			"!namefilter rescan rename confirm [rule <id>] - replace the names a block rule matches with Player<user id>\n" +
+			"Match types: skeleton = substring of the canonical form, word = word boundaries in the normalized text, exact = whole canonical form.");
 	}
 
 	private static Task LogAsync(LogMessage log)
@@ -815,6 +1040,27 @@ public class DiscordBot
 			if (channel != null)
 			{
 				channel.SendMessageAsync(strMessage).ContinueWith(t => { }, TaskContinuationOptions.OnlyOnFaulted);
+			}
+		}
+		catch
+		{
+
+		}
+	}
+
+	// For results too long to be a message - a name filter scan can produce tens of thousands of
+	// rows, which belong in a file the staff can sort, not in the channel.
+	public void PushChannelFile(EDiscordChannelIDs channelID, string strFileName, string strContents, string strMessage)
+	{
+		try
+		{
+			ISocketMessageChannel? channel = GetChannel(channelID);
+			if (channel != null)
+			{
+				MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes(strContents));
+
+				channel.SendFileAsync(stream, strFileName, strMessage)
+					.ContinueWith(t => stream.Dispose());
 			}
 		}
 		catch
