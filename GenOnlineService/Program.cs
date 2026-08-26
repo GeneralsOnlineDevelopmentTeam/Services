@@ -392,6 +392,16 @@ namespace GenOnlineService
 			return EUserSessionType.None;
 		}
 
+		public static string GetPlatform(ControllerBase controller)
+		{
+			var first = controller.User.FindFirst(Program.JwtTokenGenerator.PlatformClaim);
+
+			if (first == null)
+				return Platforms.Unknown;
+
+			return Platforms.Normalize(first.Value);
+		}
+
 		public static string GetDisplayName(ControllerBase controller)
 		{
 			// TODO: Handle not finding claims, it is a critical error
@@ -710,13 +720,14 @@ namespace GenOnlineService
 			}
 
 			public const string TokenGenerationClaim = "tgen";
+			public const string PlatformClaim = "platform";
 
-			public string GenerateToken(string displayname, Int64 userID, string ipAddr, ETokenType tokenType, KnownClients.EKnownClients knownClientID, EUserSessionType sessionType, bool bIsAdmin)
+			public string GenerateToken(string displayname, Int64 userID, string ipAddr, ETokenType tokenType, KnownClients.EKnownClients knownClientID, EUserSessionType sessionType, bool bIsAdmin, string platform)
 			{
-				return GenerateToken(displayname, userID, ipAddr, tokenType, knownClientID, sessionType, bIsAdmin, out _);
+				return GenerateToken(displayname, userID, ipAddr, tokenType, knownClientID, sessionType, bIsAdmin, platform, out _);
 			}
 
-			public string GenerateToken(string displayname, Int64 userID, string ipAddr, ETokenType tokenType, KnownClients.EKnownClients knownClientID, EUserSessionType sessionType, bool bIsAdmin, out string jti)
+			public string GenerateToken(string displayname, Int64 userID, string ipAddr, ETokenType tokenType, KnownClients.EKnownClients knownClientID, EUserSessionType sessionType, bool bIsAdmin, string platform, out string jti)
 			{
 				var jwtSettings = _configuration.GetSection("JwtSettings");
 
@@ -745,6 +756,7 @@ namespace GenOnlineService
 					new Claim(JwtRegisteredClaimNames.Typ, ((int)tokenType).ToString()),
 					new Claim("client_id", ((int)knownClientID).ToString()),
 					new Claim("session_type", ((int)sessionType).ToString()),
+					new Claim(PlatformClaim, Platforms.Normalize(platform)),
 
 					// Token generation, checked against the revocation manager on every request so
 					// that bans/logouts can invalidate tokens before they naturally expire.

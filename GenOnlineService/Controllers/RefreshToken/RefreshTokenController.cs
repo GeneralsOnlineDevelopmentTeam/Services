@@ -111,8 +111,11 @@ namespace GenOnlineService.Controllers.RefreshToken
 				string strDisplayName = await Database.Users.GetDisplayName(db, user_id);
 				bool bIsAdmin = await Database.Users.IsUserAdmin(db, user_id);
 
-				var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, clientID, sessionType, bIsAdmin);
-				var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, clientID, sessionType, false, out string refreshJti);
+				// carried over from the token being rotated, so the platform survives a refresh
+				string platform = TokenHelper.GetPlatform(this);
+
+				var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, clientID, sessionType, bIsAdmin, platform);
+				var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, clientID, sessionType, false, platform, out string refreshJti);
 
 				// rotation: only this refresh token is accepted from now on
 				await TokenRevocationManager.OnTokensIssued(user_id, sessionType, refreshJti);

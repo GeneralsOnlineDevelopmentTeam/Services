@@ -144,6 +144,7 @@ namespace GenOnlineService.Controllers
 			}
 
 			EUserSessionType sessType = TokenHelper.GetSessionType(this);
+			string platform = TokenHelper.GetPlatform(this);
 
 			await using var db = await _dbFactory.CreateDbContextAsync();
 			UserWebSocketInstance wsSess = await WebSocketManager.CreateSession(
@@ -157,7 +158,8 @@ namespace GenOnlineService.Controllers
 				ipCountry,
 				dLatitude,
 				dLongitude,
-				bIsAdmin);
+				bIsAdmin,
+				platform);
 
 			// if null, it was probably a reconnect and they need to fully reconnect, so return an error instead
 			if (wsSess == null)
