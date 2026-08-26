@@ -481,7 +481,7 @@ namespace GenOnlineService.Controllers
 						{
 							if (sourceUserData.IsAdmin())
 							{
-								outboundMsg.message = String.Format("[\u2605\u2605GO STAFF\u2605\u2605]    [{0}] {1}", sourceUserData.m_strDisplayName, chatMessage.message);
+								outboundMsg.message = String.Format("[\u2605\u2605GO STAFF\u2605\u2605] [{0}] {1}", sourceUserData.m_strDisplayName, chatMessage.message);
 								outboundMsg.admin = true;
 								outboundMsg.name_change = false;
 							}
