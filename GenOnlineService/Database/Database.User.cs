@@ -62,6 +62,10 @@ public class User
 
 
 	public string? DisplayName { get; set; } = "";
+
+	// Canonical form of DisplayName, see NameSkeleton. Uniqueness is checked against this so
+	// homoglyph copies of an existing name collide with the original.
+	public string? DisplayNameSkeleton { get; set; } = "";
 	public DateTime LastLogin { get; set; } = DateTime.UnixEpoch;
 	public string? LastIPAddress { get; set; } = String.Empty;
 	public KnownClients.EKnownClients ClientID { get; set; } = KnownClients.EKnownClients.custom_third_party_client;
@@ -152,6 +156,7 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
 		builder.Property(e => e.GameReplaysID).HasColumnName("gamereplays_id");
 		builder.Property(e => e.GameReplaysUsername).HasColumnName("gamereplays_username").HasColumnType("varchar(32)"); ;
 		builder.Property(e => e.DisplayName).HasColumnName("displayname").HasColumnType("varchar(32)"); ;
+		builder.Property(e => e.DisplayNameSkeleton).HasColumnName("displayname_skeleton").HasColumnType("varchar(32)");
 		builder.Property(e => e.LastLogin).HasColumnName("lastlogin").HasColumnType("datetime(6)");
 		builder.Property(e => e.LastIPAddress).HasColumnName("last_ip").HasColumnType("varchar(45)"); ;
 		builder.Property(e => e.ClientID).HasColumnName("client_id");
@@ -600,8 +605,13 @@ namespace Database
 		{
 			try
 			{
+				string skeleton = GenOnlineService.NameFilter.NameSkeleton.Skeletonize(newName);
+				if (skeleton.Length > 32)
+					skeleton = skeleton.Substring(0, 32);
+
 				bool nameTaken = await db.Users
-					.AnyAsync(u => u.ID != userId && u.DisplayName.ToLower() == newName.ToLower());
+					.AnyAsync(u => u.ID != userId && (u.DisplayName.ToLower() == newName.ToLower() ||
+						(skeleton != "" && u.DisplayNameSkeleton == skeleton)));
 
 				if (nameTaken)
 					return false;
@@ -610,6 +620,7 @@ namespace Database
 					.Where(u => u.ID == userId)
 					.ExecuteUpdateAsync(setters => setters
 						.SetProperty(u => u.DisplayName, newName)
+						.SetProperty(u => u.DisplayNameSkeleton, skeleton)
 					);
 
 				return true;

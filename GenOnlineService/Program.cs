@@ -16,6 +16,7 @@
 **    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+using GenOnlineService.NameFilter;
 using Google.Protobuf.WellKnownTypes;
 using MaxMind.GeoIP2;
 using Microsoft.AspNetCore.Authentication;
@@ -896,6 +897,7 @@ namespace GenOnlineService
 			}
 
 			builder.Services.AddSingleton<LobbyManager>();
+			builder.Services.AddSingleton<NameFilterService>();
 
 			var rateLimitingSettings = Program.g_Config.GetSection("RateLimiting");
 			bool bUseBuiltinRateLimiter = rateLimitingSettings.GetValue<bool>("use_builtin_ratelimiter"); // use built in Kestrel/dotnet rate limiting if you do not have a reverse proxy or other rate limiter in front of service
@@ -1194,6 +1196,8 @@ namespace GenOnlineService
 
 			var app = builder.Build();
 			ServiceLocator.Services = app.Services;
+
+			app.Services.GetRequiredService<NameFilterService>().Initialize();
 
 			if (bUseBuiltinRateLimiter)
 			{

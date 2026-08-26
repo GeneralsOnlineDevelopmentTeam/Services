@@ -1,0 +1,29 @@
+# Display name filter rules, one per line, tab separated:
+#
+#   action	match	pattern	category
+#
+# action   allow / block / review / shadow. allow wins over everything, block rejects,
+#          review accepts and announces in the admin channel, shadow accepts and logs only.
+# match    skeleton = pattern appears in the name's skeleton, word = pattern appears as a
+#          whole word in the normalized name, exact = the whole skeleton is the pattern.
+#
+# Patterns are folded the same way a name is, so plain lowercase ASCII `hitler` also catches
+# `Hitler`, `Нitler`, `ＨＩＴＬＥＲ`, `h.i.t.l.e.r` and `hiiitler`. Use exact for a name that is
+# only a problem on its own: `ibra` as exact rejects `ibra` without rejecting `Ibrahim`.
+#
+# A rule's id is its line number here. Run `!namefilter reload` after editing, and
+# `!namefilter rescan` to apply a new rule to names that already exist.
+
+# Impersonation of staff or known community members.
+block	exact	admin	impersonation
+block	exact	staff	impersonation
+block	exact	moderator	impersonation
+block	exact	mass^	impersonation
+block	exact	olda	impersonation
+block	exact	oldanalytics	impersonation
+block	exact	ibra	impersonation
+block	exact	x64	impersonation
+block	exact	ronin	impersonation
+
+# Historical figures.
+block	skeleton	hitler	figures
