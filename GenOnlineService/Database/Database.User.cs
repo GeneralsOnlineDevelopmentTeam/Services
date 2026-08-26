@@ -98,6 +98,12 @@ public class UserLobbyPreferences
 	public bool favorite_limit_superweapons = false;
 }
 
+public sealed class UserBanStatus
+{
+	public bool IsBanned { get; set; }
+	public string BanReason { get; set; } = String.Empty;
+}
+
 // TODO_EFCORE: add index for code
 public class PendingLoginConfiguration : IEntityTypeConfiguration<PendingLogin>
 {
@@ -279,6 +285,18 @@ namespace Database
 				  .Select(u => u.IsBanned)
 				  .FirstOrDefault());
 
+		private static readonly Func<AppDbContext, long, Task<UserBanStatus?>> _getUserBanStatusQuery =
+			EF.CompileAsyncQuery((AppDbContext db, long userId) =>
+				db.Users
+				  .AsNoTracking()
+				  .Where(u => u.ID == userId)
+				  .Select(u => new UserBanStatus
+				  {
+					  IsBanned = u.IsBanned,
+					  BanReason = u.BanReason ?? String.Empty
+				  })
+				  .FirstOrDefault());
+
 		private static readonly Func<AppDbContext, long, Task<string?>> _getDisplayNameQuery =
 				EF.CompileAsyncQuery((AppDbContext db, long userId) =>
 					db.Users
@@ -443,6 +461,20 @@ namespace Database
 				Console.WriteLine($"[ERROR] IsUserBanned failed: {ex.Message}");
 				SentrySdk.CaptureException(ex);
 				return false;
+			}
+		}
+
+		public static async Task<UserBanStatus?> GetUserBanStatus(AppDbContext db, long userId)
+		{
+			try
+			{
+				return await _getUserBanStatusQuery(db, userId);
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[ERROR] GetUserBanStatus failed: {ex.Message}");
+				SentrySdk.CaptureException(ex);
+				return null;
 			}
 		}
 

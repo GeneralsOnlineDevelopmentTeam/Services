@@ -41,6 +41,7 @@ namespace GenOnlineService.Controllers
 		public string refresh_token { get; set; } = "";
 		public Int64 user_id { get; set; } = -1;
 		public string display_name { get; set; } = "";
+		public string ban_reason { get; set; } = "";
 
 		public string ws_uri { get; set; } = "";
 	}
@@ -176,12 +177,14 @@ namespace GenOnlineService.Controllers
 										Int64 user_id = loginEntry.user_id;
 
 										// ban check
-										bool bIsBanned = await Database.Users.IsUserBanned(db, user_id);
-										if (bIsBanned)
+										UserBanStatus? banStatus = await Database.Users.GetUserBanStatus(db, user_id);
+										if (banStatus?.IsBanned == true)
 										{
 											await TokenRevocationManager.RevokeAllTokensForUser(user_id, "user is banned");
+											await ModerationManager.DisconnectUser(user_id, EModerationAction.Ban, banStatus.BanReason);
 
 											result.result = EPendingLoginState.LoginFailed;
+											result.ban_reason = banStatus.BanReason;
 											Response.StatusCode = (int)HttpStatusCode.Locked;
 											return result;
 										}
