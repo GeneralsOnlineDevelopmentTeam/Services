@@ -47,6 +47,23 @@ namespace GenOnlineService.Controllers
 			AllowOutOfOrderMetadataProperties = true
 		};
 
+		private static void QueueChatRateLimited(UserSession session, SharedUserData userData, string scopeType)
+		{
+			if (!userData.TryConsumeChatRateLimitNotice())
+			{
+				return;
+			}
+
+			WebSocketMessage_ModerationNotice message = new()
+			{
+				msg_id = (int)EWebSocketMessageID.MODERATION_NOTICE,
+				action_type = "rate_limit",
+				reason = "Rate limit: Please wait before sending another message.",
+				scope_type = scopeType
+			};
+			session.QueueWebsocketSend(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message)));
+		}
+
 		// GeoIP DB is designed to be reused; opening per request is expensive.
 		// It is gitignored and absent in fresh clones, so a failure to open must
 		// fall back to the lookup defaults rather than fail static init.
@@ -377,6 +394,22 @@ namespace GenOnlineService.Controllers
 
 					if (chatMessage != null)
 					{
+						if (!sourceUserData.TryConsumeChatMessage())
+						{
+							if (sourceUserData.TryConsumeChatRateLimitNotice())
+							{
+								WebSocketMessage_Social_FriendChatMessage_Outbound rateLimitMessage = new()
+								{
+									msg_id = (int)EWebSocketMessageID.SOCIAL_FRIEND_CHAT_MESSAGE_SERVER_TO_CLIENT,
+									source_user_id = sourceUserSession.m_UserID,
+									target_user_id = chatMessage.target_user_id,
+									message = "Rate limit: Please wait before sending another message."
+								};
+								sourceUserSession.QueueWebsocketSend(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(rateLimitMessage)));
+							}
+							return;
+						}
+
 						// must be online & friends
 
 						SharedUserData? targetUserData = WebSocketManager.GetSharedDataForUser(chatMessage.target_user_id);
@@ -428,6 +461,12 @@ namespace GenOnlineService.Controllers
 
 					if (chatMessage != null)
 					{
+						if (!sourceUserData.TryConsumeChatMessage())
+						{
+							QueueChatRateLimited(sourceUserSession, sourceUserData, "room");
+							return;
+						}
+
 						// response
 						WebSocketMessage_NetworkRoomChatMessageOutbound outboundMsg = new WebSocketMessage_NetworkRoomChatMessageOutbound();
 						outboundMsg.msg_id = (int)EWebSocketMessageID.NETWORK_ROOM_CHAT_FROM_SERVER;
@@ -705,6 +744,12 @@ namespace GenOnlineService.Controllers
 
 					if (chatMessage != null)
 					{
+						if (!sourceUserData.TryConsumeChatMessage())
+						{
+							QueueChatRateLimited(sourceUserSession, sourceUserData, "lobby");
+							return;
+						}
+
 						// get lobby
 						Lobby? playerLobby = _lobbyManager.GetLobby(sourceUserSession.currentLobbyID);
 

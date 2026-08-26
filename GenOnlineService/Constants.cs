@@ -846,6 +846,8 @@ namespace GenOnlineService
 	public class SharedUserData
 	{
 		private int m_RefCount = 0;
+		private readonly Queue<Int64> m_chatMessageTimestamps = new();
+		private Int64? m_lastChatRateLimitNoticeTimestamp;
 
 		public void IncrementRefCount()
 		{
@@ -874,6 +876,48 @@ namespace GenOnlineService
 		public UserSocialContainer GetSocialContainer() { return m_socialContainer; }
 
 		public bool IsAdmin() { return m_bIsAdmin; }
+
+		public bool TryConsumeChatMessage()
+		{
+			const int maxMessages = 3;
+			const Int64 windowMilliseconds = 9000;
+			Int64 now = Environment.TickCount64;
+
+			lock (m_chatMessageTimestamps)
+			{
+				while (m_chatMessageTimestamps.TryPeek(out Int64 timestamp)
+					&& now - timestamp >= windowMilliseconds)
+				{
+					m_chatMessageTimestamps.Dequeue();
+				}
+
+				if (m_chatMessageTimestamps.Count >= maxMessages)
+				{
+					return false;
+				}
+
+				m_chatMessageTimestamps.Enqueue(now);
+				return true;
+			}
+		}
+
+		public bool TryConsumeChatRateLimitNotice()
+		{
+			const Int64 intervalMilliseconds = 9000;
+			Int64 now = Environment.TickCount64;
+
+			lock (m_chatMessageTimestamps)
+			{
+				if (m_lastChatRateLimitNoticeTimestamp.HasValue
+					&& now - m_lastChatRateLimitNoticeTimestamp.Value < intervalMilliseconds)
+				{
+					return false;
+				}
+
+				m_lastChatRateLimitNoticeTimestamp = now;
+				return true;
+			}
+		}
 
 		public SharedUserData(Int64 ownerID, UserSocialContainer socialContainer, string strDisplayName, bool bIsAdmin, PlayerStats userStats)
 		{
