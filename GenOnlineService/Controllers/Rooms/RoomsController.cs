@@ -33,6 +33,7 @@ namespace GenOnlineService.Controllers
 		}
 
 		public List<RoomData>? rooms { get; set; } = null;
+		public bool supports_moderation_commands { get; set; } = true;
 	}
 
 	[ApiController]

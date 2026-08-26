@@ -64,6 +64,75 @@ namespace GenOnlineService.Controllers
 			session.QueueWebsocketSend(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message)));
 		}
 
+		private static void QueueModerationCommandResult(
+			UserSession session,
+			UInt64 requestID,
+			bool success,
+			string message,
+			string? errorCode = null)
+		{
+			WebSocketMessage_ModerationCommandResult result = new()
+			{
+				msg_id = (int)EWebSocketMessageID.MODERATION_COMMAND_RESULT,
+				request_id = requestID,
+				success = success,
+				error_code = errorCode,
+				message = message
+			};
+			session.QueueWebsocketSend(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(result)));
+		}
+
+		private async Task ProcessModerationCommand(
+			byte[] payload,
+			UserSession session,
+			SharedUserData userData)
+		{
+			WebSocketMessage_ModerationCommand? command =
+				JsonSerializer.Deserialize<WebSocketMessage_ModerationCommand>(payload, JsonOpts);
+			if (command == null)
+			{
+				return;
+			}
+
+			if (!userData.IsAdmin())
+			{
+				QueueModerationCommandResult(session, command.request_id, false,
+					"You are not allowed to perform moderation actions.", "forbidden");
+				return;
+			}
+
+			if (command.action_type == "kick")
+			{
+				if (!command.target_user_id.HasValue || command.target_user_id.Value == session.m_UserID)
+				{
+					QueueModerationCommandResult(session, command.request_id, false,
+						"Select another online player to kick.", "invalid_target");
+					return;
+				}
+
+				ModerationResult kickResult = await ModerationManager.KickUser(command.target_user_id.Value, command.reason);
+				switch (kickResult.Result)
+				{
+					case EModerationResult.Success:
+						QueueModerationCommandResult(session, command.request_id, true,
+							$"{kickResult.TargetDisplayName} was kicked.");
+						break;
+					case EModerationResult.TargetNotOnline:
+						QueueModerationCommandResult(session, command.request_id, false,
+							"That player is no longer online.", "target_not_online");
+						break;
+					case EModerationResult.ReasonTooLong:
+						QueueModerationCommandResult(session, command.request_id, false,
+							$"The reason must be {ModerationManager.MaximumReasonLength} characters or fewer.", "reason_too_long");
+						break;
+				}
+				return;
+			}
+
+			QueueModerationCommandResult(session, command.request_id, false,
+				"That moderation action is not supported.", "unsupported_action");
+		}
+
 		// GeoIP DB is designed to be reused; opening per request is expensive.
 		// It is gitignored and absent in fresh clones, so a failure to open must
 		// fall back to the lookup defaults rather than fail static init.
@@ -386,6 +455,10 @@ namespace GenOnlineService.Controllers
 				else if (msgID == EWebSocketMessageID.SOCIAL_UNSUBSCRIBE_REALTIME_UPDATES)
 				{
 					sourceUserSession.SetSubscribedToRealtimeSocialUpdates(false);
+				}
+				else if (msgID == EWebSocketMessageID.MODERATION_COMMAND)
+				{
+					await ProcessModerationCommand(payload.ToArray(), sourceUserSession, sourceUserData);
 				}
 				else if (msgID == EWebSocketMessageID.SOCIAL_FRIEND_CHAT_MESSAGE_CLIENT_TO_SERVER)
 				{
