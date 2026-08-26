@@ -851,6 +851,7 @@ namespace GenOnlineService
 			ThreadPool.SetMinThreads(200, 200);
 
 			var builder = WebApplication.CreateBuilder(args);
+			RoomCatalog.Initialize(Path.Combine(builder.Environment.ContentRootPath, "data", "rooms.json"));
 
 			// Add services to the container.
 
@@ -1385,11 +1386,11 @@ namespace GenOnlineService
 			{
 				System.Timers.Timer timerTick = new System.Timers.Timer(1000); // 1s tick
 				timerTick.AutoReset = false;
-				timerTick.Elapsed += async (sender, e) =>
+				timerTick.Elapsed += (sender, e) =>
 				{
 					try
 					{
-						await WebSocketManager.TickRoomMemberList();
+						WebSocketManager.TickRoomMemberList();
 					}
 					catch (Exception ex)
 					{

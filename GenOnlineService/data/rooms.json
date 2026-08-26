@@ -1,37 +1,14 @@
 [
 	{
-		"id": 0,
-		"name": "ALL GAMES",
-		"flags":  1
-	},
-	{
-		"id": 1,
-		"name": "General",
-		"flags": 0
-	},
-	{
-		"id": 2,
-		"name": "1v1",
-		"flags": 0
-	},
-	{
-		"id": 3,
-		"name": "2v2",
-		"flags": 0
-	},
-	{
-		"id": 4,
-		"name": "No Rules",
-		"flags": 0
-	},
-	{
-		"id": 5,
-		"name": "Pro Rules",
-		"flags": 0
-	},
-	{
-		"id": 6,
-		"name": "Rise of the Reds (MOD)",
-		"flags": 0
+		"name": "All Games",
+		"rooms": [
+			{
+				"name": "General",
+				"default": true
+			},
+			{
+				"name": "Tournament"
+			}
+		]
 	}
 ]

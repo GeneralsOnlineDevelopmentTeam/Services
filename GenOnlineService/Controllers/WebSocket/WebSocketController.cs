@@ -378,6 +378,49 @@ namespace GenOnlineService.Controllers
 			}
 		}
 
+		private static UInt64? GetRoomChangeRequestID(Dictionary<string, JsonElement>? data)
+		{
+			if (data != null
+				&& data.TryGetValue("request_id", out JsonElement requestIDValue)
+				&& requestIDValue.ValueKind == JsonValueKind.Number
+				&& requestIDValue.TryGetUInt64(out UInt64 requestID))
+			{
+				return requestID;
+			}
+
+			return null;
+		}
+
+		private static void ProcessNetworkRoomChange(UserSession session, Dictionary<string, JsonElement>? data)
+		{
+			UInt64? requestID = GetRoomChangeRequestID(data);
+			if (data == null || !data.TryGetValue("room", out JsonElement roomValue))
+			{
+				Console.WriteLine($"Rejected network room selection without a room ID from user {session.m_UserID}.");
+				WebSocketManager.QueueRoomSelectionRejected(session, requestID, null, "A room must be selected.");
+				return;
+			}
+
+			if (roomValue.ValueKind != JsonValueKind.Number || !roomValue.TryGetInt16(out Int16 roomID))
+			{
+				Console.WriteLine($"Rejected invalid network room selection from user {session.m_UserID}; value must be an Int16.");
+				WebSocketManager.QueueRoomSelectionRejected(session, requestID, null, "That room is unavailable.");
+				return;
+			}
+
+			if (!session.TryUpdateSessionNetworkRoom(roomID))
+			{
+				WebSocketManager.QueueRoomSelectionRejected(session, requestID, roomID, "That room is unavailable.");
+				return;
+			}
+
+			if (!requestID.HasValue)
+			{
+				WebSocketManager.QueueLobbyListUpdateForSession(session);
+			}
+			WebSocketManager.QueueRoomSelectionAccepted(session, requestID);
+		}
+
 		private async Task ProcessWSMessage(UserWebSocketInstance sourceWS, UserSession sourceUserSession, WebSocketReceiveResult receiveResult, ArraySegment<byte> buffer)
 		{
 			SharedUserData sourceUserData = WebSocketManager.GetSharedDataForUser(sourceUserSession.m_UserID);
@@ -605,11 +648,7 @@ namespace GenOnlineService.Controllers
 				}
 				else if (msgID == EWebSocketMessageID.NETWORK_ROOM_CHANGE_ROOM)
 				{
-					if (data != null && data.ContainsKey("room"))
-					{
-						Int16 roomID = data["room"].GetInt16();
-						await sourceUserSession.UpdateSessionNetworkRoom(roomID);
-					}
+					ProcessNetworkRoomChange(sourceUserSession, data);
 				}
 				else if (msgID == EWebSocketMessageID.NETWORK_ROOM_MARK_READY)
 				{
@@ -755,7 +794,7 @@ namespace GenOnlineService.Controllers
 								}
 
 								sourceUserData.m_strDisplayName = nameChangeRequest.name;
-								await WebSocketManager.MarkRoomMemberListAsDirty(sourceUserSession.networkRoomID);
+								WebSocketManager.MarkRoomMemberListAsDirty(sourceUserSession.networkRoomID);
 							}
 							else
 							{
