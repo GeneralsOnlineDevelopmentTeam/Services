@@ -860,6 +860,8 @@ static class MatchmakingManager
 
 		// how long we give everyone to actually connect to the QuickMatch lobby before we give up on the stragglers
 		private const Int64 c_LobbyJoinTimeoutMSec = 45000;
+		private const int c_GameStartCountdownMSec = 5000;
+		private const int c_SetupClientTimeoutMarginMSec = 2000;
 
 		private async Task StartGameAfterSuccessfulMeshCheck(Lobby lobby)
 		{
@@ -882,20 +884,11 @@ static class MatchmakingManager
 			MatchmakingManager.DestroyBucket(this);
 		}
 
-		private async Task TriggerFullMeshConnectivityChecks(Lobby lobby)
+		private void QueueSetupProgress(int timeoutMSec)
 		{
-			lobby.StartFullMeshConnectivityCheck();
-			lock (m_StateLock)
-			{
-				// Publish the state transition before any notification work. If a send fails, the
-				// regular lobby timeout still completes or aborts the setup instead of stranding it.
-				m_bWaitingOnMeshConnectivityChecks = true;
-			}
-
-			const int MeshCheckClientTimeoutMarginMS = 2000;
 			WebSocketMessage_MatchmakerSetupProgress setupProgress = new WebSocketMessage_MatchmakerSetupProgress();
 			setupProgress.msg_id = (int)EWebSocketMessageID.MATCHMAKING_ACTION_SETUP_PROGRESS;
-			setupProgress.timeout_ms = Lobby.MaxFullMeshConnectivityCheckDurationMS + MeshCheckClientTimeoutMarginMS;
+			setupProgress.timeout_ms = timeoutMSec;
 			byte[] setupProgressJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(setupProgress));
 
 			foreach (MatchmakingBucketMember member in m_lstMembers)
@@ -906,6 +899,19 @@ static class MatchmakingManager
 					memberSession.QueueWebsocketSend(setupProgressJSON);
 				}
 			}
+		}
+
+		private async Task TriggerFullMeshConnectivityChecks(Lobby lobby)
+		{
+			lobby.StartFullMeshConnectivityCheck();
+			lock (m_StateLock)
+			{
+				// Publish the state transition before any notification work. If a send fails, the
+				// regular lobby timeout still completes or aborts the setup instead of stranding it.
+				m_bWaitingOnMeshConnectivityChecks = true;
+			}
+
+			QueueSetupProgress(Lobby.MaxFullMeshConnectivityCheckDurationMS + c_SetupClientTimeoutMarginMSec);
 
 			lobby.SendFullMeshConnectivityCheckRequestToMembers();
 
@@ -914,7 +920,7 @@ static class MatchmakingManager
 				UserSession? memberSession = member.GetAssociatedSession();
 				if (memberSession != null)
 				{
-					await SendMatchmakingMessage(memberSession, "Running full mesh connectivity checks before game start...");
+					await SendMatchmakingMessage(memberSession, "Preparing match...");
 				}
 			}
 		}
@@ -1046,16 +1052,7 @@ static class MatchmakingManager
 
 					if (!lobbyDuringMeshCheck.PendingFullMeshConnectivityChecks)
 					{
-						// Start the mesh check alongside the existing five-second countdown. A successful
-						// check still waits for the countdown, while a failed check can abort immediately.
-						if (lobbyDuringMeshCheck.LastFullMeshConnectivityCheckOutcome == true
-							&& m_StartTime != -1
-							&& Environment.TickCount64 < m_StartTime)
-						{
-							return;
-						}
-
-						bool bStartGame;
+						bool bStartCountdown;
 						bool bAbortStart;
 						bool bInvalidatedAtDecision;
 						lock (m_StateLock)
@@ -1063,27 +1060,33 @@ static class MatchmakingManager
 							bInvalidatedAtDecision = m_bAutoStartInvalidated;
 							if (m_bStartCommitted || m_bAbortInProgress || m_bPendingDeletion)
 							{
-								bStartGame = false;
+								bStartCountdown = false;
 								bAbortStart = false;
 							}
 							else
 							{
 								m_bWaitingOnMeshConnectivityChecks = false;
-								m_bHasStartedCountdown = false;
-								m_StartTime = -1;
-								bStartGame = !bInvalidatedAtDecision && lobbyDuringMeshCheck.LastFullMeshConnectivityCheckOutcome == true;
-								bAbortStart = !bStartGame;
-								if (bStartGame)
+								bStartCountdown = !bInvalidatedAtDecision && lobbyDuringMeshCheck.LastFullMeshConnectivityCheckOutcome == true;
+								bAbortStart = !bStartCountdown;
+								if (bStartCountdown)
 								{
-									m_bStartCommitted = true;
-									m_bPendingDeletion = true;
+									m_StartTime = Environment.TickCount64 + c_GameStartCountdownMSec;
+									m_bHasStartedCountdown = true;
 								}
 							}
 						}
 
-						if (bStartGame)
+						if (bStartCountdown)
 						{
-							await StartGameAfterSuccessfulMeshCheck(lobbyDuringMeshCheck);
+							QueueSetupProgress(c_GameStartCountdownMSec + c_SetupClientTimeoutMarginMSec);
+							foreach (MatchmakingBucketMember member in m_lstMembers)
+							{
+								UserSession? memberSession = member.GetAssociatedSession();
+								if (memberSession != null)
+								{
+									await SendMatchmakingMessage(memberSession, $"Starting game in {c_GameStartCountdownMSec / 1000} seconds.");
+								}
+							}
 						}
 						else if (bAbortStart)
 						{
@@ -1092,6 +1095,55 @@ static class MatchmakingManager
 								: "QuickMatch auto-start was aborted because not all players were fully mesh-connected.";
 							await AbortQuickMatchAutoStart(reason);
 						}
+					}
+
+					return;
+				}
+
+				if (bHasStartedCountdown)
+				{
+					if (Environment.TickCount64 < m_StartTime)
+					{
+						return;
+					}
+
+					Lobby? lobbyAfterCountdown = lobbyManager.GetLobby(m_LobbyID);
+					if (lobbyAfterCountdown == null)
+					{
+						await AbortQuickMatchAutoStart("QuickMatch auto-start was aborted because the temporary lobby no longer exists.");
+						return;
+					}
+
+					bool bStartGame;
+					bool bAbortStart;
+					lock (m_StateLock)
+					{
+						if (m_bStartCommitted || m_bAbortInProgress || m_bPendingDeletion)
+						{
+							bStartGame = false;
+							bAbortStart = false;
+						}
+						else
+						{
+							m_bHasStartedCountdown = false;
+							m_StartTime = -1;
+							bStartGame = !m_bAutoStartInvalidated;
+							bAbortStart = !bStartGame;
+							if (bStartGame)
+							{
+								m_bStartCommitted = true;
+								m_bPendingDeletion = true;
+							}
+						}
+					}
+
+					if (bStartGame)
+					{
+						await StartGameAfterSuccessfulMeshCheck(lobbyAfterCountdown);
+					}
+					else if (bAbortStart)
+					{
+						await AbortQuickMatchAutoStart("QuickMatch auto-start was aborted because a player left during match setup.");
 					}
 
 					return;
@@ -1333,20 +1385,9 @@ static class MatchmakingManager
 							{
 								m_timeStartedWaitingOnLobbyJoins = -1;
 
-								// wait 5 sec
 								lock (m_StateLock)
 								{
-									m_StartTime = Environment.TickCount64 + 5000;
 									m_bWaitingOnLobbyJoins = false;
-									m_bHasStartedCountdown = true;
-								}
-								foreach (MatchmakingBucketMember member in m_lstMembers)
-								{
-									UserSession? memberSession = member.GetAssociatedSession();
-									if (memberSession != null)
-									{
-										await SendMatchmakingMessage(memberSession, $"Starting Game in 5 seconds");
-									}
 								}
 
 								// finalize the teams
