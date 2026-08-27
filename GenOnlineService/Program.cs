@@ -896,7 +896,7 @@ namespace GenOnlineService
 			return true;
 		}
 
-		public static string BuildWebSocketUrl(HttpRequest request)
+		public static string BuildWebSocketUrl(HttpRequest request, string environment, string contractVersion)
 		{
 			string webSocketScheme;
 			if (request.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
@@ -917,7 +917,11 @@ namespace GenOnlineService
 				throw new InvalidOperationException("Cannot build a WebSocket URL because the request Host is empty.");
 			}
 
-			return UriHelper.BuildAbsolute(webSocketScheme, request.Host, request.PathBase, new PathString("/ws"));
+			return UriHelper.BuildAbsolute(
+				webSocketScheme,
+				request.Host,
+				request.PathBase,
+				new PathString($"/env/{Uri.EscapeDataString(environment)}/contract/{Uri.EscapeDataString(contractVersion)}/ws"));
 		}
 
 		public static async Task Main(string[] args)

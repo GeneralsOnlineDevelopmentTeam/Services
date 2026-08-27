@@ -58,7 +58,9 @@ namespace GenOnlineService.Controllers
 
 		[HttpPost]
 		//public async Task<APIResult> Post([FromHeader(Name = "CF-Connecting-IP")] string? ipAddress)
-		public async Task<APIResult> Post()
+		public async Task<APIResult> Post(
+			[FromRoute] string environment,
+			[FromRoute(Name = "contract_version")] string contractVersion)
 		{
 			using (var reader = new StreamReader(HttpContext.Request.Body))
 			{
@@ -67,7 +69,7 @@ namespace GenOnlineService.Controllers
 				POST_CheckLogin_Result result = (POST_CheckLogin_Result)await Post_InternalHandler(
 					jsonData,
 					IPHelpers.NormalizeIP(HttpContext.Connection.RemoteIpAddress?.ToString()),
-					Program.BuildWebSocketUrl(Request));
+					Program.BuildWebSocketUrl(Request, environment, contractVersion));
 				return result;
 			}
 		}
