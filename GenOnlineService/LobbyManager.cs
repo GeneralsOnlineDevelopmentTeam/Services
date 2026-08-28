@@ -20,7 +20,6 @@ using Amazon.S3.Model;
 using Discord;
 using GenOnlineService.Controllers;
 using Microsoft.EntityFrameworkCore;
-using MySqlX.XDevAPI;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;

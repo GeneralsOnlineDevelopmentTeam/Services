@@ -23,7 +23,6 @@ using Discord;
 using Discord.Rest;
 using Discord.WebSocket;
 using GenOnlineService;
-using MySqlX.XDevAPI;
 using System;
 using System.Collections.Generic;
 using System.Net.WebSockets;

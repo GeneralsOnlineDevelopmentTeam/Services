@@ -20,8 +20,6 @@ using Amazon.S3;
 using Amazon.S3.Model;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.EntityFrameworkCore;
-using MySqlX.XDevAPI;
-using Org.BouncyCastle.Tls;
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
@@ -33,7 +31,6 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
-using ZstdSharp.Unsafe;
 
 namespace GenOnlineService
 {

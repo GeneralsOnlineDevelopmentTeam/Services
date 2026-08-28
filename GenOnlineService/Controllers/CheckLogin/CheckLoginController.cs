@@ -19,7 +19,6 @@
 using Database;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using MySqlX.XDevAPI.Common;
 using System;
 using System.Net;
 using System.Security.Cryptography;
