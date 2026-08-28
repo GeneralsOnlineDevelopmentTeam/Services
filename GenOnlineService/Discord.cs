@@ -460,10 +460,9 @@ public class DiscordBot
 								}
 							}
 						}
-						else if (message.Content.ToLower().StartsWith("!kick"))
+						else if (message.Content.Equals("!kick", StringComparison.OrdinalIgnoreCase)
+							|| message.Content.StartsWith("!kick ", StringComparison.OrdinalIgnoreCase))
 						{
-							// TODO: In future we should validate users not just channels
-							// is it in the admin channel?
 							if (message.Channel.Id == g_dictChannelIDs[EDiscordChannelIDs.AdminCommands])
 							{
 								if (Program.g_Config == null)
@@ -471,60 +470,47 @@ public class DiscordBot
 									return;
 								}
 
-								// is it an admin?
-								IConfiguration? discordSettings = Program.g_Config.GetSection("Discord");
-
-								if (discordSettings == null)
+								List<UInt64>? discordAdmins = Program.g_Config
+									.GetSection("Discord")
+									.GetSection("discord_admins")
+									.Get<List<UInt64>>();
+								if (discordAdmins?.Contains(message.Author.Id) == true)
 								{
-									return;
-								}
-
-								List<UInt64>? discord_admins = discordSettings.GetSection("discord_admins").Get<List<UInt64>>();
-								if (discord_admins == null)
-								{
-									return;
-								}
-
-								if (discord_admins.Contains(message.Author.Id))
-								{
-									string[] strComponents = message.Content.Split(' ');
-									//var clients = message.Author.ActiveClients;
-
-									//var user = message.Author as IGuildUser; // Get the user from the command context
-									if (strComponents.Length == 2)
+									string[] strComponents = message.Content.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+									if (strComponents.Length >= 2)
 									{
-										string strUser = string.Join(' ', strComponents.Skip(1));
+										string strUser = strComponents[1];
 										if (Int64.TryParse(strUser, out Int64 TargetUserID))
 										{
-											SharedUserData? targetData = GenOnlineService.WebSocketManager.GetSharedDataForUser(TargetUserID);
-											
-											if (targetData != null)
-											{
-												PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"User {TargetUserID} ({targetData.m_strDisplayName}) has been kicked from the server.");
+											string strReason = string.Join(' ', strComponents.Skip(2));
+											ModerationResult kickResult = await ModerationManager.KickUser(TargetUserID, strReason);
 
-												// we need to kill all websockets they have
-												List<UserSession> lstUserSessions = GenOnlineService.WebSocketManager.GetAllDataFromUser(TargetUserID);
-												foreach (UserSession userSession in lstUserSessions)
-												{
-													UserWebSocketInstance? oldWS = GenOnlineService.WebSocketManager.GetWebSocketForSession(userSession);
-													await GenOnlineService.WebSocketManager.DeleteSession(TargetUserID, userSession.GetSessionType(), oldWS, true);
-												}
-
-												
-											}
-											else
+											switch (kickResult.Result)
 											{
-												PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"User {TargetUserID} is not active on the server.");
+												case EModerationResult.ReasonTooLong:
+													PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"Kick reason must be {ModerationManager.MaximumReasonLength} characters or fewer.");
+													break;
+												case EModerationResult.TargetNotOnline:
+													PushChannelMessage(EDiscordChannelIDs.AdminCommands, $"User {TargetUserID} is not active on the server.");
+													break;
+												case EModerationResult.Success:
+													string confirmation = $"User {TargetUserID} ({kickResult.TargetDisplayName}) has been kicked from the server.";
+													if (!String.IsNullOrWhiteSpace(strReason))
+													{
+														confirmation += $" Reason: {strReason}";
+													}
+													PushChannelMessage(EDiscordChannelIDs.AdminCommands, confirmation);
+													break;
 											}
 										}
 										else
 										{
-											PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !kick <user_id> (e.g. !kick 123)");
+											PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !kick <user_id> [reason] (e.g. !kick 123 reconnect abuse)");
 										}
 									}
 									else
 									{
-										PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !kick <user_id> (e.g. !kick 123)");
+										PushChannelMessage(EDiscordChannelIDs.AdminCommands, "Invalid Command Syntax. !kick <user_id> [reason] (e.g. !kick 123 reconnect abuse)");
 									}
 								}
 								else

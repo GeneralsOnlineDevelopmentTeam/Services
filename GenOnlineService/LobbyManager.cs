@@ -220,7 +220,7 @@ namespace GenOnlineService
 						}
 					}
 
-					
+
 
 					// inform host that we are done
 					// start full mesh connectivity checks
@@ -257,14 +257,26 @@ namespace GenOnlineService
 
 		public void AddPassword(string password)
 		{
+			if (IsPassworded && Password == password)
+			{
+				return;
+			}
+
 			Password = password;
 			IsPassworded = true;
+			DirtyRetransmitLobbyList();
 		}
 
 		public void RemovePassword()
 		{
+			if (!IsPassworded && Password.Length == 0)
+			{
+				return;
+			}
+
 			Password = String.Empty;
 			IsPassworded = false;
+			DirtyRetransmitLobbyList();
 		}
 
 		public double GetLatitude() { return m_dHostLatitude; }
@@ -445,7 +457,9 @@ namespace GenOnlineService
 			}
 		}
 
-		private bool m_bIsDirty = false;
+		// Initial sync retries only resend lobby state.
+		private int m_lobbyUpdatePending = 0;
+		private int m_lobbyListUpdatePending = 0;
 
 		[JsonIgnore]
 		private Int64 m_LastInitialSync = Environment.TickCount64;
@@ -615,24 +629,16 @@ public async Task FinalizeACChecks()
 				{
 					if (member.UserID != oldOwner)
 					{
-						// found a viable host
 						UInt16 oldSlot = member.SlotIndex;
 
-						// update owner
 						Owner = member.UserID;
 
-						// move them to slot 0 (host)
 						member.UpdateSlotIndex(0);
 						Members[0] = member;
 						Members[oldSlot] = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, -1, -1, -1, EPlayerType.SLOT_OPEN, oldSlot, true);
 
-						// mark as ready
 						member.SetReadyState(true);
-
-						// mark as dirty
-						DirtyRetransmit();
-
-						// we are done
+						DirtyRetransmitLobbyList();
 						break;
 					}
 				}
@@ -707,11 +713,11 @@ public async Task FinalizeACChecks()
 			if (m_InitialSyncs < 5 && Environment.TickCount64 - m_LastInitialSync > 200)
 			{
 				m_LastInitialSync = Environment.TickCount64;
-				m_bIsDirty = true;
+				Interlocked.Exchange(ref m_lobbyUpdatePending, 1);
 				++m_InitialSyncs;
 			}
 
-			if (m_bIsDirty)
+			if (Interlocked.Exchange(ref m_lobbyUpdatePending, 0) != 0)
 			{
 				WebSocketMessage_CurrentLobbyUpdate lobbyUpdate = new WebSocketMessage_CurrentLobbyUpdate();
 				lobbyUpdate.msg_id = (int)EWebSocketMessageID.LOBBY_CURRENT_LOBBY_UPDATE;
@@ -730,11 +736,11 @@ public async Task FinalizeACChecks()
 						}
 					}
 				}
+			}
 
-				// transmit to those in network room
-				//WebSocketManager.SendNewOrDeletedLobbyToAllNetworkRoomMembers(NetworkRoomID);
-
-				m_bIsDirty = false;
+			if (Interlocked.Exchange(ref m_lobbyListUpdatePending, 0) != 0)
+			{
+				WebSocketManager.QueueLobbyListUpdateForViewers(NetworkRoomID);
 			}
 		}
 
@@ -871,10 +877,9 @@ public async Task FinalizeACChecks()
 			Members[slotIndex] = newMember;
 			TimeMemberLeft[playerSession.m_UserID] = DateTime.UnixEpoch;
 
-			// leave network room we were in
-			playerSession.UpdateSessionNetworkRoom(-1);
+			// Lobby members leave public-room presence.
+			playerSession.TryUpdateSessionNetworkRoom(-1);
 
-			// store our lobby ID
 			playerSession.UpdateSessionLobbyID(LobbyID);
 
 			// START NETWORK SIGNALLING
@@ -927,8 +932,8 @@ public async Task FinalizeACChecks()
 			}
 			// END NETWORK SIGNALLING
 
-			// also update the lobby for everyone inside of it
-			DirtyRetransmit();
+			// Notify lobby members and room browsers.
+			DirtyRetransmitLobbyList();
 
 			Console.WriteLine("User {0} joined lobby {1}: {2} (Slot was {3})", playerSession.m_UserID, LobbyID, true, slotIndex);
 			return true;
@@ -942,7 +947,7 @@ public async Task FinalizeACChecks()
 		public async Task RemoveMember(LobbyMember member)
 		{
 			// TODO_LOBBY: Optimize this
-			Int64 UserID = member.UserID;			
+			Int64 UserID = member.UserID;
 
 			Console.WriteLine("User {0} left lobby {1}", UserID, LobbyID);
 
@@ -992,7 +997,7 @@ public async Task FinalizeACChecks()
 
 			await OnAfterPlayerLeft(UserID);
 
-			DirtyRetransmit();
+			DirtyRetransmitLobbyList();
 		}
 
 		public int GetNumberOfHumans()
@@ -1039,7 +1044,13 @@ public async Task FinalizeACChecks()
 
 		public void DirtyRetransmit()
 		{
-			m_bIsDirty = true;
+			Interlocked.Exchange(ref m_lobbyUpdatePending, 1);
+		}
+
+		public void DirtyRetransmitLobbyList()
+		{
+			DirtyRetransmit();
+			Interlocked.Exchange(ref m_lobbyListUpdatePending, 1);
 		}
 
 		public async Task DirtyRetransmitToSingleMember(Int64 targetUserID)
@@ -1075,7 +1086,7 @@ public async Task FinalizeACChecks()
 			{
 				return Members[slotIndex];
 			}
-			
+
 			return null;
 		}
 
@@ -1118,7 +1129,7 @@ public async Task FinalizeACChecks()
 				await Database.Users.SetFavorite_Map(_db, Owner, strMapPath);
 			}
 
-			DirtyRetransmit();
+			DirtyRetransmitLobbyList();
 		}
 
 		public async Task UpdateStartingCash(AppDbContext _db, UInt32 newStartingCash)
@@ -1127,7 +1138,7 @@ public async Task FinalizeACChecks()
 
 			await Database.Users.SetFavorite_StartingMoney(_db, Owner, (int)newStartingCash);
 
-			DirtyRetransmit();
+			DirtyRetransmitLobbyList();
 		}
 
 		public async Task UpdateLimitSuperweapons(AppDbContext _db, bool bLimitSuperweapons)
@@ -1136,7 +1147,7 @@ public async Task FinalizeACChecks()
 
 			await Database.Users.SetFavorite_LimitSuperweapons(_db, Owner, bLimitSuperweapons);
 
-			DirtyRetransmit();
+			DirtyRetransmitLobbyList();
 		}
 
 		public void ForceReady()
@@ -1218,19 +1229,19 @@ public async Task FinalizeACChecks()
 					m_NextProbe = 0;
 				}
 
-				
+
 			}
 
-			DirtyRetransmit();
+			DirtyRetransmitLobbyList();
 		}
 
 		public void UpdateJoinability(ELobbyJoinability newJoinability)
 		{
-			// must be a custom match
-			if (LobbyType == ELobbyType.CustomGame)
+			if (LobbyType == ELobbyType.CustomGame && LobbyJoinability != newJoinability)
 			{
-                LobbyJoinability = newJoinability;
-            }
+				LobbyJoinability = newJoinability;
+				DirtyRetransmitLobbyList();
+			}
 		}
 
 		public void UpdateMaxCameraHeight(UInt16 maxCamHeight)
@@ -1350,6 +1361,12 @@ public async Task FinalizeACChecks()
 			lobby?.DirtyRetransmit();
 		}
 
+		private void DirtyRetransmitLobbyList()
+		{
+			CurrentLobby.TryGetTarget(out Lobby? lobby);
+			lobby?.DirtyRetransmitLobbyList();
+		}
+
 		public void SetReadyState(bool bReady)
 		{
 			IsReady = bReady;
@@ -1367,7 +1384,7 @@ public async Task FinalizeACChecks()
 				IsReady = true;
 			}
 
-			DirtyRetransmit();
+			DirtyRetransmitLobbyList();
 		}
 
 		public async Task UpdateSide(AppDbContext _db, int newSide, int start_pos)
@@ -1531,21 +1548,15 @@ public async Task FinalizeACChecks()
 			Lobby newLobby = new Lobby(newLobbyID, owningSession, strName, ELobbyState.GAME_SETUP, strMapName, strMapPath, bVanillaTeams, starting_cash, bLimitSuperweapons, bTrackStats, bPassworded, strPassword, bMapOfficial, rng_seed, parentNetworkRoom, bAllowObservers, maxCamHeight, exe_crc, ini_crc, maxPlayers, lobbyType, anticheatID);
 			m_dictLobbies[newLobbyID] = newLobby;
 
-			
-
-			// subscribe for self-destruct event
 			newLobby.OnLobbyNeedsDestroyed += HandleLobbyNeedsDestroyed;
 
-			// and join
-			if (lobbyType != ELobbyType.QuickMatch) // quickmatch requires a manual join, because the service creates the lobby for them, so the client knows nothing about it without a manual join
+			if (lobbyType != ELobbyType.QuickMatch) // QuickMatch clients join after allocation.
 			{
-				bool bJoined = await JoinLobby(_db, newLobby, owningSession, strOwnerDisplayName, hostPreferredPort, true);
+				await JoinLobby(_db, newLobby, owningSession, strOwnerDisplayName, hostPreferredPort, true);
 			}
 
-			newLobby.DirtyRetransmit();
-
-			// inform
-			await WebSocketManager.SendNewOrDeletedLobbyToAllNetworkRoomMembers(parentNetworkRoom);
+			// Send initial lobby state and invalidate room listings.
+			newLobby.DirtyRetransmitLobbyList();
 
 			return newLobbyID;
 		}
@@ -1588,13 +1599,13 @@ public async Task FinalizeACChecks()
 			}
 		}
 
-		public List<Lobby> GetAllLobbies(Int16 networkRoomID, bool bIncludePassword, bool bAllowInSetup, bool bAllowInGame, bool bAllowCompleted, bool bIncludeAllNetworkRooms)
+		public List<Lobby> GetAllLobbies(Int16 selectedRoomID, bool bIncludePassword, bool bAllowInSetup, bool bAllowInGame, bool bAllowCompleted, bool bIncludeAllNetworkRooms)
 		{
 			List<Lobby> listLobbies = new List<Lobby>();
 			foreach (var kvp in m_dictLobbies)
 			{
 				Lobby lobby = kvp.Value;
-				if (!bIncludeAllNetworkRooms && lobby.NetworkRoomID != networkRoomID)
+				if (!bIncludeAllNetworkRooms && !RoomCatalog.CanViewLobby(selectedRoomID, lobby.NetworkRoomID))
 				{
 					continue;
 				}
@@ -1746,28 +1757,21 @@ public async Task FinalizeACChecks()
 			{
 				if (lobby.State != ELobbyState.COMPLETE)
 				{
-					// make done
 					await lobby.UpdateState(ELobbyState.COMPLETE);
-
-					// attempt to commit it
 					await Database.MatchHistory.CommitLobbyToMatchHistory(_db, lobby);
 				}
 
-				// delete
 				bool bRemoved = m_dictLobbies.Remove(lobby.LobbyID, out _);
-				await WebSocketManager.SendNewOrDeletedLobbyToAllNetworkRoomMembers(lobby.NetworkRoomID);
 
-				// only do this once
 				if (bRemoved)
 				{
-					// unsubscribe from self-destruct event
+					WebSocketManager.QueueLobbyListUpdateForViewers(lobby.NetworkRoomID);
+
 					lobby.OnLobbyNeedsDestroyed -= HandleLobbyNeedsDestroyed;
 
-					// make sure we have a winner
 					await Database.MatchHistory.DetermineLobbyWinnerIfNotPresent(_db, lobby);
 
-					// Post match result to external leaderboard API for every lobby type.
-					// Only QuickMatch responses are expected to carry a ratings body.
+					// All lobby types are published; only QuickMatch returns ratings.
 					await ExternalLeaderboardsClient.PostMatchResultAsync(_db, lobby);
 				}
 

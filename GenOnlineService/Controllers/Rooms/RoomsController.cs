@@ -19,60 +19,37 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System;
-using System.Net.WebSockets;
-using System.Text;
-using System.Text.Json;
 
 namespace GenOnlineService.Controllers
 {
 	public class RouteHandler_GET_Rooms_Result : APIResult
 	{
-		public override Type GetReturnType()
-		{
-			return this.GetType();
-		}
+		public override Type GetReturnType() => GetType();
 
-		public List<RoomData>? rooms { get; set; } = null;
+		public List<RoomData> rooms { get; set; } = [];
+		public bool supports_moderation_commands { get; set; } = true;
+		public bool supports_room_selection_results { get; set; } = true;
 	}
 
 	[ApiController]
 	[Route("env/{environment}/contract/{contract_version}/[controller]")]
 	public class RoomsController : ControllerBase
 	{
-		private readonly ILogger<RoomsController> _logger;
-
-		public RoomsController(ILogger<RoomsController> logger)
-		{
-			_logger = logger;
-		}
-
 		[HttpGet(Name = "GetRooms")]
 		[Authorize(Roles = "GameClient,ChatClient,GameLauncher,Monitor")]
-		public async Task<APIResult> Get()
+		public APIResult Get()
 		{
-			RouteHandler_GET_Rooms_Result result = new RouteHandler_GET_Rooms_Result();
-
-			using (var reader = new StreamReader(HttpContext.Request.Body))
+			List<RoomData> rooms = RoomCatalog.Rooms.Select((room, index) => new RoomData
 			{
-				string jsonData = await reader.ReadToEndAsync();
-				var options = new JsonSerializerOptions
-				{
-					PropertyNameCaseInsensitive = true
-				};
+				id = room.ID,
+				name = room.Name,
+				parent_id = room.ParentID,
+				flags = index == 0
+					? ERoomFlags.ROOM_FLAGS_SHOW_ALL_MATCHES
+					: ERoomFlags.ROOM_FLAGS_NONE
+			}).ToList();
 
-				try
-				{
-					string strFileData = await System.IO.File.ReadAllTextAsync(Path.Combine("data", "rooms.json"));
-					List<RoomData>? lstRooms = JsonSerializer.Deserialize<List<RoomData>>(strFileData, options);
-					result.rooms = lstRooms;
-				}
-				catch
-				{
-					return result;
-				}
-
-				return result;
-			}
+			return new RouteHandler_GET_Rooms_Result { rooms = rooms };
 		}
 	}
 }

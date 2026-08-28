@@ -47,6 +47,92 @@ namespace GenOnlineService.Controllers
 			AllowOutOfOrderMetadataProperties = true
 		};
 
+		private static void QueueChatRateLimited(UserSession session, SharedUserData userData, string scopeType)
+		{
+			if (!userData.TryConsumeChatRateLimitNotice())
+			{
+				return;
+			}
+
+			WebSocketMessage_ModerationNotice message = new()
+			{
+				msg_id = (int)EWebSocketMessageID.MODERATION_NOTICE,
+				action_type = "rate_limit",
+				reason = "Rate limit: Please wait before sending another message.",
+				scope_type = scopeType
+			};
+			session.QueueWebsocketSend(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message)));
+		}
+
+		private static void QueueModerationCommandResult(
+			UserSession session,
+			UInt64 requestID,
+			bool success,
+			string message,
+			string? errorCode = null)
+		{
+			WebSocketMessage_ModerationCommandResult result = new()
+			{
+				msg_id = (int)EWebSocketMessageID.MODERATION_COMMAND_RESULT,
+				request_id = requestID,
+				success = success,
+				error_code = errorCode,
+				message = message
+			};
+			session.QueueWebsocketSend(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(result)));
+		}
+
+		private async Task ProcessModerationCommand(
+			byte[] payload,
+			UserSession session,
+			SharedUserData userData)
+		{
+			WebSocketMessage_ModerationCommand? command =
+				JsonSerializer.Deserialize<WebSocketMessage_ModerationCommand>(payload, JsonOpts);
+			if (command == null)
+			{
+				return;
+			}
+
+			if (!userData.IsAdmin())
+			{
+				QueueModerationCommandResult(session, command.request_id, false,
+					"You are not allowed to perform moderation actions.", "forbidden");
+				return;
+			}
+
+			if (command.action_type == "kick")
+			{
+				if (!command.target_user_id.HasValue || command.target_user_id.Value == session.m_UserID)
+				{
+					QueueModerationCommandResult(session, command.request_id, false,
+						"Select another online player to kick.", "invalid_target");
+					return;
+				}
+
+				ModerationResult kickResult = await ModerationManager.KickUser(command.target_user_id.Value, command.reason);
+				switch (kickResult.Result)
+				{
+					case EModerationResult.Success:
+						QueueModerationCommandResult(session, command.request_id, true,
+							$"{kickResult.TargetDisplayName} was kicked.");
+						break;
+					case EModerationResult.TargetNotOnline:
+						QueueModerationCommandResult(session, command.request_id, false,
+							"That player is no longer online.", "target_not_online");
+						break;
+					case EModerationResult.ReasonTooLong:
+						QueueModerationCommandResult(session, command.request_id, false,
+							$"The reason must be {ModerationManager.MaximumReasonLength} characters or fewer.", "reason_too_long");
+						break;
+				}
+				return;
+			}
+
+			QueueModerationCommandResult(session, command.request_id, false,
+				"That moderation action is not supported.", "unsupported_action");
+		}
+
 		// GeoIP DB is designed to be reused; opening per request is expensive.
 		// It is gitignored and absent in fresh clones, so a failure to open must
 		// fall back to the lookup defaults rather than fail static init.
@@ -292,6 +378,49 @@ namespace GenOnlineService.Controllers
 			}
 		}
 
+		private static UInt64? GetRoomChangeRequestID(Dictionary<string, JsonElement>? data)
+		{
+			if (data != null
+				&& data.TryGetValue("request_id", out JsonElement requestIDValue)
+				&& requestIDValue.ValueKind == JsonValueKind.Number
+				&& requestIDValue.TryGetUInt64(out UInt64 requestID))
+			{
+				return requestID;
+			}
+
+			return null;
+		}
+
+		private static void ProcessNetworkRoomChange(UserSession session, Dictionary<string, JsonElement>? data)
+		{
+			UInt64? requestID = GetRoomChangeRequestID(data);
+			if (data == null || !data.TryGetValue("room", out JsonElement roomValue))
+			{
+				Console.WriteLine($"Rejected network room selection without a room ID from user {session.m_UserID}.");
+				WebSocketManager.QueueRoomSelectionRejected(session, requestID, null, "A room must be selected.");
+				return;
+			}
+
+			if (roomValue.ValueKind != JsonValueKind.Number || !roomValue.TryGetInt16(out Int16 roomID))
+			{
+				Console.WriteLine($"Rejected invalid network room selection from user {session.m_UserID}; value must be an Int16.");
+				WebSocketManager.QueueRoomSelectionRejected(session, requestID, null, "That room is unavailable.");
+				return;
+			}
+
+			if (!session.TryUpdateSessionNetworkRoom(roomID))
+			{
+				WebSocketManager.QueueRoomSelectionRejected(session, requestID, roomID, "That room is unavailable.");
+				return;
+			}
+
+			if (!requestID.HasValue)
+			{
+				WebSocketManager.QueueLobbyListUpdateForSession(session);
+			}
+			WebSocketManager.QueueRoomSelectionAccepted(session, requestID);
+		}
+
 		private async Task ProcessWSMessage(UserWebSocketInstance sourceWS, UserSession sourceUserSession, WebSocketReceiveResult receiveResult, ArraySegment<byte> buffer)
 		{
 			SharedUserData sourceUserData = WebSocketManager.GetSharedDataForUser(sourceUserSession.m_UserID);
@@ -370,6 +499,10 @@ namespace GenOnlineService.Controllers
 				{
 					sourceUserSession.SetSubscribedToRealtimeSocialUpdates(false);
 				}
+				else if (msgID == EWebSocketMessageID.MODERATION_COMMAND)
+				{
+					await ProcessModerationCommand(payload.ToArray(), sourceUserSession, sourceUserData);
+				}
 				else if (msgID == EWebSocketMessageID.SOCIAL_FRIEND_CHAT_MESSAGE_CLIENT_TO_SERVER)
 				{
 					WebSocketMessage_Social_FriendChatMessage_Inbound? chatMessage =
@@ -377,6 +510,22 @@ namespace GenOnlineService.Controllers
 
 					if (chatMessage != null)
 					{
+						if (!sourceUserData.TryConsumeChatMessage())
+						{
+							if (sourceUserData.TryConsumeChatRateLimitNotice())
+							{
+								WebSocketMessage_Social_FriendChatMessage_Outbound rateLimitMessage = new()
+								{
+									msg_id = (int)EWebSocketMessageID.SOCIAL_FRIEND_CHAT_MESSAGE_SERVER_TO_CLIENT,
+									source_user_id = sourceUserSession.m_UserID,
+									target_user_id = chatMessage.target_user_id,
+									message = "Rate limit: Please wait before sending another message."
+								};
+								sourceUserSession.QueueWebsocketSend(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(rateLimitMessage)));
+							}
+							return;
+						}
+
 						// must be online & friends
 
 						SharedUserData? targetUserData = WebSocketManager.GetSharedDataForUser(chatMessage.target_user_id);
@@ -428,6 +577,12 @@ namespace GenOnlineService.Controllers
 
 					if (chatMessage != null)
 					{
+						if (!sourceUserData.TryConsumeChatMessage())
+						{
+							QueueChatRateLimited(sourceUserSession, sourceUserData, "room");
+							return;
+						}
+
 						// response
 						WebSocketMessage_NetworkRoomChatMessageOutbound outboundMsg = new WebSocketMessage_NetworkRoomChatMessageOutbound();
 						outboundMsg.msg_id = (int)EWebSocketMessageID.NETWORK_ROOM_CHAT_FROM_SERVER;
@@ -442,7 +597,7 @@ namespace GenOnlineService.Controllers
 						{
 							if (sourceUserData.IsAdmin())
 							{
-								outboundMsg.message = String.Format("[\u2605\u2605GO STAFF\u2605\u2605]    [{0}] {1}", sourceUserData.m_strDisplayName, chatMessage.message);
+								outboundMsg.message = String.Format("[\u2605\u2605GO STAFF\u2605\u2605] [{0}] {1}", sourceUserData.m_strDisplayName, chatMessage.message);
 								outboundMsg.admin = true;
 								outboundMsg.name_change = false;
 							}
@@ -493,11 +648,7 @@ namespace GenOnlineService.Controllers
 				}
 				else if (msgID == EWebSocketMessageID.NETWORK_ROOM_CHANGE_ROOM)
 				{
-					if (data != null && data.ContainsKey("room"))
-					{
-						Int16 roomID = data["room"].GetInt16();
-						await sourceUserSession.UpdateSessionNetworkRoom(roomID);
-					}
+					ProcessNetworkRoomChange(sourceUserSession, data);
 				}
 				else if (msgID == EWebSocketMessageID.NETWORK_ROOM_MARK_READY)
 				{
@@ -643,7 +794,7 @@ namespace GenOnlineService.Controllers
 								}
 
 								sourceUserData.m_strDisplayName = nameChangeRequest.name;
-								await WebSocketManager.MarkRoomMemberListAsDirty(sourceUserSession.networkRoomID);
+								WebSocketManager.MarkRoomMemberListAsDirty(sourceUserSession.networkRoomID);
 							}
 							else
 							{
@@ -705,6 +856,12 @@ namespace GenOnlineService.Controllers
 
 					if (chatMessage != null)
 					{
+						if (!sourceUserData.TryConsumeChatMessage())
+						{
+							QueueChatRateLimited(sourceUserSession, sourceUserData, "lobby");
+							return;
+						}
+
 						// get lobby
 						Lobby? playerLobby = _lobbyManager.GetLobby(sourceUserSession.currentLobbyID);
 
