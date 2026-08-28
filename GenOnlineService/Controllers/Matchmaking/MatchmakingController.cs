@@ -120,7 +120,7 @@ namespace GenOnlineService.Controllers
 
 		[HttpDelete]
 		[Authorize(Roles = "GameClient")]
-		public void Delete()
+		public async Task Delete()
 		{
 			Int64 user_id = TokenHelper.GetUserID(this);
 			EUserSessionType sessionType = TokenHelper.GetSessionType(this);
@@ -130,7 +130,7 @@ namespace GenOnlineService.Controllers
 
 				if (playerSession != null)
 				{
-					MatchmakingManager.DeregisterPlayer(playerSession);
+					await MatchmakingManager.DeregisterPlayer(playerSession);
 				}
 			}
 		}

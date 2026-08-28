@@ -1020,25 +1020,7 @@ namespace GenOnlineService.Controllers
 					lobbyInfo.StartFullMeshConnectivityCheck();
 
 					// start full mesh connectivity checks
-					WebSocketMessage_Simple startCommand = new WebSocketMessage_Simple();
-					startCommand.msg_id = (int)EWebSocketMessageID.FULL_MESH_CONNECTIVITY_CHECK_RESPONSE;
-
-					// Serialize once before broadcasting
-					byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(startCommand));
-
-					foreach (LobbyMember lobbyMember in lobbyInfo.Members)
-					{
-						if (lobbyMember != null)
-						{
-							if (lobbyMember.GetSession().TryGetTarget(out UserSession? sess))
-							{
-								if (sess != null)
-								{
-									sess.QueueWebsocketSend(bytesJSON);
-								}
-							}
-						}
-					}
+					lobbyInfo.SendFullMeshConnectivityCheckRequestToMembers();
 				}
 				else if (msgID == EWebSocketMessageID.FULL_MESH_CONNECTIVITY_CHECK_RESPONSE)
 				{
@@ -1052,7 +1034,7 @@ namespace GenOnlineService.Controllers
 						Lobby? lobby = _lobbyManager.GetLobby(sourceUserSession.currentLobbyID);
 						if (lobby != null)
 						{
-							await lobby.StoreFullMeshConnectivityResponse(sourceUserSession.m_UserID, fullMeshMsg.connectivity_map);
+							await lobby.StoreFullMeshConnectivityResponse(sourceUserSession.m_UserID, fullMeshMsg);
 						}
 					}
 				}

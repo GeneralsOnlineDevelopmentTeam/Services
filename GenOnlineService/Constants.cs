@@ -1181,6 +1181,8 @@ namespace GenOnlineService
 		// Matchmaking data
 		public UInt16 MatchmakingPlaylistID = 0;
 		public ConcurrentList<int> MatchmakingMapIndicies = new();
+		internal bool IsRegisteredForMatchmaking { get; set; } = false;
+		internal SemaphoreSlim MatchmakingStateLock { get; } = new(1, 1);
 
 		// NOTE: These are not set on login, only when in quickmatch!
 		public UInt32 ExeCRC = 0;
@@ -1660,7 +1662,7 @@ namespace GenOnlineService
 			// remove from any matchmaking
 			if (userData != null)
 			{
-				MatchmakingManager.DeregisterPlayer(userData);
+				await MatchmakingManager.DeregisterPlayer(userData);
 			}
 
 			// TODO: Client needs to handle this... itll start returning 404
@@ -2847,6 +2849,8 @@ namespace GenOnlineService
 		AC_DEREGISTER_PLAYER = 41,
 		WS_KEEPALIVE = 42,
 		WS_KEEPALIVE_CLIENT = 43,
+		MATCHMAKING_ACTION_REQUEUE = 44,
+		MATCHMAKING_ACTION_SETUP_PROGRESS = 45,
 		MODERATION_NOTICE = 46,
 		MODERATION_COMMAND = 47,
 		MODERATION_COMMAND_RESULT = 48
@@ -2985,8 +2989,16 @@ namespace GenOnlineService
 		public string name { get; set; } = String.Empty;
 	}
 
+	public class WebSocketMessage_FullMeshConnectivityCheckRequest : WebSocketMessage
+	{
+		public Int64 mesh_check_id { get; set; }
+		public int attempt { get; set; }
+	}
+
 	public class WebSocketMessage_FullMeshConnectivityCheckResponseFromUser : WebSocketMessage
 	{
+		public Int64 mesh_check_id { get; set; }
+		public int attempt { get; set; }
 		public List<Int64> connectivity_map { get; set; } = new();
 	}
 
@@ -3174,6 +3186,11 @@ namespace GenOnlineService
 	public class WebSocketMessage_MatchmakerStartGame : WebSocketMessage
 	{
 
+	}
+
+	public class WebSocketMessage_MatchmakerSetupProgress : WebSocketMessage
+	{
+		public int timeout_ms { get; set; }
 	}
 
 }
