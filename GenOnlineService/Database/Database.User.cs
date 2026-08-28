@@ -670,7 +670,11 @@ namespace Database
 			}
 		}
 
-		public static async Task SaveELOData(AppDbContext db, long userId, EloData newEloData)
+		public static async Task SaveELOData(
+			AppDbContext db,
+			long userId,
+			EloData newEloData,
+			CancellationToken cancellationToken = default)
 		{
 			try
 			{
@@ -679,14 +683,38 @@ namespace Database
 					.ExecuteUpdateAsync(setters => setters
 						.SetProperty(u => u.EloRating, newEloData.Rating)
 						.SetProperty(u => u.MonthlyEloRating, newEloData.MonthlyRating)
-						.SetProperty(u => u.EloNumberOfMatches, newEloData.NumMatches)
-					);
+						.SetProperty(u => u.EloNumberOfMatches, newEloData.NumMatches),
+						cancellationToken);
+			}
+			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+			{
+				throw;
 			}
 			catch (Exception ex)
 			{
 				Console.WriteLine($"[ERROR] SaveELOData failed: {ex.Message}");
 				SentrySdk.CaptureException(ex);
 			}
+		}
+
+		public static async Task<bool> SaveExternalELOData(
+			AppDbContext db,
+			long userId,
+			EloData newEloData,
+			CancellationToken cancellationToken = default)
+		{
+			ArgumentNullException.ThrowIfNull(db);
+			ArgumentNullException.ThrowIfNull(newEloData);
+
+			int updated = await db.Users
+				.Where(u => u.ID == userId)
+				.ExecuteUpdateAsync(setters => setters
+					.SetProperty(u => u.EloRating, newEloData.Rating)
+					.SetProperty(u => u.MonthlyEloRating, newEloData.MonthlyRating)
+					.SetProperty(u => u.EloNumberOfMatches, newEloData.NumMatches),
+					cancellationToken);
+
+			return updated == 1;
 		}
 
 	}

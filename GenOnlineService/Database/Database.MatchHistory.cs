@@ -19,7 +19,6 @@
 using GenOnlineService;
 using GenOnlineService.Controllers;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Microsoft.EntityFrameworkCore.Query;
 using System;
@@ -51,7 +50,6 @@ public class MatchHistoryEntry
 	public uint ExeCRC { get; set; }
 	public uint IniCRC { get; set; }
 	public string? MapPath { get; set; }
-
 	// JSON slots
 	public string? MemberSlot0 { get; set; }
 	public string? MemberSlot1 { get; set; }
@@ -158,6 +156,31 @@ public class MatchHistoryConfiguration : IEntityTypeConfiguration<MatchHistoryEn
 	}
 }
 
+public class ExternalPublicationEntry
+{
+	public long MatchId { get; set; }
+	public DateTime? NextAttemptAt { get; set; }
+	public DateTime? PublishedAt { get; set; }
+	public int Attempts { get; set; }
+	public string? LastError { get; set; }
+}
+
+public class ExternalPublicationConfiguration : IEntityTypeConfiguration<ExternalPublicationEntry>
+{
+	public void Configure(EntityTypeBuilder<ExternalPublicationEntry> entity)
+	{
+		entity.ToTable("external_publication");
+		entity.HasKey(e => e.MatchId);
+		entity.Property(e => e.MatchId).HasColumnName("match_id").ValueGeneratedNever();
+		entity.Property(e => e.NextAttemptAt).HasColumnName("next_attempt_at").HasColumnType("datetime");
+		entity.Property(e => e.PublishedAt).HasColumnName("published_at").HasColumnType("datetime");
+		entity.Property(e => e.Attempts).HasColumnName("attempts").HasDefaultValue(0);
+		entity.Property(e => e.LastError).HasColumnName("last_error").HasMaxLength(512);
+		entity.HasIndex(e => new { e.PublishedAt, e.NextAttemptAt })
+			.HasDatabaseName("ix_external_publication_pending");
+	}
+}
+
 // TODO_EFCORE: put everything in below namespace
 namespace GenOnlineService
 {
@@ -231,6 +254,8 @@ namespace GenOnlineService
 
 namespace Database
 {
+	public readonly record struct ExternalPublicationWorkItem(long MatchId, int Attempt);
+
 	// TODO_EFCORE: Consider moving to zero-serialization model
 	public static class MatchHistory
 	{
@@ -299,7 +324,11 @@ namespace Database
 
 
 
-		private static async Task<string?> _getMemberSlot(AppDbContext db, long matchId, int slotIndex)
+		private static async Task<string?> _getMemberSlot(
+			AppDbContext db,
+			long matchId,
+			int slotIndex,
+			CancellationToken cancellationToken = default)
 		{
 			if (slotIndex < 0 || slotIndex > 7)
 				return null;
@@ -307,7 +336,7 @@ namespace Database
 			return await db.MatchHistory
 				.Where(m => m.MatchId == matchId)
 				.Select(_slotSelectors[slotIndex])
-				.FirstOrDefaultAsync();
+				.FirstOrDefaultAsync(cancellationToken);
 		}
 
 
@@ -576,8 +605,9 @@ namespace Database
 		}
 
 		public static async Task DetermineLobbyWinnerIfNotPresent(
-	AppDbContext db,
-	GenOnlineService.Lobby lobby)
+		AppDbContext db,
+		GenOnlineService.Lobby lobby,
+		CancellationToken cancellationToken = default)
 		{
 			if (lobby == null || lobby.MatchID == 0)
 				return;
@@ -612,7 +642,7 @@ namespace Database
 						if (kv.Value.side == Constants.OBSERVER_SIDE_VALUE)
 							continue;
 
-						await UpdateMatchHistorySetWinFlag(db, lobby.MatchID, kv.Key, false);
+						await UpdateMatchHistorySetWinFlag(db, lobby.MatchID, kv.Key, false, cancellationToken);
 					}
 					return;
 				}
@@ -669,7 +699,7 @@ namespace Database
 							? kv.Value.team == conclusiveWinningTeam.Value
 							: kv.Key == conclusiveWinningSlot;
 
-						await UpdateMatchHistorySetWinFlag(db, lobby.MatchID, kv.Key, isWinner);
+						await UpdateMatchHistorySetWinFlag(db, lobby.MatchID, kv.Key, isWinner, cancellationToken);
 					}
 
 					return;
@@ -749,7 +779,7 @@ namespace Database
 						if (kv.Value.side == Constants.OBSERVER_SIDE_VALUE)
 							continue;
 
-						await UpdateMatchHistorySetWinFlag(db, lobby.MatchID, kv.Key, false);
+						await UpdateMatchHistorySetWinFlag(db, lobby.MatchID, kv.Key, false, cancellationToken);
 					}
 					return;
 				}
@@ -769,21 +799,22 @@ namespace Database
 						(winningTeam != -1 && model.team == winningTeam);
 
 					Console.WriteLine($"[WinnerDet] Match={lobby.MatchID}: marking slot={kv.Key} user={model.user_id} as {(isWinner ? "WINNER" : "loser")}.");
-					await UpdateMatchHistorySetWinFlag(db, lobby.MatchID, kv.Key, isWinner);
+					await UpdateMatchHistorySetWinFlag(db, lobby.MatchID, kv.Key, isWinner, cancellationToken);
 				}
 			}
 			catch (Exception ex)
 			{
 				Console.WriteLine($"[ERROR] DetermineLobbyWinnerIfNotPresent failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				throw;
 			}
 		}
 
 		public static async Task UpdateMatchHistorySetWinFlag(
-	AppDbContext db,
-	ulong matchId,
-	int slotIndex,
-	bool won)
+		AppDbContext db,
+		ulong matchId,
+		int slotIndex,
+		bool won,
+		CancellationToken cancellationToken = default)
 		{
 			if (matchId == 0 || slotIndex < 0 || slotIndex > 7)
 				return;
@@ -791,7 +822,7 @@ namespace Database
 			try
 			{
 				// 1. Load the JSON for this slot
-				string? json = await _getMemberSlot(db, (long)matchId, slotIndex);
+				string? json = await _getMemberSlot(db, (long)matchId, slotIndex, cancellationToken);
 				if (string.IsNullOrEmpty(json))
 					return;
 
@@ -811,14 +842,17 @@ namespace Database
 				var setter = BuildSetter(slotIndex, updatedJson);
 
 				// 6. Execute update (single SQL UPDATE)
-				await db.MatchHistory
+				int updated = await db.MatchHistory
 					.Where(m => m.MatchId == (long)matchId)
-					.ExecuteUpdateAsync(setter);
+					.ExecuteUpdateAsync(setter, cancellationToken);
+
+				if (updated != 1)
+					throw new InvalidOperationException($"Match history entry {matchId} disappeared while its winner was being finalized.");
 			}
 			catch (Exception ex)
 			{
 				Console.WriteLine($"[ERROR] UpdateMatchHistorySetWinFlag failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				throw;
 			}
 		}
 
@@ -994,30 +1028,145 @@ namespace Database
 		}
 
 		// Called when a lobby is deleted, thats the true end of a match
-		public static async Task CommitLobbyToMatchHistory(AppDbContext db, GenOnlineService.Lobby lobby)
+		public static async Task FinalizeAndScheduleExternalPublication(
+			AppDbContext db,
+			GenOnlineService.Lobby lobby,
+			CancellationToken cancellationToken = default)
 		{
 			if (lobby.MatchID == 0)
 				return;
 
-			try
+			await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+			await CommitLobbyToMatchHistory(db, lobby, cancellationToken);
+			await DetermineLobbyWinnerIfNotPresent(db, lobby, cancellationToken);
+			await ScheduleExternalPublication(db, lobby.MatchID, cancellationToken);
+
+			await transaction.CommitAsync(cancellationToken);
+		}
+
+		private static async Task CommitLobbyToMatchHistory(
+			AppDbContext db,
+			GenOnlineService.Lobby lobby,
+			CancellationToken cancellationToken)
+		{
+			if (lobby.MatchID == 0)
+				return;
+
+			await db.MatchHistory
+				.Where(m => m.MatchId == (long)lobby.MatchID && !m.Finished)
+				.ExecuteUpdateAsync(s => s
+					.SetProperty(m => m.Finished, true)
+					.SetProperty(m => m.TimeFinished, DateTime.UtcNow), cancellationToken);
+
+			bool matchExists = await db.MatchHistory
+				.AnyAsync(m => m.MatchId == (long)lobby.MatchID && m.Finished, cancellationToken);
+
+			if (!matchExists)
+				throw new InvalidOperationException($"Finished match history entry {lobby.MatchID} was not found.");
+		}
+
+		private static async Task ScheduleExternalPublication(
+			AppDbContext db,
+			ulong matchId,
+			CancellationToken cancellationToken)
+		{
+			if (matchId == 0)
+				return;
+
+			bool exists = await db.ExternalPublications.AnyAsync(p => p.MatchId == (long)matchId, cancellationToken);
+			if (!exists)
 			{
-				await db.MatchHistory
-					.Where(m => m.MatchId == (long)lobby.MatchID && !m.Finished)
-					.ExecuteUpdateAsync(s => s
-						.SetProperty(m => m.Finished, true)
-						.SetProperty(m => m.TimeFinished, DateTime.UtcNow));
+				db.ExternalPublications.Add(new ExternalPublicationEntry
+				{
+					MatchId = (long)matchId,
+					NextAttemptAt = DateTime.UtcNow
+				});
+				await db.SaveChangesAsync(cancellationToken);
 			}
-			catch (Exception ex)
-			{
-				Console.WriteLine($"[ERROR] CommitLobbyToMatchHistory failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
-			}
+
+			bool publicationIsDurable = await db.MatchHistory.AnyAsync(
+				m => m.MatchId == (long)matchId && m.Finished,
+				cancellationToken);
+			publicationIsDurable &= await db.ExternalPublications.AnyAsync(
+				p => p.MatchId == (long)matchId,
+				cancellationToken);
+
+			if (!publicationIsDurable)
+				throw new InvalidOperationException($"Match history entry {matchId} could not be scheduled for external publication.");
+		}
+
+		public static async Task<List<ExternalPublicationWorkItem>> GetPendingExternalPublications(
+			AppDbContext db,
+			DateTime utcNow,
+			int maxCount,
+			CancellationToken cancellationToken)
+		{
+			List<ExternalPublicationEntry> pending = await db.ExternalPublications
+				.Where(p => p.PublishedAt == null && p.NextAttemptAt != null && p.NextAttemptAt <= utcNow)
+				.OrderBy(p => p.NextAttemptAt)
+				.ThenBy(p => p.MatchId)
+				.Take(maxCount)
+				.ToListAsync(cancellationToken);
+
+			return pending
+				.Select(item => new ExternalPublicationWorkItem(item.MatchId, item.Attempts + 1))
+				.ToList();
+		}
+
+		public static async Task MarkExternalPublicationSucceeded(
+			AppDbContext db,
+			ulong matchId,
+			int attempt,
+			CancellationToken cancellationToken)
+		{
+			if (matchId == 0)
+				throw new ArgumentOutOfRangeException(nameof(matchId));
+
+			int updated = await db.ExternalPublications
+				.Where(p => p.MatchId == (long)matchId && p.PublishedAt == null)
+				.ExecuteUpdateAsync(s => s
+					.SetProperty(p => p.PublishedAt, DateTime.UtcNow)
+					.SetProperty(p => p.NextAttemptAt, (DateTime?)null)
+					.SetProperty(p => p.Attempts, attempt)
+					.SetProperty(p => p.LastError, (string?)null), cancellationToken);
+
+			if (updated != 1)
+				throw new InvalidOperationException($"Match history entry {matchId} could not be acknowledged after external publication.");
+		}
+
+		public static async Task MarkExternalPublicationFailed(
+			AppDbContext db,
+			ulong matchId,
+			int attempt,
+			DateTime? nextAttemptAt,
+			string? errorMessage,
+			CancellationToken cancellationToken)
+		{
+			if (matchId == 0)
+				throw new ArgumentOutOfRangeException(nameof(matchId));
+
+			string? truncatedError = errorMessage;
+			if (!string.IsNullOrEmpty(truncatedError) && truncatedError.Length > 512)
+				truncatedError = truncatedError[..512];
+
+			int updated = await db.ExternalPublications
+				.Where(p => p.MatchId == (long)matchId && p.PublishedAt == null)
+				.ExecuteUpdateAsync(s => s
+					.SetProperty(p => p.NextAttemptAt, nextAttemptAt)
+					.SetProperty(p => p.Attempts, attempt)
+					.SetProperty(p => p.LastError, truncatedError), cancellationToken);
+
+			if (updated != 1)
+				throw new InvalidOperationException($"Match history entry {matchId} could not be rescheduled after publication failure.");
 		}
 
 		internal static async Task<MatchHistory_Entry?> LoadMatchHistoryEntryAsync(
-			AppDbContext db, long matchId)
+			AppDbContext db,
+			long matchId,
+			CancellationToken cancellationToken = default)
 		{
-			var row = await db.MatchHistory.FirstOrDefaultAsync(m => m.MatchId == matchId);
+			var row = await db.MatchHistory.FirstOrDefaultAsync(m => m.MatchId == matchId, cancellationToken);
 			if (row == null)
 				return null;
 
