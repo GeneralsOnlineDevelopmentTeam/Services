@@ -858,17 +858,18 @@ namespace GenOnlineService.Controllers
 
 					if (chatMessage != null)
 					{
-						if (!sourceUserData.TryConsumeChatMessage())
-						{
-							QueueChatRateLimited(sourceUserSession, sourceUserData, "lobby");
-							return;
-						}
-
 						// get lobby
 						Lobby? playerLobby = _lobbyManager.GetLobby(sourceUserSession.currentLobbyID);
 
 						if (playerLobby != null)
 						{
+							bool isHostAnnouncement = chatMessage.announcement && playerLobby.Owner == sourceUserSession.m_UserID;
+							if (!isHostAnnouncement && !sourceUserData.TryConsumeChatMessage())
+							{
+								QueueChatRateLimited(sourceUserSession, sourceUserData, "lobby");
+								return;
+							}
+
 							// response
 							WebSocketMessage_LobbyChatMessageOutbound outboundMsg = new WebSocketMessage_LobbyChatMessageOutbound();
 							outboundMsg.msg_id = (int)EWebSocketMessageID.LOBBY_CHAT_FROM_SERVER;
