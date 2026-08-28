@@ -209,7 +209,9 @@ namespace GenOnlineService.Controllers
 		[Route("LoginWithToken")]
 		[Authorize(Roles = "Monitor")]
 		[HttpGet]
-		public async Task<APIResult?> Monitor_LoginWithToken()
+		public async Task<APIResult?> Monitor_LoginWithToken(
+			[FromRoute] string environment,
+			[FromRoute(Name = "contract_version")] string contractVersion)
 		{
 			if (!this.User.IsInRole("Monitor"))
 			{
@@ -224,7 +226,7 @@ namespace GenOnlineService.Controllers
 					var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
 
 					GenOnlineService.Controllers.LoginWithToken.LoginWithToken loginWithTokenController = new GenOnlineService.Controllers.LoginWithToken.LoginWithToken(factory);
-					GenOnlineService.Controllers.LoginWithToken.POST_LoginWithToken_Result internalResult = (GenOnlineService.Controllers.LoginWithToken.POST_LoginWithToken_Result)await loginWithTokenController.Post_InternalHandler("{\"challenge\": \"abc\", \"token\": \"iamatest\", \"client_id\": \"gen_online_60hz\"}", IPAddress.Loopback.ToString(), true);
+					GenOnlineService.Controllers.LoginWithToken.POST_LoginWithToken_Result internalResult = (GenOnlineService.Controllers.LoginWithToken.POST_LoginWithToken_Result)await loginWithTokenController.Post_InternalHandler("{\"challenge\": \"abc\", \"token\": \"iamatest\", \"client_id\": \"gen_online_60hz\"}", IPAddress.Loopback.ToString(), Program.BuildWebSocketUrl(Request, environment, contractVersion));
 					return internalResult;
 				}
 				catch
@@ -291,7 +293,9 @@ namespace GenOnlineService.Controllers
 		[Route("CheckLogin")]
 		[Authorize(Roles = "Monitor")]
 		[HttpGet]
-		public async Task<APIResult?> Monitor_CheckLogin()
+		public async Task<APIResult?> Monitor_CheckLogin(
+			[FromRoute] string environment,
+			[FromRoute(Name = "contract_version")] string contractVersion)
 		{
 			if (!this.User.IsInRole("Monitor"))
 			{
@@ -302,7 +306,7 @@ namespace GenOnlineService.Controllers
 				try
 				{
 					GenOnlineService.Controllers.CheckLoginController checkLoginController = new GenOnlineService.Controllers.CheckLoginController(_dbFactory);
-					APIResult internalResult = await checkLoginController.Post_InternalHandler("{\"challenge\": \"abc\", \"nonce\": \"def\", \"code\": \"iamatest\", \"client_id\": \"gen_online_30hz\"}", IPAddress.Loopback.ToString(), true);
+					APIResult internalResult = await checkLoginController.Post_InternalHandler("{\"challenge\": \"abc\", \"nonce\": \"def\", \"code\": \"iamatest\", \"client_id\": \"gen_online_30hz\"}", IPAddress.Loopback.ToString(), Program.BuildWebSocketUrl(Request, environment, contractVersion));
 					return internalResult;
 				}
 				catch

@@ -61,24 +61,23 @@ namespace GenOnlineService.Controllers.LoginWithToken
 
 		[HttpPost(Name = "PostLoginWithToken")]
 		//public async Task<APIResult> Post([FromHeader(Name = "CF-Connecting-IP")] string? ipAddress)
-		public async Task<APIResult> Post()
+		public async Task<APIResult> Post(
+			[FromRoute] string environment,
+			[FromRoute(Name = "contract_version")] string contractVersion)
 		{
 			using (var reader = new StreamReader(HttpContext.Request.Body))
 			{
 				string jsonData = await reader.ReadToEndAsync();
 
-				bool bSecureWS = true;
-				//if (ipCountry2LISO.ToLower() == "ru")
-				{
-					//bSecureWS = false;
-				}
-
-				POST_LoginWithToken_Result result = (POST_LoginWithToken_Result)await Post_InternalHandler(jsonData, IPHelpers.NormalizeIP(HttpContext.Connection.RemoteIpAddress?.ToString()), bSecureWS);
+				POST_LoginWithToken_Result result = (POST_LoginWithToken_Result)await Post_InternalHandler(
+					jsonData,
+					IPHelpers.NormalizeIP(HttpContext.Connection.RemoteIpAddress?.ToString()),
+					Program.BuildWebSocketUrl(Request, environment, contractVersion));
 				return result;
 			}
 		}
 
-		public async Task<APIResult> Post_InternalHandler(string jsonData, string ipAddr, bool bSecureWS, bool bWasMonitor = false)
+		public async Task<APIResult> Post_InternalHandler(string jsonData, string ipAddr, string webSocketUrl, bool bWasMonitor = false)
 		{
 			if (bWasMonitor)
 			{
@@ -167,7 +166,7 @@ namespace GenOnlineService.Controllers.LoginWithToken
 						result.user_id = user_id;
 						result.display_name = strDisplayName;
 
-						result.ws_uri = Program.GetWebSocketAddress(bSecureWS);
+						result.ws_uri = webSocketUrl;
 
 						// This endpoint re-establishes a session, so tear down any state the previous
 						// one left behind (lobby membership, matchmaking, cached session data). Must

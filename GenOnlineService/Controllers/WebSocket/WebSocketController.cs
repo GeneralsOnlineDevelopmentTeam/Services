@@ -156,6 +156,8 @@ namespace GenOnlineService.Controllers
 			public int msg_id { get; set; }
 		}
 
+		[Route("/env/{environment}/contract/{contract_version}/ws")]
+		// TODO: Remove the unscoped route after existing clients have migrated.
 		[Route("/ws")]
 		[Authorize(Roles = "GameClient,ChatClient,GameLauncher")]
 		public async Task Get([FromHeader(Name = "is-reconnect")] bool bIsReconnect)
