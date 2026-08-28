@@ -1209,7 +1209,7 @@ namespace GenOnlineService.Controllers
 						{
 							JsonElement respElement = data["resp"];
 							List<List<object>> result = JsonSerializer.Deserialize<List<List<object>>>(respElement.GetRawText(), JsonOpts);
-							Console.WriteLine("Len: {0}", result.Count);
+							//Console.WriteLine("Len: {0}", result.Count);
 
 							foreach (List<object> moduleData in result)
 							{
