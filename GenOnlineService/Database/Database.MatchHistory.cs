@@ -1346,16 +1346,7 @@ namespace Database
 						continue;
 
 					Console.WriteLine($"[ELO] Pairing a={a.user_id}(won={a.won}) vs b={b.user_id}(won={b.won}) → result={(a.won ? "PlayerAWins" : "PlayerBWins")}");
-					ref EloData A = ref CollectionsMarshal.GetValueRefOrAddDefault(
-						dictElo, a.user_id, out _);
-
-					ref EloData B = ref CollectionsMarshal.GetValueRefOrAddDefault(
-						dictElo, b.user_id, out _);
-
-					Elo.ApplyResult(
-						ref A,
-						ref B,
-						a.won ? MatchResult.PlayerAWins : MatchResult.PlayerBWins);
+					UpdateElo(dictElo, a.user_id, b.user_id, a.won);
 				}
 			}
 
@@ -1425,26 +1416,9 @@ namespace Database
 					if (a.user_id >= b.user_id)
 						continue;
 
-					// Daily
-					{
-						ref EloData A = ref CollectionsMarshal.GetValueRefOrAddDefault(daily, a.user_id, out _);
-						ref EloData B = ref CollectionsMarshal.GetValueRefOrAddDefault(daily, b.user_id, out _);
-						Elo.ApplyResult(ref A, ref B, a.won ? MatchResult.PlayerAWins : MatchResult.PlayerBWins);
-					}
-
-					// Monthly
-					{
-						ref EloData A = ref CollectionsMarshal.GetValueRefOrAddDefault(monthly, a.user_id, out _);
-						ref EloData B = ref CollectionsMarshal.GetValueRefOrAddDefault(monthly, b.user_id, out _);
-						Elo.ApplyResult(ref A, ref B, a.won ? MatchResult.PlayerAWins : MatchResult.PlayerBWins);
-					}
-
-					// Yearly
-					{
-						ref EloData A = ref CollectionsMarshal.GetValueRefOrAddDefault(yearly, a.user_id, out _);
-						ref EloData B = ref CollectionsMarshal.GetValueRefOrAddDefault(yearly, b.user_id, out _);
-						Elo.ApplyResult(ref A, ref B, a.won ? MatchResult.PlayerAWins : MatchResult.PlayerBWins);
-					}
+                    UpdateElo(daily, a.user_id, b.user_id, a.won);
+                    UpdateElo(monthly, a.user_id, b.user_id, a.won);
+                    UpdateElo(yearly, a.user_id, b.user_id, a.won);
 				}
 			}
 
@@ -1491,9 +1465,28 @@ namespace Database
 			}
 		}
 
+		private static void UpdateElo(Dictionary<long, EloData> dict, long firstPlayerId, long secondPlayerId, bool firstPlayerWon)
+		{
+			ref EloData? firstPlayer = ref CollectionsMarshal.GetValueRefOrAddDefault(dict, firstPlayerId, out bool existsA);
+			if (!existsA)
+			{
+				firstPlayer = new EloData();
+			}
 
+			ref EloData? secondPlayer = ref CollectionsMarshal.GetValueRefOrAddDefault(dict, secondPlayerId, out bool existsB);
+			if (!existsB)
+			{
+				secondPlayer = new EloData();
+			}
 
-
-
+			if (firstPlayerWon)
+			{
+				Elo.ApplyResult(firstPlayer, secondPlayer);
+			}
+			else
+			{
+				Elo.ApplyResult(secondPlayer, firstPlayer);
+			}
+		}
 	}
 }
