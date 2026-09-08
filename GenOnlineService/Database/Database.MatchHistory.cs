@@ -244,6 +244,8 @@ namespace GenOnlineService
         [JsonConverter(typeof(BoolFromIntConverter))]
 		public bool desynced {get; set; } = false;
 
+		public uint? duration { get; set; } = null;
+
 		public List<MemberMetadataModel> metadata { get; set; } = new List<MemberMetadataModel>();
 
 		public MatchdataMemberModel()
@@ -373,7 +375,8 @@ namespace Database
 	int unitsLost,
 	int totalMoney,
 	bool won,
-	bool desynced)
+	bool desynced,
+	uint duration)
 		{
 			if (slotIndex < 0 || slotIndex > 7)
 				return;
@@ -402,6 +405,7 @@ namespace Database
 				model.total_money = totalMoney;
 				model.won = won;
 				model.desynced = desynced;
+				model.duration = duration;
 
 				// 4. Serialize back
 				string updatedJson = JsonSerializer.Serialize(model);

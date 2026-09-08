@@ -304,6 +304,7 @@ namespace GenOnlineService.Controllers
 						&& data.ContainsKey("won")
 						&& data.ContainsKey("side")
 						&& data.ContainsKey("desynced")
+						&& data.ContainsKey("duration")
 						)
 					{
 						Int64 user_id = TokenHelper.GetUserID(this);
@@ -323,6 +324,7 @@ namespace GenOnlineService.Controllers
 								int side = data["side"].GetInt32();
 								bool won = data["won"].GetBoolean();
 								bool desynced = data["desynced"].GetBoolean();
+								uint duration = data["duration"].GetUInt32();
 								UInt64 match_id = data["match_id"].GetUInt64();
 
 								// were they really in the match they claim to be in?
@@ -359,7 +361,7 @@ namespace GenOnlineService.Controllers
 								// store in DB
 								await using var db = await _dbFactory.CreateDbContextAsync();
 								await Database.MatchHistory.CommitPlayerOutcome(db, slotIndexInLobby, match_id, side,
-										buildings_built, buildings_killed, buildings_lost, units_built, units_killed, units_lost, total_money, won, desynced);
+										buildings_built, buildings_killed, buildings_lost, units_built, units_killed, units_lost, total_money, won, desynced, duration);
 							}
 						}
 					}
