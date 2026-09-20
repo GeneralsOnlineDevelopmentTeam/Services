@@ -375,6 +375,154 @@ namespace GenOnlineService
 		}
 	}
 
+	public sealed class ReloadingPemCertificateProvider
+	{
+		private readonly string m_strCertificatePath;
+		private readonly string m_strKeyPath;
+		private readonly object m_lock = new object();
+		private X509Certificate2? m_currentCertificate;
+		private CertificateFileState? m_currentFileState;
+
+		public ReloadingPemCertificateProvider(string strCertificatePath, string strKeyPath)
+		{
+			m_strCertificatePath = strCertificatePath;
+			m_strKeyPath = strKeyPath;
+		}
+
+		public bool TryLoadInitialCertificate()
+		{
+			try
+			{
+				ReloadIfChanged(true);
+				return true;
+			}
+			catch (Exception ex) when (IsCertificateLoadException(ex))
+			{
+				Console.WriteLine($"FATAL ERROR: Failed to load certificate from '{m_strCertificatePath}' and key from '{m_strKeyPath}': {ex}");
+				return false;
+			}
+		}
+
+		public X509Certificate2 GetCertificate()
+		{
+			ReloadIfChanged(m_currentCertificate == null);
+
+			lock (m_lock)
+			{
+				if (m_currentCertificate == null)
+				{
+					throw new InvalidOperationException("No TLS certificate has been loaded.");
+				}
+
+				return m_currentCertificate;
+			}
+		}
+
+		private void ReloadIfChanged(bool bThrowOnFailure)
+		{
+			CertificateFileState fileState;
+			try
+			{
+				fileState = CertificateFileState.FromFiles(m_strCertificatePath, m_strKeyPath);
+			}
+			catch (Exception ex) when (IsCertificateLoadException(ex))
+			{
+				if (bThrowOnFailure)
+				{
+					throw;
+				}
+
+				Console.WriteLine($"ERROR: Failed to stat TLS certificate files. Keeping existing certificate. {ex}");
+				return;
+			}
+
+			lock (m_lock)
+			{
+				if (m_currentCertificate != null && m_currentFileState == fileState)
+				{
+					return;
+				}
+
+				X509Certificate2 newCertificate;
+				try
+				{
+					newCertificate = X509Certificate2.CreateFromPemFile(m_strCertificatePath, m_strKeyPath);
+					if (!newCertificate.HasPrivateKey)
+					{
+						newCertificate.Dispose();
+						throw new InvalidOperationException("Loaded TLS certificate does not include a private key.");
+					}
+				}
+				catch (Exception ex) when (IsCertificateLoadException(ex))
+				{
+					if (bThrowOnFailure)
+					{
+						throw;
+					}
+
+					Console.WriteLine($"ERROR: Failed to reload TLS certificate. Keeping existing certificate. {ex}");
+					return;
+				}
+
+				X509Certificate2? previousCertificate = m_currentCertificate;
+				m_currentCertificate = newCertificate;
+				m_currentFileState = fileState;
+
+				Console.WriteLine($"Loaded TLS certificate thumbprint {newCertificate.Thumbprint}, valid {newCertificate.NotBefore:u} through {newCertificate.NotAfter:u}");
+
+				if (previousCertificate != null)
+				{
+					DisposeCertificateAfterDelay(previousCertificate);
+				}
+			}
+		}
+
+		private static void DisposeCertificateAfterDelay(X509Certificate2 certificate)
+		{
+			_ = Task.Run(async () =>
+			{
+				await Task.Delay(TimeSpan.FromMinutes(5));
+				certificate.Dispose();
+			});
+		}
+
+		private static bool IsCertificateLoadException(Exception ex)
+		{
+			return ex is IOException
+				|| ex is UnauthorizedAccessException
+				|| ex is System.Security.Cryptography.CryptographicException
+				|| ex is InvalidOperationException;
+		}
+
+		private readonly record struct CertificateFileState(
+			DateTime CertificateLastWriteUtc,
+			long CertificateLength,
+			DateTime KeyLastWriteUtc,
+			long KeyLength)
+		{
+			public static CertificateFileState FromFiles(string strCertificatePath, string strKeyPath)
+			{
+				FileInfo certificateFile = new FileInfo(strCertificatePath);
+				if (!certificateFile.Exists)
+				{
+					throw new FileNotFoundException("TLS certificate PEM file was not found.", strCertificatePath);
+				}
+
+				FileInfo keyFile = new FileInfo(strKeyPath);
+				if (!keyFile.Exists)
+				{
+					throw new FileNotFoundException("TLS certificate key file was not found.", strKeyPath);
+				}
+
+				return new CertificateFileState(
+					certificateFile.LastWriteTimeUtc,
+					certificateFile.Length,
+					keyFile.LastWriteTimeUtc,
+					keyFile.Length);
+			}
+		}
+	}
+
 	public class Program
 	{
 		private const string BannedUserContextKey = "GenOnlineService.BannedUserID";
@@ -1167,7 +1315,7 @@ namespace GenOnlineService
 			// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 			//builder.Services.AddOpenApi();
 
-			X509Certificate2? X509Certificate2 = null;
+			ReloadingPemCertificateProvider? certificateProvider = null;
 
 			var coreSettings = Program.g_Config.GetSection("Core");
 
@@ -1220,12 +1368,9 @@ namespace GenOnlineService
 				}
 				else
 				{
-					X509Certificate2 = X509Certificate2.CreateFromPemFile(cert_pem_path, cert_key_path);
-
-
-					if (X509Certificate2 == null)
+					certificateProvider = new ReloadingPemCertificateProvider(cert_pem_path, cert_key_path);
+					if (!certificateProvider.TryLoadInitialCertificate())
 					{
-						Console.WriteLine("FATAL ERROR: Failed to load the provided certificate!");
 						Console.ReadKey(true);
 						return;
 					}
@@ -1238,18 +1383,18 @@ namespace GenOnlineService
 				options.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(30);
 				options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(30);
 
-				if (!bShouldUseOSCertSTore && X509Certificate2 != null)
+				if (!bShouldUseOSCertSTore && certificateProvider != null)
 				{
 					options.ConfigureHttpsDefaults(httpsOptions =>
 					{
 						httpsOptions.SslProtocols = System.Security.Authentication.SslProtocols.Tls12;
-						httpsOptions.ServerCertificate = X509Certificate2;
+						httpsOptions.ServerCertificateSelector = (_, _) => certificateProvider.GetCertificate();
 					});
 				}
 
-				if (!bShouldUseOSCertSTore && X509Certificate2 != null)
+				if (!bShouldUseOSCertSTore && certificateProvider != null)
 				{
-					//options.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(X509Certificate2!));
+					//options.ListenAnyIP(port, listenOptions => listenOptions.UseHttps());
 				}
 
 			});
