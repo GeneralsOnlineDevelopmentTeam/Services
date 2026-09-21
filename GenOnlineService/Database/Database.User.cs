@@ -21,15 +21,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using System.Text.Json;
 
-public class PendingLogin
-{
-	public Int64 UserID { get; set; }
-
-	public DateTime Created { get; set; } = DateTime.UnixEpoch;
-	public EPendingLoginState State { get; set; } = EPendingLoginState.None;
-	public string LoginCode { get; set; } = String.Empty;
-}
-
 public class UserDevice
 {
 	public Int64 UserID { get; set; }
@@ -102,22 +93,6 @@ public sealed class UserBanStatus
 {
 	public bool IsBanned { get; set; }
 	public string BanReason { get; set; } = String.Empty;
-}
-
-// TODO_EFCORE: add index for code
-public class PendingLoginConfiguration : IEntityTypeConfiguration<PendingLogin>
-{
-	public void Configure(EntityTypeBuilder<PendingLogin> builder)
-	{
-		builder.ToTable("pending_logins");
-
-		builder.HasNoKey();
-
-		builder.Property(e => e.UserID).HasColumnName("user_id");
-		builder.Property(e => e.LoginCode).HasColumnName("code").HasColumnType("varchar(32)");
-		builder.Property(e => e.State).HasColumnName("state").HasColumnType("int(1)");
-		builder.Property(e => e.Created).HasColumnName("created");
-	}
 }
 
 public class UserDevicesConfiguration : IEntityTypeConfiguration<UserDevice>

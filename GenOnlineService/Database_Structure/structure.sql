@@ -137,16 +137,6 @@ CREATE TABLE IF NOT EXISTS `external_publication` (
 
 -- Data exporting was unselected.
 
--- Dumping structure for table go_production.pending_logins
-CREATE TABLE IF NOT EXISTS `pending_logins` (
-  `code` varchar(32) NOT NULL,
-  `state` int(1) NOT NULL,
-  `created` datetime NOT NULL DEFAULT current_timestamp(),
-  `user_id` bigint(20) NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
--- Data exporting was unselected.
-
 -- Dumping structure for table go_production.service_stats
 CREATE TABLE IF NOT EXISTS `service_stats` (
   `day_of_year` int(11) NOT NULL DEFAULT 0,
