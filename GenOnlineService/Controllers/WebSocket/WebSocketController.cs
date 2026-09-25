@@ -297,8 +297,7 @@ namespace GenOnlineService.Controllers
 
 				if (receiveResult.MessageType == WebSocketMessageType.Close)
 				{
-					using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10)); // timeout
-					await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", cts.Token);
+					await wsSess.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing");
 					break;
 				}
 
@@ -314,8 +313,7 @@ namespace GenOnlineService.Controllers
 						fragmentBuffer.Dispose();
 						fragmentBuffer = null;
 
-						using var ctsTooBig = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-						await webSocket.CloseAsync(WebSocketCloseStatus.MessageTooBig, "Message too large", ctsTooBig.Token);
+						await wsSess.CloseAsync(WebSocketCloseStatus.MessageTooBig, "Message too large");
 						break;
 					}
 
@@ -341,7 +339,7 @@ namespace GenOnlineService.Controllers
 				// if we lost session data, close WS
 				if (sourceUserData == null)
 				{
-					wsSess.CloseAsync(WebSocketCloseStatus.NormalClosure, "User signed in from another point of presence [B]");
+					await wsSess.CloseAsync(WebSocketCloseStatus.NormalClosure, "User signed in from another point of presence [B]");
 					break;
 				}
 
@@ -373,8 +371,7 @@ namespace GenOnlineService.Controllers
 					}
 				}
 
-				using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10)); // timeout
-				await webSocket.CloseAsync(closeStatus, closeStatusDescription, cts.Token);
+				await wsSess.CloseAsync(closeStatus, closeStatusDescription);
 			}
 		}
 

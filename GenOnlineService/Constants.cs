@@ -1570,7 +1570,7 @@ namespace GenOnlineService
 				try
 				{
 					// dont wait forever, certain situations can cause that in ASP.NET
-					var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+					using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 					await m_SockInternal.CloseAsync(closeStatus, statusDescription, cts.Token);
 				}
 				catch
