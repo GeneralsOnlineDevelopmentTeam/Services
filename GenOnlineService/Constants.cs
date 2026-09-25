@@ -526,7 +526,8 @@ namespace GenOnlineService
 					outboundMsg.num_online = numOnline;
 					outboundMsg.num_pending = numPending;
 					byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outboundMsg));
-					await newSess.SendAsync(bytesJSON, WebSocketMessageType.Text);
+					// queued: the socket isn't attached until the handshake completes
+					userCacheData.QueueWebsocketSend(bytesJSON);
 				}
 			}
 
