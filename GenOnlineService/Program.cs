@@ -377,16 +377,23 @@ namespace GenOnlineService
 
 	public sealed class ReloadingPemCertificateProvider
 	{
+		private static readonly TimeSpan s_retiredCertificateLifetime = TimeSpan.FromMinutes(5);
+
 		private readonly string m_strCertificatePath;
 		private readonly string m_strKeyPath;
-		private readonly object m_lock = new object();
-		private X509Certificate2? m_currentCertificate;
-		private CertificateFileState? m_currentFileState;
+		private readonly TimeSpan m_checkInterval;
 
-		public ReloadingPemCertificateProvider(string strCertificatePath, string strKeyPath)
+		private readonly object m_reloadLock = new object();
+		private volatile LoadedCertificate? m_current;
+		private CertificateFileState? m_lastAttemptedFileState;
+		private bool m_bFileStatFailing;
+		private long m_lastCheckTimestamp;
+
+		public ReloadingPemCertificateProvider(string strCertificatePath, string strKeyPath, TimeSpan checkInterval)
 		{
 			m_strCertificatePath = strCertificatePath;
 			m_strKeyPath = strKeyPath;
+			m_checkInterval = checkInterval;
 		}
 
 		public bool TryLoadInitialCertificate()
@@ -403,55 +410,79 @@ namespace GenOnlineService
 			}
 		}
 
-		public X509Certificate2 GetCertificate()
+		public System.Net.Security.SslStreamCertificateContext GetCertificateContext()
 		{
-			ReloadIfChanged(m_currentCertificate == null);
-
-			lock (m_lock)
+			if (IsCheckDue() && Monitor.TryEnter(m_reloadLock))
 			{
-				if (m_currentCertificate == null)
+				// single checker; other handshakes keep using the current cert
+				try
 				{
-					throw new InvalidOperationException("No TLS certificate has been loaded.");
+					if (IsCheckDue())
+					{
+						ReloadIfChanged(false);
+					}
 				}
-
-				return m_currentCertificate;
+				finally
+				{
+					Monitor.Exit(m_reloadLock);
+				}
 			}
+
+			LoadedCertificate current = m_current ?? throw new InvalidOperationException("No TLS certificate has been loaded.");
+			return current.Context;
+		}
+
+		private bool IsCheckDue()
+		{
+			long lastCheck = Interlocked.Read(ref m_lastCheckTimestamp);
+			return lastCheck == 0 || System.Diagnostics.Stopwatch.GetElapsedTime(lastCheck) >= m_checkInterval;
 		}
 
 		private void ReloadIfChanged(bool bThrowOnFailure)
 		{
-			CertificateFileState fileState;
-			try
+			lock (m_reloadLock)
 			{
-				fileState = CertificateFileState.FromFiles(m_strCertificatePath, m_strKeyPath);
-			}
-			catch (Exception ex) when (IsCertificateLoadException(ex))
-			{
-				if (bThrowOnFailure)
+				Interlocked.Exchange(ref m_lastCheckTimestamp, System.Diagnostics.Stopwatch.GetTimestamp());
+
+				CertificateFileState fileState;
+				try
 				{
-					throw;
+					fileState = CertificateFileState.FromFiles(m_strCertificatePath, m_strKeyPath);
+				}
+				catch (Exception ex) when (IsCertificateLoadException(ex))
+				{
+					if (bThrowOnFailure)
+					{
+						throw;
+					}
+
+					// log once per outage, not on every check
+					if (!m_bFileStatFailing)
+					{
+						m_bFileStatFailing = true;
+						Console.WriteLine($"ERROR: Failed to stat TLS certificate files. Keeping existing certificate until they are readable again. {ex}");
+					}
+					return;
 				}
 
-				Console.WriteLine($"ERROR: Failed to stat TLS certificate files. Keeping existing certificate. {ex}");
-				return;
-			}
+				if (m_bFileStatFailing)
+				{
+					m_bFileStatFailing = false;
+					Console.WriteLine("TLS certificate files are readable again.");
+				}
 
-			lock (m_lock)
-			{
-				if (m_currentCertificate != null && m_currentFileState == fileState)
+				// don't retry a failed pair until the files change again
+				if (m_lastAttemptedFileState == fileState && m_current != null)
 				{
 					return;
 				}
 
-				X509Certificate2 newCertificate;
+				m_lastAttemptedFileState = fileState;
+
+				LoadedCertificate newCertificate;
 				try
 				{
-					newCertificate = X509Certificate2.CreateFromPemFile(m_strCertificatePath, m_strKeyPath);
-					if (!newCertificate.HasPrivateKey)
-					{
-						newCertificate.Dispose();
-						throw new InvalidOperationException("Loaded TLS certificate does not include a private key.");
-					}
+					newCertificate = LoadedCertificate.Load(m_strCertificatePath, m_strKeyPath);
 				}
 				catch (Exception ex) when (IsCertificateLoadException(ex))
 				{
@@ -464,26 +495,22 @@ namespace GenOnlineService
 					return;
 				}
 
-				X509Certificate2? previousCertificate = m_currentCertificate;
-				m_currentCertificate = newCertificate;
-				m_currentFileState = fileState;
+				LoadedCertificate? previousCertificate = m_current;
+				m_current = newCertificate;
 
-				Console.WriteLine($"Loaded TLS certificate thumbprint {newCertificate.Thumbprint}, valid {newCertificate.NotBefore:u} through {newCertificate.NotAfter:u}");
+				X509Certificate2 certificate = newCertificate.Certificate;
+				Console.WriteLine($"Loaded TLS certificate thumbprint {certificate.Thumbprint}, valid {certificate.NotBefore:u} through {certificate.NotAfter:u}, with {newCertificate.Intermediates.Count} intermediate certificate(s)");
 
 				if (previousCertificate != null)
 				{
-					DisposeCertificateAfterDelay(previousCertificate);
+					// in-flight handshakes may still hold the old cert
+					_ = Task.Run(async () =>
+					{
+						await Task.Delay(s_retiredCertificateLifetime);
+						previousCertificate.Dispose();
+					});
 				}
 			}
-		}
-
-		private static void DisposeCertificateAfterDelay(X509Certificate2 certificate)
-		{
-			_ = Task.Run(async () =>
-			{
-				await Task.Delay(TimeSpan.FromMinutes(5));
-				certificate.Dispose();
-			});
 		}
 
 		private static bool IsCertificateLoadException(Exception ex)
@@ -492,6 +519,76 @@ namespace GenOnlineService
 				|| ex is UnauthorizedAccessException
 				|| ex is System.Security.Cryptography.CryptographicException
 				|| ex is InvalidOperationException;
+		}
+
+		private sealed class LoadedCertificate : IDisposable
+		{
+			public X509Certificate2 Certificate { get; }
+			public X509Certificate2Collection Intermediates { get; }
+			public System.Net.Security.SslStreamCertificateContext Context { get; }
+
+			private LoadedCertificate(X509Certificate2 certificate, X509Certificate2Collection intermediates)
+			{
+				Certificate = certificate;
+				Intermediates = intermediates;
+				// build the chain once per load instead of on every handshake, sending the PEM's intermediates
+				Context = System.Net.Security.SslStreamCertificateContext.Create(certificate, intermediates);
+			}
+
+			public static LoadedCertificate Load(string strCertificatePath, string strKeyPath)
+			{
+				// read each file once so leaf, intermediates and key come from the same snapshot
+				string strCertificatePem = File.ReadAllText(strCertificatePath);
+				string strKeyPem = File.ReadAllText(strKeyPath);
+
+				X509Certificate2 certificate = X509Certificate2.CreateFromPem(strCertificatePem, strKeyPem);
+				X509Certificate2Collection intermediates = new X509Certificate2Collection();
+				try
+				{
+					if (OperatingSystem.IsWindows())
+					{
+						// SChannel can't use the ephemeral key CreateFromPem produces
+						X509Certificate2 persistedCertificate = X509CertificateLoader.LoadPkcs12(certificate.Export(X509ContentType.Pkcs12), null);
+						certificate.Dispose();
+						certificate = persistedCertificate;
+					}
+
+					X509Certificate2Collection pemCertificates = new X509Certificate2Collection();
+					pemCertificates.ImportFromPem(strCertificatePem);
+					foreach (X509Certificate2 pemCertificate in pemCertificates)
+					{
+						if (pemCertificate.Thumbprint == certificate.Thumbprint)
+						{
+							pemCertificate.Dispose();
+						}
+						else
+						{
+							intermediates.Add(pemCertificate);
+						}
+					}
+
+					return new LoadedCertificate(certificate, intermediates);
+				}
+				catch
+				{
+					DisposeAll(certificate, intermediates);
+					throw;
+				}
+			}
+
+			public void Dispose()
+			{
+				DisposeAll(Certificate, Intermediates);
+			}
+
+			private static void DisposeAll(X509Certificate2 certificate, X509Certificate2Collection intermediates)
+			{
+				certificate.Dispose();
+				foreach (X509Certificate2 intermediate in intermediates)
+				{
+					intermediate.Dispose();
+				}
+			}
 		}
 
 		private readonly record struct CertificateFileState(
@@ -1355,9 +1452,8 @@ namespace GenOnlineService
 			}
 
 
-			//UInt16 port = coreSettings.GetValue<UInt16>("port");
-
 			bool bShouldUseOSCertSTore = (bool)use_os_cert_store;
+			List<string> httpsEndpointNames = new List<string>();
 			if (!bShouldUseOSCertSTore)
 			{
 				if (String.IsNullOrEmpty(cert_pem_path) || String.IsNullOrEmpty(cert_key_path))
@@ -1366,14 +1462,36 @@ namespace GenOnlineService
 					Console.ReadKey(true);
 					return;
 				}
-				else
+
+				int certReloadIntervalSeconds = coreSettings.GetValue<int?>("cert_reload_interval_seconds") ?? 30;
+				if (certReloadIntervalSeconds <= 0)
 				{
-					certificateProvider = new ReloadingPemCertificateProvider(cert_pem_path, cert_key_path);
-					if (!certificateProvider.TryLoadInitialCertificate())
+					Console.WriteLine("FATAL ERROR: cert_reload_interval_seconds must be greater than 0");
+					Console.ReadKey(true);
+					return;
+				}
+
+				foreach (IConfigurationSection endpoint in builder.Configuration.GetSection("Kestrel:Endpoints").GetChildren())
+				{
+					string? strUrl = endpoint.GetValue<string>("Url");
+					if (strUrl != null && strUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
 					{
-						Console.ReadKey(true);
-						return;
+						httpsEndpointNames.Add(endpoint.Key);
 					}
+				}
+
+				if (httpsEndpointNames.Count == 0)
+				{
+					Console.WriteLine("FATAL ERROR: use_os_cert_store is set to false, but Kestrel:Endpoints has no https:// endpoint to serve the PEM certificate on");
+					Console.ReadKey(true);
+					return;
+				}
+
+				certificateProvider = new ReloadingPemCertificateProvider(cert_pem_path, cert_key_path, TimeSpan.FromSeconds(certReloadIntervalSeconds));
+				if (!certificateProvider.TryLoadInitialCertificate())
+				{
+					Console.ReadKey(true);
+					return;
 				}
 			}
 
@@ -1385,16 +1503,26 @@ namespace GenOnlineService
 
 				if (!bShouldUseOSCertSTore && certificateProvider != null)
 				{
-					options.ConfigureHttpsDefaults(httpsOptions =>
+					// endpoints (url, Protocols, SslProtocols) stay in Kestrel config; only the cert source is swapped.
+					// Kestrel skips its own HTTPS setup for an endpoint that is already TLS.
+					Microsoft.AspNetCore.Server.Kestrel.KestrelConfigurationLoader kestrelConfig = options.Configure(builder.Configuration.GetSection("Kestrel"), reloadOnChange: true);
+					foreach (string strEndpointName in httpsEndpointNames)
 					{
-						httpsOptions.SslProtocols = System.Security.Authentication.SslProtocols.Tls12;
-						httpsOptions.ServerCertificateSelector = (_, _) => certificateProvider.GetCertificate();
-					});
-				}
-
-				if (!bShouldUseOSCertSTore && certificateProvider != null)
-				{
-					//options.ListenAnyIP(port, listenOptions => listenOptions.UseHttps());
+						kestrelConfig.Endpoint(strEndpointName, endpoint =>
+						{
+							System.Security.Authentication.SslProtocols sslProtocols = endpoint.HttpsOptions.SslProtocols;
+							// per-connection callback so rotated certs are picked up without a restart
+							endpoint.ListenOptions.UseHttps(new Microsoft.AspNetCore.Server.Kestrel.Https.TlsHandshakeCallbackOptions
+							{
+								HandshakeTimeout = endpoint.HttpsOptions.HandshakeTimeout,
+								OnConnection = _ => ValueTask.FromResult(new System.Net.Security.SslServerAuthenticationOptions
+								{
+									EnabledSslProtocols = sslProtocols,
+									ServerCertificateContext = certificateProvider.GetCertificateContext()
+								})
+							});
+						});
+					}
 				}
 
 			});
