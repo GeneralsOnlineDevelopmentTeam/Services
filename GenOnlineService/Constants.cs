@@ -559,31 +559,12 @@ namespace GenOnlineService
 
 		public static async Task CheckForTimeouts()
 		{
-			List<UserWebSocketInstance> lstSessionsToDestroy = new();
 			foreach (var sessionDataByClient in m_dictWebsockets)
 			{
 				foreach (var sessionData in sessionDataByClient.Value)
 				{
-#if DEBUG
-					const int timeoutVal = 60000 * 10;
-#else
-			const int timeoutVal = 20000;
-#endif
-					if (sessionData.Value.GetTimeSinceLastPing() >= timeoutVal)
-					{
-						lstSessionsToDestroy.Add(sessionData.Value);
-					}
-					else
-					{
-						await sessionData.Value.SendPong();
-					}
+					sessionData.Value.SendKeepAlive();
 				}
-			}
-
-			foreach (UserWebSocketInstance wsSess in lstSessionsToDestroy)
-			{
-				Console.WriteLine("Timing out WS session for {0}", wsSess.m_UserID);
-				await DeleteSession(wsSess.m_UserID, wsSess.m_SessionType, wsSess, false);
 			}
 
 			// do we need to clear out cache entries?
@@ -1464,22 +1445,35 @@ namespace GenOnlineService
 		public EUserSessionType m_SessionType = EUserSessionType.None;
 		public Int64 m_UserID = -1;
 
-		public Int64 m_lastPingTime = Environment.TickCount64; // last time we pinged this user, used to detect disconnects
-		
-		
+		// pinged after c_KeepAliveInterval of silence, aborted if no pong within c_KeepAliveTimeout
+		public static readonly TimeSpan c_KeepAliveInterval = TimeSpan.FromSeconds(15);
+#if DEBUG
+		public static readonly TimeSpan c_KeepAliveTimeout = TimeSpan.FromMinutes(10); // survive debugger breaks
+#else
+		public static readonly TimeSpan c_KeepAliveTimeout = TimeSpan.FromSeconds(45);
+#endif
 
 		// TODO: Start using nullable for int values etc instead of doing 0 or -1
+		// reply to legacy JSON PING; released clients only reset their timeout on it
         public async Task SendPong()
 		{
-			OnPing();
-
 			// send pong back
 			WebSocketMessage_PONG outboundMsg = new WebSocketMessage_PONG();
 			outboundMsg.msg_id = (int)EWebSocketMessageID.PONG;
 			byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outboundMsg));
 			await SendAsync(bytesJSON, WebSocketMessageType.Text);
 		}
-		
+
+		// legacy JSON keep-alive for clients that don't send their own PING; skipped while a send is in flight
+		public void SendKeepAlive()
+		{
+			if (m_SendLock.CurrentCount == 0)
+			{
+				return;
+			}
+
+			_ = SendPong();
+		}
 
 		private WebSocket? m_SockInternal = null;
 
@@ -1492,21 +1486,6 @@ namespace GenOnlineService
 		public void AttachWebsocket(WebSocket sock)
 		{
 			m_SockInternal = sock;
-		}
-
-		public void OnPing()
-		{
-			m_lastPingTime = Environment.TickCount64;
-		}
-
-		public Int64 GetLastPingTime()
-		{
-			return m_lastPingTime;
-		}
-
-		public Int64 GetTimeSinceLastPing()
-		{
-			return Environment.TickCount64 - m_lastPingTime;
 		}
 
 		public async Task SendAsync(byte[] buffer, WebSocketMessageType messageType, CancellationToken externalToken = default)

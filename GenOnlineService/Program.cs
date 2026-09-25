@@ -1551,7 +1551,8 @@ namespace GenOnlineService
 
 			var webSocketOptions = new WebSocketOptions
 			{
-				KeepAliveInterval = TimeSpan.FromSeconds(30)
+				KeepAliveInterval = UserWebSocketInstance.c_KeepAliveInterval,
+				KeepAliveTimeout = UserWebSocketInstance.c_KeepAliveTimeout
 			};
 
 			app.UseWebSockets(webSocketOptions);
