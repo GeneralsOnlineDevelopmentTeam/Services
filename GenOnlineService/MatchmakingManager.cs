@@ -875,6 +875,7 @@ static class MatchmakingManager
 				UserSession? memberSession = member.GetAssociatedSession();
 				if (memberSession != null)
 				{
+					memberSession.IsRegisteredForMatchmaking = false;
 					memberSession.QueueWebsocketSend(bytesJSON);
 				}
 			}
@@ -1327,6 +1328,7 @@ static class MatchmakingManager
 								UserSession? memberSession = member.GetAssociatedSession();
 								if (memberSession != null)
 								{
+									memberSession.IsRegisteredForMatchmaking = false;
 									await SendMatchmakingMessage(memberSession, "The QuickMatch lobby could not be created. Please try matchmaking again.");
 								}
 							}
@@ -1351,6 +1353,7 @@ static class MatchmakingManager
 									if (memberSession != null)
 									{
 										Console.WriteLine("User {0} failed to join QuickMatch lobby {1} in time, dropping from bucket", memberSession.m_UserID, m_LobbyID);
+										memberSession.IsRegisteredForMatchmaking = false;
 										await SendMatchmakingMessage(memberSession, "You failed to join the QuickMatch lobby in time and have been removed from matchmaking.");
 									}
 
@@ -1366,6 +1369,7 @@ static class MatchmakingManager
 									UserSession? memberSession = member.GetAssociatedSession();
 									if (memberSession != null)
 									{
+										memberSession.IsRegisteredForMatchmaking = false;
 										await SendMatchmakingMessage(memberSession, "Not enough players joined the QuickMatch lobby. Please try matchmaking again.");
 									}
 								}
@@ -1647,6 +1651,7 @@ static class MatchmakingManager
 
 					if (thisSessionUserData == null)
 					{
+						thisSession.IsRegisteredForMatchmaking = false;
 						lstDestroy.Add(wrSession);
 					}
 					else
@@ -1749,6 +1754,7 @@ static class MatchmakingManager
 						else
 						{
 							// invalid playlist somehow
+							thisSession.IsRegisteredForMatchmaking = false;
 							lstDestroy.Add(wrSession);
 						}
 					}
