@@ -29,7 +29,6 @@ public class AppDbContext : DbContext
 	public DbSet<LeaderboardMonthly> LeaderboardMonthly => Set<LeaderboardMonthly>();
 	public DbSet<LeaderboardYearly> LeaderboardYearly => Set<LeaderboardYearly>();
 	public DbSet<ServiceStat> ServiceStats => Set<ServiceStat>();
-	public DbSet<PendingLogin> PendingLogins => Set<PendingLogin>();
 	public DbSet<MatchHistoryEntry> MatchHistory => Set<MatchHistoryEntry>();
 	public DbSet<ExternalPublicationEntry> ExternalPublications => Set<ExternalPublicationEntry>();
 	public DbSet<UserStatsEntry> UserStats => Set<UserStatsEntry>();
@@ -64,7 +63,6 @@ public class AppDbContext : DbContext
 		modelBuilder.ApplyConfiguration(new LeaderboardMonthlyConfiguration());
 		modelBuilder.ApplyConfiguration(new LeaderboardYearlyConfiguration());
 		modelBuilder.ApplyConfiguration(new ServiceStatsConfiguration());
-		modelBuilder.ApplyConfiguration(new PendingLoginConfiguration());
 		modelBuilder.ApplyConfiguration(new MatchHistoryConfiguration());
 		modelBuilder.ApplyConfiguration(new ExternalPublicationConfiguration());
 		modelBuilder.ApplyConfiguration(new UserStatsConfiguration());

@@ -229,10 +229,9 @@ namespace GenOnlineService.Controllers
 		{
 			GET_LoginCode_Result result = new GET_LoginCode_Result();
 
-			result.success = true;
 			result.login_code = GenerateLoginCode();
-
-			PendingLoginManager.AddPendingLogin(result.login_code);
+			// a collision with a live code must not be handed out to a second client
+			result.success = PendingLoginManager.AddPendingLogin(result.login_code);
 
 			return result;
 		}
