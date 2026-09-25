@@ -279,15 +279,13 @@ namespace GenOnlineService.Controllers
 
 				try
 				{
-					using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); // timeout
+					// cancelling a pending receive aborts the socket
 					receiveResult = await webSocket.ReceiveAsync(
-						new ArraySegment<byte>(buffer), cts.Token);
+						new ArraySegment<byte>(buffer), HttpContext.RequestAborted);
 				}
 				catch (OperationCanceledException)
 				{
-					// No message received in 30s � send a keep-alive pong and continue waiting
-					await wsSess.SendPong();
-					continue;
+					break;
 				}
 				catch (Exception ex)
 				{
