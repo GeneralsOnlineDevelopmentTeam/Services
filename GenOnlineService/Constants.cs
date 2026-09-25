@@ -3191,6 +3191,9 @@ namespace GenOnlineService
 	public class WebSocketMessage_MatchmakerSetupProgress : WebSocketMessage
 	{
 		public int timeout_ms { get; set; }
+
+		// start countdown length, 0 while the match is still being set up
+		public int countdown_ms { get; set; }
 	}
 
 }
