@@ -62,6 +62,30 @@ namespace GenOnlineService
 		}
 	}
 
+	// Core:full_mesh_check_* in appsettings.json, read on use
+	internal static class FullMeshCheckSettings
+	{
+		// how long an attempt waits for every connection before judging it
+		internal static int AttemptWindowMS => Get("full_mesh_check_attempt_window_ms", 8000);
+
+		// how often an incomplete attempt asks members for a fresh snapshot
+		internal static int SnapshotIntervalMS => Get("full_mesh_check_snapshot_interval_ms", 1000);
+
+		// time given to re-signalled connections before the next attempt
+		internal static int RetryDelayMS => Get("full_mesh_check_retry_delay_ms", 3000);
+
+		internal static int MaxAttempts => Get("full_mesh_check_max_attempts", 2);
+
+		// upper bound for a whole check, used as the clients' setup timeout
+		internal static int MaxDurationMS => (AttemptWindowMS * MaxAttempts) + (RetryDelayMS * (MaxAttempts - 1));
+
+		private static int Get(string key, int defaultValue)
+		{
+			int value = Program.g_Config?.GetSection("Core").GetValue(key, defaultValue) ?? defaultValue;
+			return value > 0 ? value : defaultValue;
+		}
+	}
+
 	public class Lobby
 	{
 		public Int64 LobbyID { get; private set; } = -1;
@@ -81,13 +105,6 @@ namespace GenOnlineService
 		[JsonIgnore]
 		public Int64 TimeStartFullMeshChecks { get; private set; } = -1;
 
-		private const int MSToWaitForFullMeshChecks = 5000;
-		private const int MaxFullMeshCheckAttempts = 2;
-		private const int MSBeforeFullMeshCheckRetry = 3000;
-		public const int MaxFullMeshConnectivityCheckDurationMS =
-			(MSToWaitForFullMeshChecks * MaxFullMeshCheckAttempts)
-			+ (MSBeforeFullMeshCheckRetry * (MaxFullMeshCheckAttempts - 1));
-
 		private readonly object m_FullMeshCheckLock = new();
 
 		[JsonIgnore]
@@ -101,6 +118,9 @@ namespace GenOnlineService
 
 		[JsonIgnore]
 		private Int64 m_TimeToRetryFullMeshChecks = -1;
+
+		[JsonIgnore]
+		private Int64 m_TimeNextFullMeshSnapshotRequest = -1;
 
 		[JsonIgnore]
 		private bool m_bCurrentAttemptHasLegacyResponse = false;
@@ -208,6 +228,7 @@ namespace GenOnlineService
 			FullMeshConnectivityChecks = new();
 			m_bCurrentAttemptHasLegacyResponse = false;
 			TimeStartFullMeshChecks = Environment.TickCount64;
+			m_TimeNextFullMeshSnapshotRequest = TimeStartFullMeshChecks + FullMeshCheckSettings.SnapshotIntervalMS;
 		}
 
 		public void SendFullMeshConnectivityCheckRequestToMembers()
@@ -334,14 +355,9 @@ namespace GenOnlineService
 				int totalMapEntriesExpected = GetNumberOfHumans();
 				//int numConnectionsExpectedPerUser = totalMapEntriesExpected - 1; // minus self
 
-				// must have a connectivity map for each lobby member
-				bDoneChecks = FullMeshConnectivityChecks.Count == totalMapEntriesExpected;
-
-				// did we timeout?
-				if (!bDoneChecks && (Environment.TickCount64 - TimeStartFullMeshChecks) >= MSToWaitForFullMeshChecks)
-				{
-					bDoneChecks = true;
-				}
+				// must have a connectivity map for each lobby member, or the attempt window must have closed
+				bool bWindowElapsed = (Environment.TickCount64 - TimeStartFullMeshChecks) >= FullMeshCheckSettings.AttemptWindowMS;
+				bDoneChecks = bWindowElapsed || FullMeshConnectivityChecks.Count == totalMapEntriesExpected;
 
 				List<MissingConnectionEntry> lstMissingConnections = new();
 
@@ -411,15 +427,28 @@ namespace GenOnlineService
 
 					bool bMeshComplete = bDisableMeshCheck || lstMissingConnections.Count == 0;
 
+					// members report a snapshot, so a gap before the window closes may be a connection still forming:
+					// keep asking for fresh snapshots rather than re-signalling it early
+					if (!bMeshComplete && !bWindowElapsed)
+					{
+						if (Environment.TickCount64 >= m_TimeNextFullMeshSnapshotRequest)
+						{
+							m_TimeNextFullMeshSnapshotRequest = Environment.TickCount64 + FullMeshCheckSettings.SnapshotIntervalMS;
+							SendFullMeshConnectivityCheckRequestToMembers();
+						}
+
+						return;
+					}
+
 					if (FullMeshCheckProtocol.ShouldRetry(
 						bMeshComplete,
 						m_bCurrentAttemptHasLegacyResponse,
 						FullMeshCheckAttempt,
-						MaxFullMeshCheckAttempts))
+						FullMeshCheckSettings.MaxAttempts))
 					{
 						++FullMeshCheckAttempt;
 						RestartSignallingForMissingConnections(lstMissingConnections);
-						m_TimeToRetryFullMeshChecks = Environment.TickCount64 + MSBeforeFullMeshCheckRetry;
+						m_TimeToRetryFullMeshChecks = Environment.TickCount64 + FullMeshCheckSettings.RetryDelayMS;
 						return;
 					}
 

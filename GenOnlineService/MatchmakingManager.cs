@@ -911,7 +911,7 @@ static class MatchmakingManager
 				m_bWaitingOnMeshConnectivityChecks = true;
 			}
 
-			QueueSetupProgress(Lobby.MaxFullMeshConnectivityCheckDurationMS + c_SetupClientTimeoutMarginMSec);
+			QueueSetupProgress(FullMeshCheckSettings.MaxDurationMS + c_SetupClientTimeoutMarginMSec);
 
 			lobby.SendFullMeshConnectivityCheckRequestToMembers();
 
