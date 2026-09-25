@@ -498,7 +498,7 @@ namespace GenOnlineService.Controllers
 			{
 				if (msgID == EWebSocketMessageID.PING)
 				{
-					await sourceWS.SendPong();
+					sourceWS.QueuePong();
 				}
 				else if (msgID == EWebSocketMessageID.SOCIAL_SUBSCRIBE_REALTIME_UPDATES)
 				{
@@ -569,7 +569,7 @@ namespace GenOnlineService.Controllers
 							// send to source
 							byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outboundMsg));
 
-							await sourceWS.SendAsync(bytesJSON, WebSocketMessageType.Text);
+							sourceUserSession.QueueWebsocketSend(bytesJSON);
 						}
 					}
 				}

@@ -1654,7 +1654,7 @@ namespace GenOnlineService
 					{
 						var lobbyManager = ServiceLocator.Services.GetRequiredService<LobbyManager>();
 						await lobbyManager.Tick();
-						await WebSocketManager.Tick();
+						WebSocketManager.Tick();
 					}
 					catch (Exception ex)
 					{
