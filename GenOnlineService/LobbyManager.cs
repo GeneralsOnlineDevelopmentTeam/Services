@@ -231,6 +231,21 @@ namespace GenOnlineService
 			m_TimeNextFullMeshSnapshotRequest = TimeStartFullMeshChecks + FullMeshCheckSettings.SnapshotIntervalMS;
 		}
 
+		// one line per judged attempt, so the window can be tuned from real connect times
+		private void LogFullMeshCheckAttempt(bool bMeshComplete, List<MissingConnectionEntry> lstMissingConnections)
+		{
+			Int64 elapsedMS = Environment.TickCount64 - TimeStartFullMeshChecks;
+			string strMissing = string.Join(", ", lstMissingConnections
+				.Select(c => (Math.Min(c.source_user_id, c.target_user_id), Math.Max(c.source_user_id, c.target_user_id)))
+				.Distinct()
+				.Select(p => $"{p.Item1}<->{p.Item2}"));
+
+			Console.WriteLine("[Lobby {0}] Mesh check {1} attempt {2}/{3}: {4} after {5} ms with {6} humans{7}",
+				LobbyID, FullMeshCheckID, FullMeshCheckAttempt, FullMeshCheckSettings.MaxAttempts,
+				bMeshComplete ? "complete" : "incomplete", elapsedMS, GetNumberOfHumans(),
+				bMeshComplete ? "" : $", missing {strMissing}");
+		}
+
 		public void SendFullMeshConnectivityCheckRequestToMembers()
 		{
 			WebSocketMessage_FullMeshConnectivityCheckRequest startCommand = new WebSocketMessage_FullMeshConnectivityCheckRequest();
@@ -439,6 +454,8 @@ namespace GenOnlineService
 
 						return;
 					}
+
+					LogFullMeshCheckAttempt(bMeshComplete, lstMissingConnections);
 
 					if (FullMeshCheckProtocol.ShouldRetry(
 						bMeshComplete,
