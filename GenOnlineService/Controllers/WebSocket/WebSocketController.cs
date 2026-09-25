@@ -255,7 +255,19 @@ namespace GenOnlineService.Controllers
 			}
 
 			// accept WS
-			using var webSocket = await HttpContext.WebSockets.AcceptWebSocketAsync();
+			WebSocket acceptedSocket;
+			try
+			{
+				acceptedSocket = await HttpContext.WebSockets.AcceptWebSocketAsync();
+			}
+			catch
+			{
+				// handshake failed: release the session registered for this socket, or it stays online with no connection
+				await WebSocketManager.DeleteSession(user_id, wsSess.m_SessionType, wsSess, false);
+				throw;
+			}
+
+			using var webSocket = acceptedSocket;
 
 			// attach
 			wsSess.AttachWebsocket(webSocket);
