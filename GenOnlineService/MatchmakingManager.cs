@@ -862,6 +862,9 @@ static class MatchmakingManager
 		private const int c_GameStartCountdownMSec = 5000;
 		private const int c_SetupClientTimeoutMarginMSec = 2000;
 
+		// older clients treat any timeout_ms below this as the start countdown
+		private const int c_LegacyClientCountdownThresholdMSec = 10000;
+
 		private async Task StartGameAfterSuccessfulMeshCheck(Lobby lobby)
 		{
 			Console.WriteLine("START GAME");
@@ -884,11 +887,12 @@ static class MatchmakingManager
 			MatchmakingManager.DestroyBucket(this);
 		}
 
-		private void QueueSetupProgress(int timeoutMSec)
+		private void QueueSetupProgress(int timeoutMSec, int countdownMSec = 0)
 		{
 			WebSocketMessage_MatchmakerSetupProgress setupProgress = new WebSocketMessage_MatchmakerSetupProgress();
 			setupProgress.msg_id = (int)EWebSocketMessageID.MATCHMAKING_ACTION_SETUP_PROGRESS;
 			setupProgress.timeout_ms = timeoutMSec;
+			setupProgress.countdown_ms = countdownMSec;
 			byte[] setupProgressJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(setupProgress));
 
 			foreach (MatchmakingBucketMember member in m_lstMembers)
@@ -911,7 +915,8 @@ static class MatchmakingManager
 				m_bWaitingOnMeshConnectivityChecks = true;
 			}
 
-			QueueSetupProgress(Lobby.MaxFullMeshConnectivityCheckDurationMS + c_SetupClientTimeoutMarginMSec);
+			// kept at or above the legacy threshold so short tuned checks don't show a start countdown on older clients
+			QueueSetupProgress(Math.Max(FullMeshCheckSettings.MaxDurationMS + c_SetupClientTimeoutMarginMSec, c_LegacyClientCountdownThresholdMSec));
 
 			lobby.SendFullMeshConnectivityCheckRequestToMembers();
 
@@ -1078,7 +1083,7 @@ static class MatchmakingManager
 
 						if (bStartCountdown)
 						{
-							QueueSetupProgress(c_GameStartCountdownMSec + c_SetupClientTimeoutMarginMSec);
+							QueueSetupProgress(c_GameStartCountdownMSec + c_SetupClientTimeoutMarginMSec, c_GameStartCountdownMSec);
 							foreach (MatchmakingBucketMember member in m_lstMembers)
 							{
 								UserSession? memberSession = member.GetAssociatedSession();
