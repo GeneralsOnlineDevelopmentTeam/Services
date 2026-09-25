@@ -2997,6 +2997,9 @@ namespace GenOnlineService
 		public Int64 mesh_check_id { get; set; }
 		public int attempt { get; set; }
 		public List<Int64> connectivity_map { get; set; } = new();
+
+		// peers the member is still negotiating with; absent from older clients
+		public List<Int64> connecting_map { get; set; } = new();
 	}
 
 	public class WebSocketMessage_Social_NewFriendRequest : WebSocketMessage

@@ -122,6 +122,10 @@ namespace GenOnlineService
 		[JsonIgnore]
 		private Int64 m_TimeNextFullMeshSnapshotRequest = -1;
 
+		// per member, the peers they reported as still connecting in the current attempt
+		[JsonIgnore]
+		private Dictionary<Int64, HashSet<Int64>> m_FullMeshConnecting = new();
+
 		[JsonIgnore]
 		private bool m_bCurrentAttemptHasLegacyResponse = false;
 
@@ -226,9 +230,16 @@ namespace GenOnlineService
 		{
 			PendingFullMeshConnectivityChecks = true;
 			FullMeshConnectivityChecks = new();
+			m_FullMeshConnecting = new();
 			m_bCurrentAttemptHasLegacyResponse = false;
 			TimeStartFullMeshChecks = Environment.TickCount64;
 			m_TimeNextFullMeshSnapshotRequest = TimeStartFullMeshChecks + FullMeshCheckSettings.SnapshotIntervalMS;
+		}
+
+		private bool IsFullMeshPairStillConnecting(Int64 userA, Int64 userB)
+		{
+			return (m_FullMeshConnecting.TryGetValue(userA, out HashSet<Int64>? fromA) && fromA.Contains(userB))
+				|| (m_FullMeshConnecting.TryGetValue(userB, out HashSet<Int64>? fromB) && fromB.Contains(userA));
 		}
 
 		// one line per judged attempt, so the window can be tuned from real connect times
@@ -239,11 +250,16 @@ namespace GenOnlineService
 				.Select(c => (Math.Min(c.source_user_id, c.target_user_id), Math.Max(c.source_user_id, c.target_user_id)))
 				.Distinct()
 				.Select(p => $"{p.Item1}<->{p.Item2}"));
+			string strConnecting = string.Join(", ", lstMissingConnections
+				.Where(c => IsFullMeshPairStillConnecting(c.source_user_id, c.target_user_id))
+				.Select(c => (Math.Min(c.source_user_id, c.target_user_id), Math.Max(c.source_user_id, c.target_user_id)))
+				.Distinct()
+				.Select(p => $"{p.Item1}<->{p.Item2}"));
 
 			Console.WriteLine("[Lobby {0}] Mesh check {1} attempt {2}/{3}: {4} after {5} ms with {6} humans{7}",
 				LobbyID, FullMeshCheckID, FullMeshCheckAttempt, FullMeshCheckSettings.MaxAttempts,
 				bMeshComplete ? "complete" : "incomplete", elapsedMS, GetNumberOfHumans(),
-				bMeshComplete ? "" : $", missing {strMissing}");
+				bMeshComplete ? "" : $", missing {strMissing}{(strConnecting.Length > 0 ? $" (still connecting {strConnecting})" : "")}");
 		}
 
 		public void SendFullMeshConnectivityCheckRequestToMembers()
@@ -326,6 +342,7 @@ namespace GenOnlineService
 				{
 					m_bCurrentAttemptHasLegacyResponse |= bLegacyResponse;
 					FullMeshConnectivityChecks[sourceUser] = new ConcurrentList<Int64>(response.connectivity_map);
+					m_FullMeshConnecting[sourceUser] = new HashSet<Int64>(response.connecting_map);
 				}
 
 				ProcessPendingFullMeshConnectivityChecksInternal();
@@ -464,7 +481,11 @@ namespace GenOnlineService
 						FullMeshCheckSettings.MaxAttempts))
 					{
 						++FullMeshCheckAttempt;
-						RestartSignallingForMissingConnections(lstMissingConnections);
+
+						// a pair still negotiating would be torn down by a re-signal; the next attempt re-checks it
+						RestartSignallingForMissingConnections(lstMissingConnections
+							.Where(c => !IsFullMeshPairStillConnecting(c.source_user_id, c.target_user_id))
+							.ToList());
 						m_TimeToRetryFullMeshChecks = Environment.TickCount64 + FullMeshCheckSettings.RetryDelayMS;
 						return;
 					}
