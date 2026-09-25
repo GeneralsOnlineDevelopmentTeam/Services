@@ -184,8 +184,8 @@ namespace GenOnlineService.Controllers
 			string ipAddress = IPHelpers.NormalizeIP(HttpContext.Connection.RemoteIpAddress?.ToString());
 			string ipContinent = "NA";
 			string ipCountry = "US";
-			double dLongitude = 38.8977; // the whitehouse;
-			double dLatitude = 77.0365f; // the whitehouse;
+			double dLongitude = -77.0365; // the whitehouse
+			double dLatitude = 38.8977; // the whitehouse
 
 			try
 			{
@@ -255,7 +255,19 @@ namespace GenOnlineService.Controllers
 			}
 
 			// accept WS
-			using var webSocket = await HttpContext.WebSockets.AcceptWebSocketAsync();
+			WebSocket acceptedSocket;
+			try
+			{
+				acceptedSocket = await HttpContext.WebSockets.AcceptWebSocketAsync();
+			}
+			catch
+			{
+				// handshake failed: release the session registered for this socket, or it stays online with no connection
+				await WebSocketManager.DeleteSession(user_id, wsSess.m_SessionType, wsSess, false);
+				throw;
+			}
+
+			using var webSocket = acceptedSocket;
 
 			// attach
 			wsSess.AttachWebsocket(webSocket);
@@ -279,15 +291,18 @@ namespace GenOnlineService.Controllers
 
 				try
 				{
-					using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); // timeout
+					// cancelling a pending receive aborts the socket
 					receiveResult = await webSocket.ReceiveAsync(
-						new ArraySegment<byte>(buffer), cts.Token);
+						new ArraySegment<byte>(buffer), HttpContext.RequestAborted);
 				}
 				catch (OperationCanceledException)
 				{
-					// No message received in 30s � send a keep-alive pong and continue waiting
-					await wsSess.SendPong();
-					continue;
+					break;
+				}
+				catch (WebSocketException ex) when (ex.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely)
+				{
+					// client dropped without a close handshake
+					break;
 				}
 				catch (Exception ex)
 				{
@@ -299,8 +314,7 @@ namespace GenOnlineService.Controllers
 
 				if (receiveResult.MessageType == WebSocketMessageType.Close)
 				{
-					using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10)); // timeout
-					await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", cts.Token);
+					await wsSess.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing");
 					break;
 				}
 
@@ -316,8 +330,7 @@ namespace GenOnlineService.Controllers
 						fragmentBuffer.Dispose();
 						fragmentBuffer = null;
 
-						using var ctsTooBig = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-						await webSocket.CloseAsync(WebSocketCloseStatus.MessageTooBig, "Message too large", ctsTooBig.Token);
+						await wsSess.CloseAsync(WebSocketCloseStatus.MessageTooBig, "Message too large");
 						break;
 					}
 
@@ -343,7 +356,7 @@ namespace GenOnlineService.Controllers
 				// if we lost session data, close WS
 				if (sourceUserData == null)
 				{
-					wsSess.CloseAsync(WebSocketCloseStatus.NormalClosure, "User signed in from another point of presence [B]");
+					await wsSess.CloseAsync(WebSocketCloseStatus.NormalClosure, "User signed in from another point of presence [B]");
 					break;
 				}
 
@@ -375,8 +388,7 @@ namespace GenOnlineService.Controllers
 					}
 				}
 
-				using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10)); // timeout
-				await webSocket.CloseAsync(closeStatus, closeStatusDescription, cts.Token);
+				await wsSess.CloseAsync(closeStatus, closeStatusDescription);
 			}
 		}
 
@@ -491,7 +503,7 @@ namespace GenOnlineService.Controllers
 			{
 				if (msgID == EWebSocketMessageID.PING)
 				{
-					await sourceWS.SendPong();
+					sourceWS.QueuePong();
 				}
 				else if (msgID == EWebSocketMessageID.SOCIAL_SUBSCRIBE_REALTIME_UPDATES)
 				{
@@ -562,7 +574,7 @@ namespace GenOnlineService.Controllers
 							// send to source
 							byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outboundMsg));
 
-							await sourceWS.SendAsync(bytesJSON, WebSocketMessageType.Text);
+							sourceUserSession.QueueWebsocketSend(bytesJSON);
 						}
 					}
 				}

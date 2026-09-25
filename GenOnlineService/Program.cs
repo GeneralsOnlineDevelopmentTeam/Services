@@ -1551,7 +1551,8 @@ namespace GenOnlineService
 
 			var webSocketOptions = new WebSocketOptions
 			{
-				KeepAliveInterval = TimeSpan.FromSeconds(30)
+				KeepAliveInterval = UserWebSocketInstance.c_KeepAliveInterval,
+				KeepAliveTimeout = UserWebSocketInstance.c_KeepAliveTimeout
 			};
 
 			app.UseWebSockets(webSocketOptions);
@@ -1653,7 +1654,7 @@ namespace GenOnlineService
 					{
 						var lobbyManager = ServiceLocator.Services.GetRequiredService<LobbyManager>();
 						await lobbyManager.Tick();
-						await WebSocketManager.Tick();
+						WebSocketManager.Tick();
 					}
 					catch (Exception ex)
 					{
