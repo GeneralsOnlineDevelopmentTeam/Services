@@ -384,12 +384,11 @@ namespace GenOnlineService
 
 			{
 				bool bDoneChecks = false;
-				int totalMapEntriesExpected = GetNumberOfHumans();
-				//int numConnectionsExpectedPerUser = totalMapEntriesExpected - 1; // minus self
 
-				// must have a connectivity map for each lobby member, or the attempt window must have closed
+				// judged as soon as anyone replies: members who haven't replied yet count as missing, and gaps before
+				// the window closes are re-polled below, which also recovers replies lost to a reconnect
 				bool bWindowElapsed = (Environment.TickCount64 - TimeStartFullMeshChecks) >= FullMeshCheckSettings.AttemptWindowMS;
-				bDoneChecks = bWindowElapsed || FullMeshConnectivityChecks.Count == totalMapEntriesExpected;
+				bDoneChecks = bWindowElapsed || !FullMeshConnectivityChecks.IsEmpty;
 
 				List<MissingConnectionEntry> lstMissingConnections = new();
 
@@ -398,6 +397,12 @@ namespace GenOnlineService
 					// now verify each user has provided data for all other users
 					foreach (var userMap in FullMeshConnectivityChecks)
 					{
+						// a member who left mid-check no longer counts
+						if (GetMemberFromUserID(userMap.Key)?.IsHuman() != true)
+						{
+							continue;
+						}
+
 						// foreach member in the lobby, check they are in userMap.Value
 						foreach (LobbyMember member in Members)
 						{
