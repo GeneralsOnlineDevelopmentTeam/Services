@@ -184,8 +184,8 @@ namespace GenOnlineService.Controllers
 			string ipAddress = IPHelpers.NormalizeIP(HttpContext.Connection.RemoteIpAddress?.ToString());
 			string ipContinent = "NA";
 			string ipCountry = "US";
-			double dLongitude = 38.8977; // the whitehouse;
-			double dLatitude = 77.0365f; // the whitehouse;
+			double dLongitude = -77.0365; // the whitehouse
+			double dLatitude = 38.8977; // the whitehouse
 
 			try
 			{
