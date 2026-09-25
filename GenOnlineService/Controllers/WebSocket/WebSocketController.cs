@@ -299,6 +299,11 @@ namespace GenOnlineService.Controllers
 				{
 					break;
 				}
+				catch (WebSocketException ex) when (ex.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely)
+				{
+					// client dropped without a close handshake
+					break;
+				}
 				catch (Exception ex)
 				{
 					// Log unexpected errors
