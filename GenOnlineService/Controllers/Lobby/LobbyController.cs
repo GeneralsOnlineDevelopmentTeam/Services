@@ -246,7 +246,7 @@ namespace GenOnlineService.Controllers
 						}
 
 						Console.WriteLine("[Source 1] User {0} Leave Any Lobby", user_id);
-						_lobbyManager.LeaveAnyLobby(user_id);
+						await _lobbyManager.LeaveAnyLobby(user_id);
 
 						// cleanup TURN credentials
 						TURNCredentialManager.DeleteCredentialsForUser(user_id);
