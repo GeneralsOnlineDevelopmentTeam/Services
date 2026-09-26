@@ -549,6 +549,19 @@ namespace GenOnlineService
 			return numSessions;
 		}
 
+		// Pure re-check used by CheckForTimeouts right before actually clearing a snapshotted
+		// abandoned+expired entry: refuses unless it's still the SAME session object (a reconnect in
+		// between would have registered a new one) and it is STILL abandoned and expired.
+		internal static bool ShouldStillClearAbandonedSession(UserSession? currentSession, UserSession snapshotSession)
+		{
+			if (!ReferenceEquals(currentSession, snapshotSession))
+			{
+				return false;
+			}
+
+			return currentSession.IsAbandoned() && currentSession.NeedsCleanup();
+		}
+
 		public static async Task CheckForTimeouts()
 		{
 			foreach (var sessionDataByClient in m_dictWebsockets)
@@ -560,7 +573,7 @@ namespace GenOnlineService
 			}
 
 			// do we need to clear out cache entries?
-			List<Tuple<Int64, EUserSessionType>> lstCacheEntriesToDestroy = new();
+			List<(Int64 UserID, EUserSessionType SessionType, UserSession Session)> lstCacheEntriesToDestroy = new();
 			foreach (var sessionDataPerClientType in m_dictUserSessions)
 			{
 				foreach (var sessionData in sessionDataPerClientType.Value)
@@ -569,15 +582,25 @@ namespace GenOnlineService
 					{
 						if (sessionData.Value.NeedsCleanup())
 						{
-							lstCacheEntriesToDestroy.Add(new Tuple<Int64, EUserSessionType>(sessionData.Key, sessionData.Value.GetSessionType()));
+							lstCacheEntriesToDestroy.Add((sessionData.Key, sessionData.Value.GetSessionType(), sessionData.Value));
 						}
 					}
 				}
 			}
 
-			foreach (Tuple<Int64, EUserSessionType> userData in lstCacheEntriesToDestroy)
+			foreach (var userData in lstCacheEntriesToDestroy)
 			{
-				await ClearDataFromUser(userData.Item1, userData.Item2);
+				// A reconnect between the snapshot above and now would have replaced this user's
+				// session with a live one; only clear if the SAME session object is still registered
+				// and still abandoned+expired, so a fresh reconnect never has its live session torn
+				// down (kicked from its lobby, deregistered from matchmaking) by a stale sweep entry.
+				UserSession? currentSession = GetSessionFromUser(userData.UserID, userData.SessionType);
+				if (!ShouldStillClearAbandonedSession(currentSession, userData.Session))
+				{
+					continue;
+				}
+
+				await ClearDataFromUser(userData.UserID, userData.SessionType);
 			}
 		}
 
