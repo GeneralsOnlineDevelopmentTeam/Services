@@ -205,6 +205,11 @@ namespace GenOnlineService
 
 		private static Int64 s_NextFullMeshCheckID = 0;
 
+		// Backing counter for LobbyMember.JoinSequence: per-lobby, starts at 1, only ever assigned
+		// from within AddMember (which already runs under m_LobbyGate), so a plain Interlocked
+		// increment is enough without adding another lock.
+		private Int64 m_NextJoinSequence = 0;
+
 		[JsonIgnore]
 		public ConcurrentDictionary<Int64, ConcurrentList<Int64>> FullMeshConnectivityChecks { get; set; } = new();
 
@@ -1163,6 +1168,9 @@ public async Task FinalizeACChecks()
 				strDisplayName = String.Format("{0} ({1})", strDisplayName, dupesSeen);
 			}
 
+			// AddMember only runs inside RunExclusiveAsync, so this increment is already serialized.
+			Int64 joinSequence = Interlocked.Increment(ref m_NextJoinSequence);
+
 			// only apply lobby prefs if not QM
 			LobbyMember? newMember = null;
 			if (LobbyType == ELobbyType.CustomGame)
@@ -1188,7 +1196,7 @@ public async Task FinalizeACChecks()
 					}
 				}
 
-				newMember = new LobbyMember(this, playerSession, playerSession.m_UserID, strDisplayName, strOriginalDisplayName, userPreferredPort, sideToUse, colorToUse, -1, EPlayerType.SLOT_PLAYER, slotIndex, bHasMap);
+				newMember = new LobbyMember(this, playerSession, playerSession.m_UserID, strDisplayName, strOriginalDisplayName, userPreferredPort, sideToUse, colorToUse, -1, EPlayerType.SLOT_PLAYER, slotIndex, bHasMap, joinSequence);
 			}
 			else
 			{
@@ -1212,7 +1220,7 @@ public async Task FinalizeACChecks()
 				int sideToUse = allowedTeams[Random.Shared.Next(0, allowedTeams.Length)];
 
 				// team is random for now, matchmaker will assign teams on start
-				newMember = new LobbyMember(this, playerSession, playerSession.m_UserID, strDisplayName, strOriginalDisplayName, userPreferredPort, sideToUse, -1, -1, EPlayerType.SLOT_PLAYER, slotIndex, bHasMap);
+				newMember = new LobbyMember(this, playerSession, playerSession.m_UserID, strDisplayName, strOriginalDisplayName, userPreferredPort, sideToUse, -1, -1, EPlayerType.SLOT_PLAYER, slotIndex, bHasMap, joinSequence);
 			}
 
 			Members[slotIndex] = newMember;
@@ -1706,6 +1714,13 @@ public async Task FinalizeACChecks()
 		public string Region { get; private set; } = "Unknown";
 		public string MiddlewareUserID { get; private set; } = String.Empty;
 
+		// Per-lobby, monotonically increasing, assigned once when a human player is added
+		// (AddMember/CreateLobby) and never reassigned afterwards: host migration and slot moves
+		// only change SlotIndex/Owner on this same object, so JoinSequence is untouched. AI and
+		// open/closed placeholder slots keep the default of 0. A player who leaves and rejoins gets
+		// a new LobbyMember instance with a new, higher value.
+		public Int64 JoinSequence { get; private set; } = 0;
+
 		[JsonIgnore] // cant serialize refs
 		private WeakReference<Lobby?> CurrentLobby = new(null);
 
@@ -1717,7 +1732,7 @@ public async Task FinalizeACChecks()
 			return PlayerSession;
 		}
 
-		public LobbyMember(Lobby owningLobby, UserSession? owningSession, Int64 UserID_in, string DisplayName_in, string strUndedupedDisplayName, UInt16 Port_in, int Side_in, int Color_in, int StartingPosition_in, EPlayerType SlotState_in, UInt16 SlotIndex_in, bool bHasMap_in)
+		public LobbyMember(Lobby owningLobby, UserSession? owningSession, Int64 UserID_in, string DisplayName_in, string strUndedupedDisplayName, UInt16 Port_in, int Side_in, int Color_in, int StartingPosition_in, EPlayerType SlotState_in, UInt16 SlotIndex_in, bool bHasMap_in, Int64 JoinSequence_in = 0)
 		{
 			CurrentLobby = new WeakReference<Lobby?>(owningLobby);
 			PlayerSession = new WeakReference<UserSession?>(owningSession);
@@ -1732,6 +1747,7 @@ public async Task FinalizeACChecks()
 			HasMap = bHasMap_in;
 			SlotState = SlotState_in;
 			SlotIndex = SlotIndex_in;
+			JoinSequence = JoinSequence_in;
 
 			// default slots are created with null
 			if (owningSession != null)
