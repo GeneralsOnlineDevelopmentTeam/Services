@@ -893,17 +893,26 @@ public async Task FinalizeACChecks()
 			}
 		}
 
-		public void CloseOpenSlots()
+		// Runs under the per-lobby gate: this mutates slot state and previously ran unguarded,
+		// racing against AddMember/RemoveMember/other slot updates. Sequential with (never nested
+		// inside) StartFullMeshConnectivityCheck's own gate use - callers await this first and then
+		// await StartFullMeshConnectivityCheck as a separate gated operation, so the gate is never
+		// re-entered.
+		public async Task CloseOpenSlots()
 		{
-			foreach (LobbyMember member in Members)
+			await RunExclusiveAsync(() =>
 			{
-				if (member.SlotState == EPlayerType.SLOT_OPEN)
+				foreach (LobbyMember member in Members)
 				{
-					member.SetPlayerSlotState(EPlayerType.SLOT_CLOSED);
+					if (member.SlotState == EPlayerType.SLOT_OPEN)
+					{
+						member.SetPlayerSlotState(EPlayerType.SLOT_CLOSED);
+					}
 				}
-			}
 
-			DirtyRetransmit();
+				DirtyRetransmit();
+				return Task.CompletedTask;
+			});
 		}
 
 		// Must only be called while holding m_LobbyGate (currently only true from

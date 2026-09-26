@@ -961,7 +961,7 @@ namespace GenOnlineService.Controllers
 					}
 
 					// lock slots
-					lobbyInfo.CloseOpenSlots();
+					await lobbyInfo.CloseOpenSlots();
 				}
 				else if (msgID == EWebSocketMessageID.START_GAME)
 				{
@@ -1034,7 +1034,9 @@ namespace GenOnlineService.Controllers
 					}
 
 					// lock slots (more people joining when we're already doing connectivity checks won't help the situation)
-					lobbyInfo.CloseOpenSlots();
+					// Awaited separately from StartFullMeshConnectivityCheck below: each is its own
+					// gated operation on the lobby, so neither ever nests inside the other's gate use.
+					await lobbyInfo.CloseOpenSlots();
 
 					// mark lobby as in progress of full mesh connectivity checks
 					await lobbyInfo.StartFullMeshConnectivityCheck();
