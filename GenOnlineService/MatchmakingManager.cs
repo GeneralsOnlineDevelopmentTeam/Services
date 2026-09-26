@@ -694,6 +694,25 @@ static class MatchmakingManager
 			}
 		}
 
+		public bool OwnsLobby(Int64 lobbyID)
+		{
+			return lobbyID != -1 && m_LobbyID == lobbyID;
+		}
+
+		// Same invalidation the existing RemovePlayer/PruneDeadMembers paths use, exposed for
+		// external hooks (a lobby-level leave, or a session going abandoned) that don't go through
+		// this bucket's own member list.
+		public void InvalidateAutoStart()
+		{
+			lock (m_StateLock)
+			{
+				if (m_bWaitingOnLobbyJoins || m_bHasStartedCountdown || m_bWaitingOnMeshConnectivityChecks)
+				{
+					m_bAutoStartInvalidated = true;
+				}
+			}
+		}
+
 		// TODO_EFCORE: Shared User data, and session<->websocket could be weakrefs
 		public bool IsJoiningUserBlockedByOrHasBlockedAnyBucketMember(UserSession? joiningUserSession, Int64 joining_user)
 		{
@@ -1838,6 +1857,31 @@ static class MatchmakingManager
 	{
 		bucket.MarkPendingDeletion();
 		m_bucketsPendingDeletion.Enqueue(bucket);
+	}
+
+	// Hook from Lobby (a member left) or WebSocketManager (a session in a QM lobby went abandoned)
+	// into whichever bucket owns that lobby, so a stale "everyone connected" verdict can never be
+	// used to start a match that no longer holds the players it was formed with. Only ever touches
+	// MatchmakingBucket's own m_StateLock - never a Lobby's gate - so it is safe to call from
+	// anywhere, including from inside Lobby.RemoveMember's own gated callback.
+	public static void InvalidateAutoStartForLobby(Int64 lobbyID)
+	{
+		if (lobbyID == -1)
+		{
+			return;
+		}
+
+		foreach (var bucketsForPlaylist in m_dictMatchmakingBuckets.Values)
+		{
+			foreach (MatchmakingBucket bucket in bucketsForPlaylist)
+			{
+				if (bucket.OwnsLobby(lobbyID))
+				{
+					bucket.InvalidateAutoStart();
+					return;
+				}
+			}
+		}
 	}
 
 	public static async Task RegisterPlayer(UserSession plr, UInt16 playlistID, List<int> mapIndices, UInt32 exe_crc, UInt32 ini_crc, EKnownAnticheatID anticheatID)

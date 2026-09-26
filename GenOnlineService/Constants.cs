@@ -658,6 +658,11 @@ namespace GenOnlineService
 				{
 					sourceData.MarkAbandoned();
 
+					// A quick match must never start believing this player is still connected. If
+					// they're in a QuickMatch lobby that's mid setup/countdown, invalidate its bucket's
+					// auto-start the same way a lobby-level leave would.
+					MatchmakingManager.InvalidateAutoStartForLobby(sourceData.currentLobbyID);
+
 					// If the player was in an active game when their connection dropped, record the
 					// abandon time NOW (before any lobby-structure cleanup runs).  This timestamp is
 					// the authoritative "who quit first" signal used by DetermineLobbyWinnerIfNotPresent,
@@ -3032,10 +3037,22 @@ namespace GenOnlineService
 		public string display_name { get; set; } = String.Empty;
 	}
 
+	// Sent as FULL_MESH_CONNECTIVITY_CHECK_RESPONSE_COMPLETE_TO_HOST. The released client keeps a
+	// single callback slot for this and consumes the FIRST one it receives, so the server guarantees
+	// exactly one of these for every check the CURRENT owner is still waiting on - never more than
+	// one "in flight" answer. A check that gets superseded by a newer one, or whose requester is no
+	// longer the lobby's owner (e.g. they left and host migration promoted someone else), sends
+	// nothing at all: see Lobby.CompleteFullMeshConnectivityCheckLocked.
 	public class WebSocketMessage_FullMeshConnectivityCheckOutcome: WebSocketMessage
 	{
 		public bool mesh_complete { get; set; }
 		public List<MissingConnectionEntry> missing_connections { get; set; } = new();
+
+		// "" when mesh_complete is true. Otherwise one of (see GenOnlineService.FullMeshCheckOutcomeReason):
+		//   "missing_connections" - the check ran to completion with a real connection still missing
+		//   "timeout"             - nobody ever reported a connectivity snapshot before the window closed
+		//   "member_left"         - a member left the lobby while this check was pending
+		public string reason { get; set; } = string.Empty;
 	}
 
 	public class WebSocketMessage_FullMeshConnectivityCheckOutcomeForHost : WebSocketMessage

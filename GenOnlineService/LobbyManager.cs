@@ -62,6 +62,34 @@ namespace GenOnlineService
 		}
 	}
 
+	// The set of "reason" values FULL_MESH_CONNECTIVITY_CHECK_RESPONSE_COMPLETE_TO_HOST can carry.
+	// Empty string ("") always means mesh_complete was true; every other outcome sets exactly one
+	// of these:
+	//  - MissingConnections: the check ran to completion (attempts exhausted) with at least one
+	//    real peer-to-peer connection still missing between members who are still in the lobby.
+	//  - Timeout: the final attempt's window elapsed without a single member ever reporting a
+	//    connectivity snapshot, so nothing could be judged connected.
+	//  - MemberLeft: a member left the lobby while this check was pending, so the outcome may be
+	//    explained by that departure rather than a real connectivity failure.
+	//
+	// A check that gets superseded (a newer StartFullMeshConnectivityCheck call arrives before this
+	// one finishes) or whose requester is no longer the lobby's owner (they left and host migration
+	// promoted someone else) never sends a COMPLETE_TO_HOST at all - see
+	// Lobby.CompleteFullMeshConnectivityCheckLocked. The released client keeps a single callback
+	// slot and consumes the FIRST completion it receives, so sending a stale/superseded answer
+	// would be consumed as the answer to whatever check the client is actually still waiting on and
+	// the real answer would then be silently dropped. The guarantee is therefore scoped to "the
+	// CURRENT owner gets exactly one completion for the check they are currently waiting on", not
+	// "every StartFullMeshConnectivityCheck call produces a message": a superseded check's own
+	// question is answered by the newer check's eventual completion instead.
+	internal static class FullMeshCheckOutcomeReason
+	{
+		internal const string None = "";
+		internal const string MissingConnections = "missing_connections";
+		internal const string Timeout = "timeout";
+		internal const string MemberLeft = "member_left";
+	}
+
 	// Core:full_mesh_check_* in appsettings.json, read on use
 	internal static class FullMeshCheckSettings
 	{
@@ -104,6 +132,19 @@ namespace GenOnlineService
 
 		[JsonIgnore]
 		public Int64 TimeStartFullMeshChecks { get; private set; } = -1;
+
+		// Incremented under m_LobbyGate every time a human member is added or removed. A quick match
+		// must never start on the strength of a mesh check that passed for a different set of
+		// players than the lobby currently holds, so this - plus MembershipVersionAtLastCheckStart -
+		// lets the check outcome be tied to the exact membership it was run against. Any membership
+		// change also clears LastFullMeshConnectivityCheckOutcome outright, as a second, simpler line
+		// of defense.
+		[JsonIgnore]
+		public int MembershipVersion { get; private set; } = 0;
+
+		// MembershipVersion as of the moment the current/most recently started check began.
+		[JsonIgnore]
+		public int MembershipVersionAtLastCheckStart { get; private set; } = -1;
 
 		// Single per-lobby exclusive gate for every mutation of this lobby's Members/Owner, slot
 		// state/fields, ready state, and mesh-check state. Everything that used to be split across
@@ -203,6 +244,20 @@ namespace GenOnlineService
 		[JsonIgnore]
 		private bool m_bCurrentAttemptHasLegacyResponse = false;
 
+		// Set while a check is pending if a member leaves the lobby before it completes, so the
+		// eventual outcome can report FullMeshCheckOutcomeReason.MemberLeft instead of a generic
+		// connectivity failure. Reset each time a new check starts.
+		[JsonIgnore]
+		private bool m_bMemberLeftDuringCurrentCheck = false;
+
+		// The user who was Owner when the current check started (both real call sites - the
+		// websocket host-requests-begin handler and quickmatch's TriggerFullMeshConnectivityChecks -
+		// only ever start a check while its requester is the current owner). The eventual outcome is
+		// only ever sent to this user, and only if they are still Owner: see
+		// CompleteFullMeshConnectivityCheckLocked.
+		[JsonIgnore]
+		private Int64 m_MeshCheckRequestingUserID = -1;
+
 		private static Int64 s_NextFullMeshCheckID = 0;
 
 		// Backing counter for LobbyMember.JoinSequence: per-lobby, starts at 1, only ever assigned
@@ -271,13 +326,40 @@ namespace GenOnlineService
 		{
 			await RunExclusiveAsync(() =>
 			{
+				if (PendingFullMeshConnectivityChecks)
+				{
+					// A new check preempts whatever was still in flight. The old check's own question
+					// is answered by the new check's eventual completion instead of sending a stale
+					// COMPLETE_TO_HOST here: the released client has only one callback slot and would
+					// consume whichever answer arrives first, dropping the real one. So this discards
+					// the old check's state without sending anything.
+					DiscardPendingFullMeshCheckLocked();
+				}
+
 				FullMeshCheckID = Interlocked.Increment(ref s_NextFullMeshCheckID);
 				FullMeshCheckAttempt = 1;
 				m_TimeToRetryFullMeshChecks = -1;
 				LastFullMeshConnectivityCheckOutcome = null;
+				m_bMemberLeftDuringCurrentCheck = false;
+				MembershipVersionAtLastCheckStart = MembershipVersion;
+				// Both real callers only ever start a check while they are the current owner (the
+				// websocket handler checks this explicitly; quickmatch's dummy host is set as Owner at
+				// lobby creation), so Owner at this instant is the requester the eventual outcome
+				// belongs to.
+				m_MeshCheckRequestingUserID = Owner;
 				BeginFullMeshConnectivityCheckAttempt();
 				return Task.CompletedTask;
 			});
+		}
+
+		// Resets pending-check state without sending a COMPLETE_TO_HOST. Must only be called while
+		// holding m_LobbyGate.
+		private void DiscardPendingFullMeshCheckLocked()
+		{
+			PendingFullMeshConnectivityChecks = false;
+			TimeStartFullMeshChecks = -1;
+			m_TimeToRetryFullMeshChecks = -1;
+			LastFullMeshConnectivityCheckOutcome = null;
 		}
 
 		private void BeginFullMeshConnectivityCheckAttempt()
@@ -549,39 +631,70 @@ namespace GenOnlineService
 					}
 
 					// inform host that we are done
-					// start full mesh connectivity checks
-					WebSocketMessage_FullMeshConnectivityCheckOutcome outcome = new WebSocketMessage_FullMeshConnectivityCheckOutcome();
-					outcome.msg_id = (int)EWebSocketMessageID.FULL_MESH_CONNECTIVITY_CHECK_RESPONSE_COMPLETE_TO_HOST;
+					bool bMembershipChangedDuringCheck = MembershipVersion != MembershipVersionAtLastCheckStart;
+					bool bMeshCompleteFinal = !bMembershipChangedDuringCheck && (bDisableMeshCheck || lstMissingConnections.Count == 0);
+					List<MissingConnectionEntry> lstFinalMissingConnections = bDisableMeshCheck
+						? new List<MissingConnectionEntry>()
+						: lstMissingConnections;
 
-					if (bDisableMeshCheck)
+					string reason;
+					if (bMeshCompleteFinal)
 					{
-						outcome.mesh_complete = true;
-						outcome.missing_connections = new List<MissingConnectionEntry>();
+						reason = FullMeshCheckOutcomeReason.None;
+					}
+					else if (bMembershipChangedDuringCheck || m_bMemberLeftDuringCurrentCheck)
+					{
+						// A join also invalidates the check (not just a leave): either way the set of
+						// players this check was judged against is no longer the lobby's actual membership.
+						reason = FullMeshCheckOutcomeReason.MemberLeft;
+					}
+					else if (FullMeshConnectivityChecks.IsEmpty)
+					{
+						// nobody ever reported a snapshot for this attempt, so nothing could be judged connected
+						reason = FullMeshCheckOutcomeReason.Timeout;
 					}
 					else
 					{
-						outcome.mesh_complete = lstMissingConnections.Count == 0;
-						outcome.missing_connections = lstMissingConnections;
+						reason = FullMeshCheckOutcomeReason.MissingConnections;
 					}
 
-					LastFullMeshConnectivityCheckOutcome = outcome.mesh_complete;
-
-					// TODO_EFCORE: Later, these should really use lobby list instead of getting session from ID
-
-					// send to host
-					UserSession? hostSession = WebSocketManager.GetSessionFromUser(Owner, EUserSessionType.GameClient); // host should be a game client
-					if (hostSession != null)
-					{
-						byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outcome));
-						hostSession.QueueWebsocketSend(bytesJSON);
-					}
-
-					// reset state
-					PendingFullMeshConnectivityChecks = false;
-					TimeStartFullMeshChecks = -1;
-					m_TimeToRetryFullMeshChecks = -1;
+					CompleteFullMeshConnectivityCheckLocked(bMeshCompleteFinal, lstFinalMissingConnections, reason);
 				}
 			}
+		}
+
+		// Sends FULL_MESH_CONNECTIVITY_CHECK_RESPONSE_COMPLETE_TO_HOST to the host and resets the
+		// pending-check state. Must only be called while holding m_LobbyGate.
+		private void CompleteFullMeshConnectivityCheckLocked(bool bMeshComplete, List<MissingConnectionEntry> lstMissingConnections, string reason)
+		{
+			WebSocketMessage_FullMeshConnectivityCheckOutcome outcome = new WebSocketMessage_FullMeshConnectivityCheckOutcome();
+			outcome.msg_id = (int)EWebSocketMessageID.FULL_MESH_CONNECTIVITY_CHECK_RESPONSE_COMPLETE_TO_HOST;
+			outcome.mesh_complete = bMeshComplete;
+			outcome.missing_connections = lstMissingConnections;
+			outcome.reason = bMeshComplete ? FullMeshCheckOutcomeReason.None : reason;
+
+			LastFullMeshConnectivityCheckOutcome = outcome.mesh_complete;
+
+			// TODO_EFCORE: Later, these should really use lobby list instead of getting session from ID
+
+			// Only ever answer the user who actually asked for this check, and only while they are
+			// still the owner. If they left and host migration promoted someone else, the new owner
+			// never asked for this check and must not have it land in their single callback slot as
+			// the answer to a question they didn't ask.
+			if (m_MeshCheckRequestingUserID == Owner)
+			{
+				UserSession? hostSession = WebSocketManager.GetSessionFromUser(Owner, EUserSessionType.GameClient); // host should be a game client
+				if (hostSession != null)
+				{
+					byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outcome));
+					hostSession.QueueWebsocketSend(bytesJSON);
+				}
+			}
+
+			// reset state
+			PendingFullMeshConnectivityChecks = false;
+			TimeStartFullMeshChecks = -1;
+			m_TimeToRetryFullMeshChecks = -1;
 		}
 
 		public void AddPassword(string password)
@@ -870,6 +983,13 @@ namespace GenOnlineService
 		{
 			// NOTE: By the time this is called, the member is no longer in the members list
 			bool bNeedsHostMigrate = Owner == leavingUserID;
+
+			// A departure while a mesh check is pending can explain that check's eventual failure,
+			// so the outcome can say why instead of reporting a generic connectivity failure.
+			if (PendingFullMeshConnectivityChecks)
+			{
+				m_bMemberLeftDuringCurrentCheck = true;
+			}
 
 			// we need human members, not real members
 			int numHumanMembers = GetNumberOfHumans();
@@ -1226,6 +1346,11 @@ public async Task FinalizeACChecks()
 			Members[slotIndex] = newMember;
 			TimeMemberLeft[playerSession.m_UserID] = DateTime.UnixEpoch;
 
+			// Membership just changed: any previously-passed mesh check no longer describes who is
+			// actually in the lobby.
+			++MembershipVersion;
+			LastFullMeshConnectivityCheckOutcome = null;
+
 			// Lobby members leave public-room presence.
 			playerSession.TryUpdateSessionNetworkRoom(-1);
 
@@ -1339,6 +1464,20 @@ public async Task FinalizeACChecks()
 				LobbyMember placeholderMember = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, -1, -1, -1, EPlayerType.SLOT_OPEN, member.SlotIndex, true);
 				Members[member.SlotIndex] = placeholderMember;
 				TimeMemberLeft[member.UserID] = DateTime.UtcNow;
+
+				// Membership just changed: any previously-passed mesh check no longer describes who
+				// is actually in the lobby.
+				++MembershipVersion;
+				LastFullMeshConnectivityCheckOutcome = null;
+
+				// A quick match must never start on a stale "everyone joined/connected" verdict once
+				// someone has left. This is a direct static call (not an event) that only ever touches
+				// MatchmakingBucket's own lock, never this lobby's gate, so it is safe to make from in
+				// here.
+				if (LobbyType == ELobbyType.QuickMatch)
+				{
+					MatchmakingManager.InvalidateAutoStartForLobby(LobbyID);
+				}
 
 				OnAfterPlayerLeftLocked(member.UserID);
 
