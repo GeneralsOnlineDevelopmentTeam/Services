@@ -833,7 +833,7 @@ namespace GenOnlineService.Controllers
 								if (playerSession != null)
 								{
 									// leave any lobby
-									_lobbyManager.LeaveAnyLobby(user_id);
+									await _lobbyManager.LeaveAnyLobby(user_id);
 
 									await using var db = await _dbFactory.CreateDbContextAsync();
 									string strDisplayName = await Database.Users.GetDisplayName(db, user_id);

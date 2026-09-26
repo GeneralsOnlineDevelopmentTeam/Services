@@ -1839,7 +1839,7 @@ public async Task FinalizeACChecks()
 			await CleanupUserLobbiesNotStarted(owningSession.m_UserID);
 
 			Console.WriteLine("[Source 3] User {0} Leave Any Lobby", owningSession.m_UserID);
-			this.LeaveAnyLobby(owningSession.m_UserID);
+			await this.LeaveAnyLobby(owningSession.m_UserID);
 
 			int rng_seed = new Random().Next();
 
