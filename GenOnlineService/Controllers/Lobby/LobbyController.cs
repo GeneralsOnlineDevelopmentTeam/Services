@@ -470,7 +470,16 @@ namespace GenOnlineService.Controllers
 								// Every mutation below touches this lobby's Members, slot state, or ready state,
 								// so the whole field-update dispatch runs as one atomic operation under the
 								// per-lobby gate instead of each setter mutating state unguarded.
-								await lobby.RunExclusiveAsync(() => ApplyLobbyFieldUpdateAsync(lobby, SourceMember, field, data));
+								// A kick can't finish the actual removal in here: RemoveMember acquires this
+								// same lobby's gate, which is not reentrant, so ApplyLobbyFieldUpdateAsync only
+								// validates the target and hands the user ID back for PerformKickAsync to
+								// process once the gate below has been released.
+								Int64? kickedUserID = await lobby.RunExclusiveAsync(() => ApplyLobbyFieldUpdateAsync(lobby, SourceMember, field, data));
+
+								if (kickedUserID.HasValue)
+								{
+									await PerformKickAsync(lobby, kickedUserID.Value);
+								}
                             }
                         }
 
@@ -508,7 +517,10 @@ namespace GenOnlineService.Controllers
 		// Runs the per-field lobby update dispatch. Must only be called from inside
 		// lobby.RunExclusiveAsync: every branch here mutates this lobby's Members, slot
 		// state/fields, or ready state, and previously ran completely unguarded.
-		private async Task ApplyLobbyFieldUpdateAsync(Lobby lobby, LobbyMember SourceMember, ELobbyUpdateField field, Dictionary<string, JsonElement> data)
+		// Returns the kicked user's ID when HOST_ACTION_KICK_USER validated a real target, so the
+		// caller can run the actual removal after releasing the gate; null for every other field
+		// (including a kick request with no valid target).
+		private async Task<Int64?> ApplyLobbyFieldUpdateAsync(Lobby lobby, LobbyMember SourceMember, ELobbyUpdateField field, Dictionary<string, JsonElement> data)
 		{
 			// reset everyones ready states when anything changes (minus dummy actions)
 			if (field != ELobbyUpdateField.HOST_ACTION_FORCE_START
@@ -614,29 +626,15 @@ namespace GenOnlineService.Controllers
 			{
 				if (data.ContainsKey("userid"))
 				{
-					// TODO: we should communicate the kick to the user...
 					Int64 KickedUserID = data["userid"].GetInt64();
 
 					// the target must actually be in THIS lobby, otherwise a host could wipe the
-					// TURN credentials / lobby state of any arbitrary online player
+					// TURN credentials / lobby state of any arbitrary online player. Checked here,
+					// under the gate, so it can't race a concurrent leave/kick of the same target;
+					// the actual removal runs after the gate is released (see PerformKickAsync).
 					if (lobby.GetMemberFromUserID(KickedUserID) != null)
 					{
-						_lobbyManager.LeaveSpecificLobby(KickedUserID, lobby.LobbyID);
-
-						// cleanup TURN credentials
-						TURNCredentialManager.DeleteCredentialsForUser(KickedUserID);
-
-						// clear our lobby ID
-						UserSession? sourceData = WebSocketManager.GetSessionFromUser(KickedUserID, EUserSessionType.GameClient); // user being kicked must be a game client
-
-						if (sourceData != null)
-						{
-							sourceData.UpdateSessionLobbyID(-1);
-							// NOTE: We dont update the match history match ID here, that is done by the match history service
-						}
-
-						// we have to manually send to the kicked user... they won't get the dirty lobby update anymore
-						await lobby.DirtyRetransmitToSingleMember(KickedUserID);
+						return KickedUserID;
 					}
 				}
 			}
@@ -647,7 +645,7 @@ namespace GenOnlineService.Controllers
 				if (!TryParseSlotState(data["slot_state"].GetUInt16(), out EPlayerType slot_state))
 				{
 					Response.StatusCode = (int)HttpStatusCode.BadRequest;
-					return;
+					return null;
 				}
 
 				LobbyMember? TargetMember = lobby.GetMemberFromSlot(slot_index);
@@ -788,6 +786,32 @@ namespace GenOnlineService.Controllers
 					lobby.DirtyRetransmit();
 				}
 			}
+
+			return null;
+		}
+
+		// Runs the parts of a kick that RemoveMember itself performs (leaving the lobby, which
+		// acquires this same lobby's gate) plus TURN/session cleanup - all after
+		// ApplyLobbyFieldUpdateAsync's gate has been released, never from inside it.
+		private async Task PerformKickAsync(Lobby lobby, Int64 kickedUserID)
+		{
+			// TODO: we should communicate the kick to the user...
+			await _lobbyManager.LeaveSpecificLobby(kickedUserID, lobby.LobbyID);
+
+			// cleanup TURN credentials
+			TURNCredentialManager.DeleteCredentialsForUser(kickedUserID);
+
+			// clear our lobby ID
+			UserSession? sourceData = WebSocketManager.GetSessionFromUser(kickedUserID, EUserSessionType.GameClient); // user being kicked must be a game client
+
+			if (sourceData != null)
+			{
+				sourceData.UpdateSessionLobbyID(-1);
+				// NOTE: We dont update the match history match ID here, that is done by the match history service
+			}
+
+			// we have to manually send to the kicked user... they won't get the dirty lobby update anymore
+			await lobby.DirtyRetransmitToSingleMember(kickedUserID);
 		}
 
 		[HttpPut("{lobbyID}")]
