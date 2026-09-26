@@ -149,38 +149,19 @@ namespace GenOnlineService
 		ConcurrentDictionary<Int64, int> m_dictProbe2_Received = new();
 		public void RegisterProbeSent_Type1(Int64 userID)
 		{
-			if (!m_dictProbe1_Sent.ContainsKey(userID))
-			{
-				m_dictProbe1_Sent[userID] = 1;
-			}
-			else
-			{
-				++m_dictProbe1_Sent[userID];
-			}
+			// AddOrUpdate is atomic; the previous check-then-write on the dictionary indexer
+			// could lose an increment when two probes for the same user race.
+			m_dictProbe1_Sent.AddOrUpdate(userID, 1, (_, count) => count + 1);
 		}
 
 		public void RegisterProbeSent_Type2(Int64 userID)
 		{
-			if (!m_dictProbe2_Sent.ContainsKey(userID))
-			{
-				m_dictProbe2_Sent[userID] = 1;
-			}
-			else
-			{
-				++m_dictProbe2_Sent[userID];
-			}
+			m_dictProbe2_Sent.AddOrUpdate(userID, 1, (_, count) => count + 1);
 		}
 
 		public void RegisterProbeResponse_Type1(Int64 userID)
 		{
-			if (!m_dictProbe1_Received.ContainsKey(userID))
-			{
-				m_dictProbe1_Received[userID] = 1;
-			}
-			else
-			{
-				++m_dictProbe1_Received[userID];
-			}
+			m_dictProbe1_Received.AddOrUpdate(userID, 1, (_, count) => count + 1);
 		}
 
 		public async Task RegisterProbeResponse_Malformed_Type1(Int64 userID)
@@ -194,14 +175,7 @@ namespace GenOnlineService
 
 		public void RegisterProbeResponse_Type2(Int64 userID)
 		{
-			if (!m_dictProbe2_Received.ContainsKey(userID))
-			{
-				m_dictProbe2_Received[userID] = 1;
-			}
-			else
-			{
-				++m_dictProbe2_Received[userID];
-			}
+			m_dictProbe2_Received.AddOrUpdate(userID, 1, (_, count) => count + 1);
 		}
 
 		public async Task RegisterProbeResponse_Malformed_Type2(Int64 userID)
@@ -1783,6 +1757,16 @@ public async Task FinalizeACChecks()
 
 		private Int64 m_NextLobbyID = 0;
 
+		// Concurrent CreateLobby calls (e.g. a custom lobby and a QuickMatch allocation racing) must never be
+		// handed the same ID. Interlocked.Increment returns the post-increment value, so subtracting 1 keeps
+		// the original "starts at 0" sequence while making the read-and-bump atomic.
+		// Internal (not private) so it is unit-testable via InternalsVisibleTo without needing the rest of
+		// CreateLobby's database dependencies.
+		internal Int64 GenerateNextLobbyID()
+		{
+			return Interlocked.Increment(ref m_NextLobbyID) - 1;
+		}
+
 		private readonly IServiceProvider _services;
 
 		public LobbyManager(IServiceProvider services)
@@ -1859,8 +1843,7 @@ public async Task FinalizeACChecks()
 
 			int rng_seed = new Random().Next();
 
-			Int64 newLobbyID = m_NextLobbyID;
-			++m_NextLobbyID;
+			Int64 newLobbyID = GenerateNextLobbyID();
 
 			// load and apply user preferences (custom game only)
 			bool bLimitSuperweapons = false;
