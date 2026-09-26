@@ -483,6 +483,15 @@ namespace GenOnlineService.Controllers
 			return result;
 		}
 
+		// Rejects any wire value that isn't a real EPlayerType member, so a malformed or
+		// out-of-range slot_state from HOST_ACTION_SET_SLOT_STATE can't be cast into an enum value
+		// the rest of the lobby code (SetPlayerSlotState, IsAI, serialization, ...) never expects.
+		internal static bool TryParseSlotState(UInt16 rawValue, out EPlayerType slotState)
+		{
+			slotState = (EPlayerType)rawValue;
+			return Enum.IsDefined(typeof(EPlayerType), slotState);
+		}
+
 		// Runs the per-field lobby update dispatch. Must only be called from inside
 		// lobby.RunExclusiveAsync: every branch here mutates this lobby's Members, slot
 		// state/fields, or ready state, and previously ran completely unguarded.
@@ -621,7 +630,12 @@ namespace GenOnlineService.Controllers
 			else if (field == ELobbyUpdateField.HOST_ACTION_SET_SLOT_STATE)
 			{
 				UInt16 slot_index = data["slot_index"].GetUInt16();
-				EPlayerType slot_state = (EPlayerType)data["slot_state"].GetUInt16();
+
+				if (!TryParseSlotState(data["slot_state"].GetUInt16(), out EPlayerType slot_state))
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					return;
+				}
 
 				LobbyMember? TargetMember = lobby.GetMemberFromSlot(slot_index);
 				if (TargetMember != null)
