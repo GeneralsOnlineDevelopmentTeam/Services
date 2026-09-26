@@ -467,13 +467,8 @@ namespace GenOnlineService.Controllers
 									}
 								}
 
-								// Every mutation below touches this lobby's Members, slot state, or ready state,
-								// so the whole field-update dispatch runs as one atomic operation under the
-								// per-lobby gate instead of each setter mutating state unguarded.
-								// A kick can't finish the actual removal in here: RemoveMember acquires this
-								// same lobby's gate, which is not reentrant, so ApplyLobbyFieldUpdateAsync only
-								// validates the target and hands the user ID back for PerformKickAsync to
-								// process once the gate below has been released.
+								// ApplyLobbyFieldUpdateAsync only validates a kick target; PerformKickAsync
+								// removes them after the gate releases (RemoveMember needs the gate too).
 								Int64? kickedUserID = await lobby.RunExclusiveAsync(() => ApplyLobbyFieldUpdateAsync(lobby, SourceMember, field, data));
 
 								if (kickedUserID.HasValue)
@@ -495,30 +490,19 @@ namespace GenOnlineService.Controllers
 			return result;
 		}
 
-		// Rejects any wire value that isn't a real EPlayerType member, so a malformed or
-		// out-of-range slot_state from HOST_ACTION_SET_SLOT_STATE can't be cast into an enum value
-		// the rest of the lobby code (SetPlayerSlotState, IsAI, serialization, ...) never expects.
 		internal static bool TryParseSlotState(UInt16 rawValue, out EPlayerType slotState)
 		{
 			slotState = (EPlayerType)rawValue;
 			return Enum.IsDefined(typeof(EPlayerType), slotState);
 		}
 
-		// Rejects any wire value that isn't a real ELobbyUpdateField member, so an unknown/malformed
-		// field can't be cast into an enum value that then gets indexed straight into
-		// g_dictLobbyUpdatePermissionsTable (which previously threw KeyNotFoundException, silently
-		// swallowed by Post's outer catch, for anything out of range).
 		internal static bool TryParseLobbyUpdateField(int rawValue, out ELobbyUpdateField field)
 		{
 			field = (ELobbyUpdateField)rawValue;
 			return Enum.IsDefined(typeof(ELobbyUpdateField), field);
 		}
 
-		// Pure decision for the join-time CRC check: only rejects when the joining session actually
-		// knows BOTH of its own game CRCs (non-zero) and at least one differs from the lobby's. A
-		// session with either CRC still at its default of 0 - the currently released client, or any
-		// client that hasn't gone through a path that reports them - is never rejected, since there
-		// is no real CRC data to compare.
+		// Rejects only when the joining session knows both its own game CRCs (non-zero) and at least one differs.
 		internal static bool ShouldRejectJoinForCrcMismatch(UInt32 sessionExeCrc, UInt32 sessionIniCrc, UInt32 lobbyExeCrc, UInt32 lobbyIniCrc)
 		{
 			bool bSessionCrcsKnown = sessionExeCrc != 0 && sessionIniCrc != 0;
@@ -530,12 +514,8 @@ namespace GenOnlineService.Controllers
 			return sessionExeCrc != lobbyExeCrc || sessionIniCrc != lobbyIniCrc;
 		}
 
-		// Runs the per-field lobby update dispatch. Must only be called from inside
-		// lobby.RunExclusiveAsync: every branch here mutates this lobby's Members, slot
-		// state/fields, or ready state, and previously ran completely unguarded.
-		// Returns the kicked user's ID when HOST_ACTION_KICK_USER validated a real target, so the
-		// caller can run the actual removal after releasing the gate; null for every other field
-		// (including a kick request with no valid target).
+		// Must be called from inside lobby.RunExclusiveAsync. Returns the kicked user's ID for
+		// HOST_ACTION_KICK_USER, else null.
 		private async Task<Int64?> ApplyLobbyFieldUpdateAsync(Lobby lobby, LobbyMember SourceMember, ELobbyUpdateField field, Dictionary<string, JsonElement> data)
 		{
 			// reset everyones ready states when anything changes (minus dummy actions)
@@ -644,10 +624,7 @@ namespace GenOnlineService.Controllers
 				{
 					Int64 KickedUserID = data["userid"].GetInt64();
 
-					// the target must actually be in THIS lobby, otherwise a host could wipe the
-					// TURN credentials / lobby state of any arbitrary online player. Checked here,
-					// under the gate, so it can't race a concurrent leave/kick of the same target;
-					// the actual removal runs after the gate is released (see PerformKickAsync).
+					// Target must be in this lobby, otherwise a host could wipe an arbitrary player's TURN/session state.
 					if (lobby.GetMemberFromUserID(KickedUserID) != null)
 					{
 						return KickedUserID;
@@ -806,9 +783,7 @@ namespace GenOnlineService.Controllers
 			return null;
 		}
 
-		// Runs the parts of a kick that RemoveMember itself performs (leaving the lobby, which
-		// acquires this same lobby's gate) plus TURN/session cleanup - all after
-		// ApplyLobbyFieldUpdateAsync's gate has been released, never from inside it.
+		// Must be called after the gate has released, never from inside ApplyLobbyFieldUpdateAsync.
 		private async Task PerformKickAsync(Lobby lobby, Int64 kickedUserID)
 		{
 			// TODO: we should communicate the kick to the user...
@@ -910,12 +885,6 @@ namespace GenOnlineService.Controllers
 
 								if (playerSession != null)
 								{
-									// Defense in depth: the released client already refuses client-side to join a
-									// lobby built from a different exe/ini, so a legitimate player never hits
-									// this. Only enforced when the joining session actually knows both of its own
-									// game CRCs (set at login by a new client, or by matchmaking registration -
-									// see Helpers.RegisterInitialPlayerCRCsFromLoginPayload); the currently
-									// released client never populates them, so it is never rejected here.
 									if (ShouldRejectJoinForCrcMismatch(playerSession.ExeCRC, playerSession.IniCRC, lobby.ExeCRC, lobby.IniCRC))
 									{
 										Response.StatusCode = (int)HttpStatusCode.Conflict;

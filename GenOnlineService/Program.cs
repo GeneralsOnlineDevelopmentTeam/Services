@@ -1614,6 +1614,7 @@ namespace GenOnlineService
 
 			app.MapControllers();
 
+			MatchmakingManager.ValidatePlaylistsAtStartup();
 
 			// cleanup
 			System.Timers.Timer timerCleanup = new System.Timers.Timer(5000); // 5s tick
@@ -1633,8 +1634,6 @@ namespace GenOnlineService
 
 					PendingLoginManager.CleanupExpiredLogins();
 
-					// Users who log in but never open a websocket would otherwise leak their
-					// registered login CRC entries forever.
 					Helpers.PruneExpiredLoginCRCs();
 				}
 				catch (Exception ex)
