@@ -1205,7 +1205,7 @@ namespace GenOnlineService.Controllers
 					if (data != null && data.ContainsKey("timestamp"))
 					{
 						string strExeCRC = data["timestamp"].GetString();
-						sourceUserSession.RegisterExeCRC(strExeCRC);
+						await sourceUserSession.RegisterExeCRC(strExeCRC);
 
 						if (lobbyInfo != null)
 						{
