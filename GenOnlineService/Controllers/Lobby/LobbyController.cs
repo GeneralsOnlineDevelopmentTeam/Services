@@ -514,6 +514,22 @@ namespace GenOnlineService.Controllers
 			return Enum.IsDefined(typeof(ELobbyUpdateField), field);
 		}
 
+		// Pure decision for the join-time CRC check: only rejects when the joining session actually
+		// knows BOTH of its own game CRCs (non-zero) and at least one differs from the lobby's. A
+		// session with either CRC still at its default of 0 - the currently released client, or any
+		// client that hasn't gone through a path that reports them - is never rejected, since there
+		// is no real CRC data to compare.
+		internal static bool ShouldRejectJoinForCrcMismatch(UInt32 sessionExeCrc, UInt32 sessionIniCrc, UInt32 lobbyExeCrc, UInt32 lobbyIniCrc)
+		{
+			bool bSessionCrcsKnown = sessionExeCrc != 0 && sessionIniCrc != 0;
+			if (!bSessionCrcsKnown)
+			{
+				return false;
+			}
+
+			return sessionExeCrc != lobbyExeCrc || sessionIniCrc != lobbyIniCrc;
+		}
+
 		// Runs the per-field lobby update dispatch. Must only be called from inside
 		// lobby.RunExclusiveAsync: every branch here mutates this lobby's Members, slot
 		// state/fields, or ready state, and previously ran completely unguarded.
@@ -894,6 +910,19 @@ namespace GenOnlineService.Controllers
 
 								if (playerSession != null)
 								{
+									// Defense in depth: the released client already refuses client-side to join a
+									// lobby built from a different exe/ini, so a legitimate player never hits
+									// this. Only enforced when the joining session actually knows both of its own
+									// game CRCs (set at login by a new client, or by matchmaking registration -
+									// see Helpers.RegisterInitialPlayerCRCsFromLoginPayload); the currently
+									// released client never populates them, so it is never rejected here.
+									if (ShouldRejectJoinForCrcMismatch(playerSession.ExeCRC, playerSession.IniCRC, lobby.ExeCRC, lobby.IniCRC))
+									{
+										Response.StatusCode = (int)HttpStatusCode.Conflict;
+										result.success = false;
+										return result;
+									}
+
 									// leave any lobby
 									await _lobbyManager.LeaveAnyLobby(user_id);
 

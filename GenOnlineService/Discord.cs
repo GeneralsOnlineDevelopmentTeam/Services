@@ -56,10 +56,107 @@ public enum DiscordCommandParsingFlags
 
 public static class Helpers
 {
-	public static ConcurrentDictionary<Int64, string> g_dictInitialExeCRCs = new();
+	// A user who logs in but never opens a websocket (dropped connection, abandoned launcher, ...)
+	// would otherwise leak an entry here forever. RegisteredAtTicks (Environment.TickCount64) lets
+	// PruneExpiredLoginCRCs remove anything nobody ever consumed within c_LoginCrcEntryExpiryMS.
+	internal const Int64 c_LoginCrcEntryExpiryMS = 10 * 60 * 1000; // 10 minutes
+
+	public static ConcurrentDictionary<Int64, (string ExeCrcHash, Int64 RegisteredAtTicks)> g_dictInitialExeCRCs = new();
 	public static void RegisterInitialPlayerExeCRC(Int64 user_id, string exe_crc)
 	{
-		g_dictInitialExeCRCs[user_id] = exe_crc;
+		g_dictInitialExeCRCs[user_id] = (exe_crc, Environment.TickCount64);
+	}
+
+	// Handoff for the UInt32 game CRCs (the same ExeCRC/IniCRC meaning as lobby create/matchmaking
+	// bodies), separate from the AC .text-section hash above. Set at login, consumed once by
+	// UserSession's constructor when the websocket session is actually created.
+	public static ConcurrentDictionary<Int64, (UInt32 ExeCRC, UInt32 IniCRC, Int64 RegisteredAtTicks)> g_dictInitialGameCRCs = new();
+	public static void RegisterInitialPlayerGameCRCs(Int64 user_id, UInt32 exeCrc, UInt32 iniCrc)
+	{
+		g_dictInitialGameCRCs[user_id] = (exeCrc, iniCrc, Environment.TickCount64);
+	}
+
+	// Pure so the expiry boundary is unit-testable without touching the static dictionaries.
+	internal static bool IsLoginCrcEntryExpired(Int64 registeredAtTicks, Int64 nowTicks)
+	{
+		return nowTicks - registeredAtTicks >= c_LoginCrcEntryExpiryMS;
+	}
+
+	// Called from the existing 5s WebSocketManager.CheckForTimeouts sweep (Program.cs's
+	// timerCleanup), so entries for users who log in but never open a websocket don't leak forever.
+	public static void PruneExpiredLoginCRCs()
+	{
+		Int64 nowTicks = Environment.TickCount64;
+
+		foreach (var kvPair in g_dictInitialExeCRCs)
+		{
+			if (IsLoginCrcEntryExpired(kvPair.Value.RegisteredAtTicks, nowTicks))
+			{
+				g_dictInitialExeCRCs.TryRemove(kvPair.Key, out _);
+			}
+		}
+
+		foreach (var kvPair in g_dictInitialGameCRCs)
+		{
+			if (IsLoginCrcEntryExpired(kvPair.Value.RegisteredAtTicks, nowTicks))
+			{
+				g_dictInitialGameCRCs.TryRemove(kvPair.Key, out _);
+			}
+		}
+	}
+
+	// exe_crc/ini_crc may arrive as a JSON number or a numeric string depending on the client;
+	// never throw on a malformed login payload.
+	public static bool TryParseUInt32Flexible(JsonElement element, out UInt32 value)
+	{
+		if (element.ValueKind == JsonValueKind.Number && element.TryGetUInt32(out value))
+		{
+			return true;
+		}
+
+		if (element.ValueKind == JsonValueKind.String && UInt32.TryParse(element.GetString(), out value))
+		{
+			return true;
+		}
+
+		value = 0;
+		return false;
+	}
+
+	// Login payload CRC handling.
+	//   ac_exe_crc - SHA-256 hex hash of the exe's .text section, for anti-cheat.
+	//   exe_crc    - meaning depends on whether ac_exe_crc is present:
+	//                  - present (new client): exe_crc is the UInt32 game CRC (same value/meaning
+	//                    as the exe_crc field in lobby create / matchmaking bodies).
+	//                  - absent (currently released client): exe_crc IS the AC hash, exactly as
+	//                    before this was split into two fields, and no game exe CRC is known.
+	//   ini_crc    - UInt32 game CRC, sent by both old and new clients, always with the same meaning.
+	// TODO: Remove the "ac_exe_crc absent" branch once every released client sends ac_exe_crc.
+	public static void RegisterInitialPlayerCRCsFromLoginPayload(Int64 user_id, Dictionary<string, JsonElement> data)
+	{
+		string acExeCrc;
+		bool bHasGameExeCrc = false;
+		UInt32 gameExeCrc = 0;
+
+		if (data.ContainsKey("ac_exe_crc"))
+		{
+			acExeCrc = data["ac_exe_crc"].ToString();
+			bHasGameExeCrc = data.ContainsKey("exe_crc") && TryParseUInt32Flexible(data["exe_crc"], out gameExeCrc);
+		}
+		else
+		{
+			acExeCrc = data.ContainsKey("exe_crc") ? data["exe_crc"].ToString() : "NONE";
+		}
+
+		RegisterInitialPlayerExeCRC(user_id, acExeCrc);
+
+		UInt32 iniCrc = 0;
+		bool bHasIniCrc = data.ContainsKey("ini_crc") && TryParseUInt32Flexible(data["ini_crc"], out iniCrc);
+
+		if (bHasGameExeCrc || bHasIniCrc)
+		{
+			RegisterInitialPlayerGameCRCs(user_id, bHasGameExeCrc ? gameExeCrc : 0, bHasIniCrc ? iniCrc : 0);
+		}
 	}
 
 	public static string ComputeMD5Hash(string input)
