@@ -118,28 +118,65 @@ namespace GenOnlineService
 		// held.
 		private readonly SemaphoreSlim m_LobbyGate = new SemaphoreSlim(1, 1);
 
+#if DEBUG
+		// Debug-only reentrancy guard. AsyncLocal flows through the awaited async chain (and into
+		// fire-and-forget children too, since ExecutionContext is captured when they're created), so
+		// a callback that calls back into RunExclusiveAsync on this same lobby - the exact bug class
+		// HOST_ACTION_KICK_USER hit - throws immediately here instead of deadlocking (if awaited) or
+		// silently racing (if not). Cheap enough to leave on for tests; compiled out of Release.
+		private readonly AsyncLocal<bool> m_bGateHeldInThisFlow = new();
+#endif
+
 		public async Task RunExclusiveAsync(Func<Task> action)
 		{
+#if DEBUG
+			if (m_bGateHeldInThisFlow.Value)
+			{
+				throw new InvalidOperationException(
+					$"Lobby {LobbyID}: RunExclusiveAsync was re-entered on the same lobby within the same async flow. " +
+					"This gate is not reentrant and a nested call would deadlock (or race, if not awaited) in Release.");
+			}
+#endif
 			await m_LobbyGate.WaitAsync();
+#if DEBUG
+			m_bGateHeldInThisFlow.Value = true;
+#endif
 			try
 			{
 				await action();
 			}
 			finally
 			{
+#if DEBUG
+				m_bGateHeldInThisFlow.Value = false;
+#endif
 				m_LobbyGate.Release();
 			}
 		}
 
 		public async Task<T> RunExclusiveAsync<T>(Func<Task<T>> action)
 		{
+#if DEBUG
+			if (m_bGateHeldInThisFlow.Value)
+			{
+				throw new InvalidOperationException(
+					$"Lobby {LobbyID}: RunExclusiveAsync was re-entered on the same lobby within the same async flow. " +
+					"This gate is not reentrant and a nested call would deadlock (or race, if not awaited) in Release.");
+			}
+#endif
 			await m_LobbyGate.WaitAsync();
+#if DEBUG
+			m_bGateHeldInThisFlow.Value = true;
+#endif
 			try
 			{
 				return await action();
 			}
 			finally
 			{
+#if DEBUG
+				m_bGateHeldInThisFlow.Value = false;
+#endif
 				m_LobbyGate.Release();
 			}
 		}
