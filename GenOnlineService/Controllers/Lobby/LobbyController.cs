@@ -448,8 +448,11 @@ namespace GenOnlineService.Controllers
 									return result;
 								}
 
-								// TODO: Safety
-								ELobbyUpdateField field = (ELobbyUpdateField)data["field"].GetInt32();
+								if (!TryParseLobbyUpdateField(data["field"].GetInt32(), out ELobbyUpdateField field))
+								{
+									Response.StatusCode = (int)HttpStatusCode.BadRequest;
+									return result;
+								}
 
 								// check permissions
 								ELobbyUpdatePermissions updatePerms = g_dictLobbyUpdatePermissionsTable[field];
@@ -490,6 +493,16 @@ namespace GenOnlineService.Controllers
 		{
 			slotState = (EPlayerType)rawValue;
 			return Enum.IsDefined(typeof(EPlayerType), slotState);
+		}
+
+		// Rejects any wire value that isn't a real ELobbyUpdateField member, so an unknown/malformed
+		// field can't be cast into an enum value that then gets indexed straight into
+		// g_dictLobbyUpdatePermissionsTable (which previously threw KeyNotFoundException, silently
+		// swallowed by Post's outer catch, for anything out of range).
+		internal static bool TryParseLobbyUpdateField(int rawValue, out ELobbyUpdateField field)
+		{
+			field = (ELobbyUpdateField)rawValue;
+			return Enum.IsDefined(typeof(ELobbyUpdateField), field);
 		}
 
 		// Runs the per-field lobby update dispatch. Must only be called from inside
