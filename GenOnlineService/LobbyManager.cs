@@ -105,7 +105,44 @@ namespace GenOnlineService
 		[JsonIgnore]
 		public Int64 TimeStartFullMeshChecks { get; private set; } = -1;
 
-		private readonly object m_FullMeshCheckLock = new();
+		// Single per-lobby exclusive gate for every mutation of this lobby's Members/Owner, slot
+		// state/fields, ready state, and mesh-check state. Everything that used to be split across
+		// g_SlotLock (slots) and m_FullMeshCheckLock (mesh-check fields) now goes through this one
+		// SemaphoreSlim, so there is exactly one lock to reason about and no lock-ordering hazard
+		// between the two. It is NOT reentrant: a callback passed to RunExclusiveAsync must never
+		// call back into RunExclusiveAsync on this same lobby, or it will deadlock - callers that are
+		// already inside a callback (e.g. DoHostMigration, called from RemoveMember's callback) must
+		// mutate state directly instead. Sending a websocket message from inside a callback is safe:
+		// QueueWebsocketSend only enqueues bytes onto an in-memory bounded channel (a non-blocking
+		// TryWrite) - it never performs real network I/O itself, so it cannot block while the gate is
+		// held.
+		private readonly SemaphoreSlim m_LobbyGate = new SemaphoreSlim(1, 1);
+
+		public async Task RunExclusiveAsync(Func<Task> action)
+		{
+			await m_LobbyGate.WaitAsync();
+			try
+			{
+				await action();
+			}
+			finally
+			{
+				m_LobbyGate.Release();
+			}
+		}
+
+		public async Task<T> RunExclusiveAsync<T>(Func<Task<T>> action)
+		{
+			await m_LobbyGate.WaitAsync();
+			try
+			{
+				return await action();
+			}
+			finally
+			{
+				m_LobbyGate.Release();
+			}
+		}
 
 		[JsonIgnore]
 		public bool? LastFullMeshConnectivityCheckOutcome { get; private set; } = null;
@@ -188,16 +225,17 @@ namespace GenOnlineService
 		}
 
 		// End AC Probes
-		public void StartFullMeshConnectivityCheck()
+		public async Task StartFullMeshConnectivityCheck()
 		{
-			lock (m_FullMeshCheckLock)
+			await RunExclusiveAsync(() =>
 			{
 				FullMeshCheckID = Interlocked.Increment(ref s_NextFullMeshCheckID);
 				FullMeshCheckAttempt = 1;
 				m_TimeToRetryFullMeshChecks = -1;
 				LastFullMeshConnectivityCheckOutcome = null;
 				BeginFullMeshConnectivityCheckAttempt();
-			}
+				return Task.CompletedTask;
+			});
 		}
 
 		private void BeginFullMeshConnectivityCheckAttempt()
@@ -298,9 +336,9 @@ namespace GenOnlineService
 			}
 		}
 
-		public Task StoreFullMeshConnectivityResponse(Int64 sourceUser, WebSocketMessage_FullMeshConnectivityCheckResponseFromUser response)
+		public async Task StoreFullMeshConnectivityResponse(Int64 sourceUser, WebSocketMessage_FullMeshConnectivityCheckResponseFromUser response)
 		{
-			lock (m_FullMeshCheckLock)
+			await RunExclusiveAsync(() =>
 			{
 				bool bLegacyResponse = FullMeshCheckProtocol.IsLegacyResponse(response);
 				bool bMatchesCurrentAttempt = FullMeshCheckProtocol.MatchesCurrentAttempt(
@@ -320,21 +358,20 @@ namespace GenOnlineService
 				}
 
 				ProcessPendingFullMeshConnectivityChecksInternal();
-			}
-
-			return Task.CompletedTask;
+				return Task.CompletedTask;
+			});
 		}
 
-		public Task ProcessPendingFullMeshConnectivityChecks()
+		public async Task ProcessPendingFullMeshConnectivityChecks()
 		{
-			lock (m_FullMeshCheckLock)
+			await RunExclusiveAsync(() =>
 			{
 				ProcessPendingFullMeshConnectivityChecksInternal();
-			}
-
-			return Task.CompletedTask;
+				return Task.CompletedTask;
+			});
 		}
 
+		// Must only be called while holding m_LobbyGate (via RunExclusiveAsync).
 		private void ProcessPendingFullMeshConnectivityChecksInternal()
 		{
 			if (!PendingFullMeshConnectivityChecks)
@@ -784,7 +821,10 @@ namespace GenOnlineService
 
         public event Action<Lobby>? OnLobbyNeedsDestroyed;
 
-		public async Task OnAfterPlayerLeft(Int64 leavingUserID)
+		// Must only be called while holding m_LobbyGate (from within RemoveMember's callback): it reads
+		// and mutates Members/Owner and must observe RemoveMember's slot clear atomically with any
+		// concurrent join/leave/migration.
+		private void OnAfterPlayerLeftLocked(Int64 leavingUserID)
 		{
 			// NOTE: By the time this is called, the member is no longer in the members list
 			bool bNeedsHostMigrate = Owner == leavingUserID;
@@ -866,7 +906,9 @@ public async Task FinalizeACChecks()
 			DirtyRetransmit();
 		}
 
-		public void DoHostMigration()
+		// Must only be called while holding m_LobbyGate (currently only true from
+		// OnAfterPlayerLeftLocked, itself only called from within RemoveMember's callback).
+		private void DoHostMigration()
 		{
 			Int64 oldOwner = Owner;
 
@@ -993,12 +1035,11 @@ public async Task FinalizeACChecks()
 			}
 		}
 
-		private readonly SemaphoreSlim g_SlotLock = new SemaphoreSlim(1, 1);
 		public async Task<bool> AddMember(UserSession playerSession, string strDisplayName, UInt16 userPreferredPort, bool bHasMap, UserLobbyPreferences lobbyPrefs)
 		{
-			// NOTE: AddMember is called async, so timing + slot determination could result in players being inserted in the same slot
-			await g_SlotLock.WaitAsync();
-			try
+			// NOTE: AddMember runs inside the per-lobby gate, so timing + slot determination can no
+			// longer result in two concurrent joins picking the same slot.
+			return await RunExclusiveAsync(async () =>
 			{
 				if (State != ELobbyState.GAME_SETUP)
 				{
@@ -1191,11 +1232,7 @@ public async Task FinalizeACChecks()
 
 			Console.WriteLine("User {0} joined lobby {1}: {2} (Slot was {3})", playerSession.m_UserID, LobbyID, true, slotIndex);
 			return true;
-			}
-			finally
-			{
-				g_SlotLock.Release();
-			}
+			});
 		}
 
 		public void SendPeerTeardownToDepartingMember(LobbyMember departingMember)
@@ -1232,24 +1269,31 @@ public async Task FinalizeACChecks()
 		public async Task RemoveMember(LobbyMember member)
 		{
 			// Matchmaking cancellation and the client's explicit lobby leave can arrive concurrently.
-			// Claim the slot once so teardown, host migration, and destruction callbacks stay idempotent.
-			await g_SlotLock.WaitAsync();
-			try
+			// Claim the slot once, and run host migration in the same critical section as the slot
+			// clear, so teardown, host migration, and destruction callbacks stay atomic and idempotent
+			// (previously DoHostMigration ran after this gate was released, so it could interleave
+			// with a concurrent AddMember/RemoveMember and observe a half-updated Members/Owner).
+			bool bRemoved = await RunExclusiveAsync(() =>
 			{
 				if (member.SlotIndex < 0
 					|| member.SlotIndex >= Members.Length
 					|| !ReferenceEquals(Members[member.SlotIndex], member))
 				{
-					return;
+					return Task.FromResult(false);
 				}
 
 				LobbyMember placeholderMember = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, -1, -1, -1, EPlayerType.SLOT_OPEN, member.SlotIndex, true);
 				Members[member.SlotIndex] = placeholderMember;
 				TimeMemberLeft[member.UserID] = DateTime.UtcNow;
-			}
-			finally
+
+				OnAfterPlayerLeftLocked(member.UserID);
+
+				return Task.FromResult(true);
+			});
+
+			if (!bRemoved)
 			{
-				g_SlotLock.Release();
+				return;
 			}
 
 			// TODO_LOBBY: Optimize this
@@ -1295,8 +1339,6 @@ public async Task FinalizeACChecks()
 				}
 				// END NETWORK DISCONNECT
 			}
-
-			await OnAfterPlayerLeft(UserID);
 
 			DirtyRetransmitLobbyList();
 		}
@@ -1494,15 +1536,11 @@ public async Task FinalizeACChecks()
 
 		public async Task UpdateState(ELobbyState state)
 		{
-			await g_SlotLock.WaitAsync();
-			try
+			await RunExclusiveAsync(() =>
 			{
 				State = state;
-			}
-			finally
-			{
-				g_SlotLock.Release();
-			}
+				return Task.CompletedTask;
+			});
 
 			// if start, init our AC probe
 			if (state == ELobbyState.INGAME)

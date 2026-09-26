@@ -673,12 +673,19 @@ namespace GenOnlineService.Controllers
 						Lobby? lobby = _lobbyManager.GetLobby(sourceUserSession.currentLobbyID);
 						if (lobby != null)
 						{
-							LobbyMember? member = lobby.GetMemberFromUserID(sourceUserSession.m_UserID);
-
-							if (member != null)
+							// Ready state is part of the lobby's mutable state, so it goes through the
+							// same per-lobby gate as slot/member mutations.
+							await lobby.RunExclusiveAsync(() =>
 							{
-								member.SetReadyState(bReady);
-							}
+								LobbyMember? member = lobby.GetMemberFromUserID(sourceUserSession.m_UserID);
+
+								if (member != null)
+								{
+									member.SetReadyState(bReady);
+								}
+
+								return Task.CompletedTask;
+							});
 						}
 					}
 				}
@@ -1030,7 +1037,7 @@ namespace GenOnlineService.Controllers
 					lobbyInfo.CloseOpenSlots();
 
 					// mark lobby as in progress of full mesh connectivity checks
-					lobbyInfo.StartFullMeshConnectivityCheck();
+					await lobbyInfo.StartFullMeshConnectivityCheck();
 
 					// start full mesh connectivity checks
 					lobbyInfo.SendFullMeshConnectivityCheckRequestToMembers();
