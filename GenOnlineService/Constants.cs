@@ -1596,14 +1596,12 @@ namespace GenOnlineService
 			{
 				return true;
 			}
-			else if (sessType == EUserSessionType.ChatClient)
-			{
-				return false;
-			}
 
-			else if (sessType == EUserSessionType.GameLauncher)
+			// GameLauncher can read the server list but cannot join or mutate lobbies.
+			if (accessType == ESessionAccessType.ServerListReadOnly
+				&& sessType == EUserSessionType.GameLauncher)
 			{
-				return false;
+				return true;
 			}
 
 			return false;
