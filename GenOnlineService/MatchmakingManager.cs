@@ -260,7 +260,7 @@ static class MatchmakingManager
 			: stats.EloRating;
 	}
 
-	public static void PlayerWidenSearch(UserSession playerSession)
+	public static async Task PlayerWidenSearch(UserSession playerSession)
 	{
 		// NOTE: we dont check the state of the bucket here, but it doesn't really matter since expanding the maps after it started won't do anything anyway
 
@@ -294,6 +294,8 @@ static class MatchmakingManager
 						// update our player too
 						playerSession.MatchmakingMapIndicies = new ConcurrentList<int>(lstAllMaps);
 
+						await SendMatchmakingMessage(playerSession, "Search widened: you can now be matched on any map in this playlist.");
+
 						// can't be in multiple buckets
 						return;
 					}
@@ -312,6 +314,8 @@ static class MatchmakingManager
 			}
 
 			playerSession.MatchmakingMapIndicies = new ConcurrentList<int>(lstAllMaps);
+
+			await SendMatchmakingMessage(playerSession, "Search widened: you can now be matched on any map in this playlist.");
 		}
 	}
 
@@ -431,6 +435,20 @@ static class MatchmakingManager
 		DateTime m_CreationTime = DateTime.Now;
         DateTime m_LastELOExpansionTime = DateTime.Now;
 
+		// Once true, further widening steps for this bucket stop mattering: merges skip the Elo
+		// check, new players may join regardless of Elo, and the per-step widening message stops.
+		private bool m_bHasNotifiedSearchingAllSkillRanges = false;
+
+		public int GetEloExpansionValueForThisBucket()
+		{
+			return GetAvgElo() >= EloConfig.HighEloThreshold ? EloConfig.EloExpansionValue_HighELO : EloConfig.EloExpansionValue_Standard;
+		}
+
+		public bool HasExceededMaxEloRange()
+		{
+			return (eloExpansionIteration * GetEloExpansionValueForThisBucket()) > EloConfig.MaxEloRangeBeforeSearchingAll;
+		}
+
 		private TimeSpan TimeSinceLastEloExpansion()
 		{
             TimeSpan timeDifference = DateTime.Now - m_LastELOExpansionTime;
@@ -448,10 +466,13 @@ static class MatchmakingManager
 		}
 
 		// Selects a map with EXACTLY matchSize slots, never a different size. Returns false if none exists.
-		public bool TryDetermineMapForSize(int matchSize, out string strMapName, out string strMapPath)
+		// bWasFallback is true when no map in the group's shared selection has exactly matchSize slots,
+		// so a random exact-size map outside that selection was picked instead.
+		public bool TryDetermineMapForSize(int matchSize, out string strMapName, out string strMapPath, out bool bWasFallback)
 		{
 			strMapName = string.Empty;
 			strMapPath = string.Empty;
+			bWasFallback = false;
 
 			if (!MatchmakingManager.g_Playlists.TryGetValue(PlaylistID, out Playlist? playlist))
 			{
@@ -493,6 +514,7 @@ static class MatchmakingManager
 				PlaylistMap chosenMap = exactSizeMaps[Random.Shared.Next(exactSizeMaps.Count)];
 				strMapName = chosenMap.Name;
 				strMapPath = chosenMap.Path;
+				bWasFallback = true;
 				return true;
 			}
 
@@ -552,11 +574,15 @@ static class MatchmakingManager
 				return false;
 			}
 
-			// must be within the eloThreshold
-			int eloExpansionToUse = (bucketToMerge.GetAvgElo() >= EloConfig.HighEloThreshold || GetAvgElo() >= EloConfig.HighEloThreshold) ? EloConfig.EloExpansionValue_HighELO : EloConfig.EloExpansionValue_Standard;
-			if (!IsAvgEloWithinThreshold(bucketToMerge.GetAvgElo(), eloExpansionIteration * eloExpansionToUse))
+			// must be within the eloThreshold, unless either side has widened past the point of caring
+			// about Elo at all - the long-waiting side just wants any match
+			if (!HasExceededMaxEloRange() && !bucketToMerge.HasExceededMaxEloRange())
 			{
-				return false;
+				int eloExpansionToUse = (bucketToMerge.GetAvgElo() >= EloConfig.HighEloThreshold || GetAvgElo() >= EloConfig.HighEloThreshold) ? EloConfig.EloExpansionValue_HighELO : EloConfig.EloExpansionValue_Standard;
+				if (!IsAvgEloWithinThreshold(bucketToMerge.GetAvgElo(), eloExpansionIteration * eloExpansionToUse))
+				{
+					return false;
+				}
 			}
 
 			// cant be blocked by any participant (or have any participant blocked)
@@ -1406,12 +1432,38 @@ static class MatchmakingManager
                         // expand
                         ExpandElo();
 
-						foreach (MatchmakingBucketMember member in m_lstMembers)
+						if (HasExceededMaxEloRange())
 						{
-							UserSession? memberSession = member.GetAssociatedSession();
-							if (memberSession != null)
+							// past this point Elo no longer gates merges or joins for this bucket - say so once and
+							// stop sending the per-step widening message, which no longer means anything
+							if (!m_bHasNotifiedSearchingAllSkillRanges)
 							{
-								await SendMatchmakingMessage(memberSession, "Expanding search criteria to find more players...");
+								m_bHasNotifiedSearchingAllSkillRanges = true;
+
+								foreach (MatchmakingBucketMember member in m_lstMembers)
+								{
+									UserSession? memberSession = member.GetAssociatedSession();
+									if (memberSession != null)
+									{
+										await SendMatchmakingMessage(memberSession, "Now searching all skill ranges...");
+									}
+								}
+							}
+						}
+						else
+						{
+							// same threshold IsAvgEloWithinThreshold uses for merges at this step, but keyed off
+							// this bucket's own average (merges also factor in the other bucket's average; the
+							// message doesn't have another bucket to consider)
+							int eloRangeForMessage = eloExpansionIteration * GetEloExpansionValueForThisBucket();
+
+							foreach (MatchmakingBucketMember member in m_lstMembers)
+							{
+								UserSession? memberSession = member.GetAssociatedSession();
+								if (memberSession != null)
+								{
+									await SendMatchmakingMessage(memberSession, $"Widening the skill range to ±{eloRangeForMessage} to find more players...");
+								}
 							}
 						}
                     }
@@ -1467,10 +1519,32 @@ static class MatchmakingManager
 							if (dummyHostUserData != null)
 							{
 								// make a lobby
-								if (!TryDetermineMapForSize(m_MatchFormedSize, out string strMapName, out string strMapPath))
+								if (!TryDetermineMapForSize(m_MatchFormedSize, out string strMapName, out string strMapPath, out bool bMapWasFallback))
 								{
 									Console.WriteLine("Matchmaking bucket {0} could not find a map for size {1}, skipping formation this tick", PlaylistID, m_MatchFormedSize);
 									return;
+								}
+
+								// Only speak up when there's something noteworthy, and never send both lines: the
+								// fallback note already states the match size, so it takes priority over the
+								// smaller-than-max note; when the map came from the group's own shared selection at
+								// full size, there's nothing worth telling the player.
+								string? strMapMessage = bMapWasFallback
+									? $"None of your selected maps fit a {m_MatchFormedSize}-player match, so {strMapName} was picked."
+									: m_MatchFormedSize < MaxPlayers
+										? $"Starting a {m_MatchFormedSize}-player match on {strMapName}."
+										: null;
+
+								if (strMapMessage != null)
+								{
+									foreach (MatchmakingBucketMember mapMessageMember in m_lstMembers)
+									{
+										UserSession? mapMessageSession = mapMessageMember.GetAssociatedSession();
+										if (mapMessageSession != null)
+										{
+											await SendMatchmakingMessage(mapMessageSession, strMapMessage);
+										}
+									}
 								}
 
 								using var scope = ServiceLocator.Services.CreateScope();
@@ -1931,10 +2005,11 @@ static class MatchmakingManager
 										continue;
 									}
 
-									// must be within initial elo threshold for a join, otherwise we'll make a bucket and try to merge buckets using the elo iteration expansion algorithm
+									// must be within initial elo threshold for a join, otherwise we'll make a bucket and try to merge buckets using the elo iteration expansion algorithm -
+									// unless the bucket has already widened past the point of caring about Elo at all
 									int matchmakingElo = MatchmakingManager.GetMatchmakingElo(thisSessionUserData.GameStats);
 									int eloExpansionToUse = (mmBucket.GetAvgElo() >= EloConfig.HighEloThreshold || matchmakingElo >= EloConfig.HighEloThreshold) ? EloConfig.EloExpansionValue_HighELO : EloConfig.EloExpansionValue_Standard;
-									if (mmBucket.IsAvgEloWithinThreshold(matchmakingElo, eloExpansionToUse))
+									if (mmBucket.HasExceededMaxEloRange() || mmBucket.IsAvgEloWithinThreshold(matchmakingElo, eloExpansionToUse))
 									{
 										// TODO_MATCHMAKING: Squads
 										if (mmBucket.HasSpaceForUsers(1, thisSession.ExeCRC, thisSession.IniCRC, thisSession.AnticheatID))
