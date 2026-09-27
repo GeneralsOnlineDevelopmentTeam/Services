@@ -1137,6 +1137,19 @@ namespace GenOnlineService
 		}
 	}
 
+	// Core:reconnect_grace_period_ms in appsettings.json, read on use. Mirrors the pattern used by
+	// FullMeshCheckSettings in LobbyManager.cs.
+	internal static class UserSessionSettings
+	{
+		internal static Int64 ReconnectGracePeriodMS => Get("reconnect_grace_period_ms", 30000);
+
+		private static Int64 Get(string key, Int64 defaultValue)
+		{
+			Int64 value = Program.g_Config?.GetSection("Core").GetValue(key, defaultValue) ?? defaultValue;
+			return value > 0 ? value : defaultValue;
+		}
+	}
+
 	public class UserSession
 	{
 		public Int64 m_UserID = -1;
@@ -1292,8 +1305,12 @@ namespace GenOnlineService
 
 		public bool NeedsCleanup()
 		{
-			const Int64 timeBeforeConsideredAbandoned = 30000; // 5 minutes
-			return Environment.TickCount64 - m_timeAbandoned >= timeBeforeConsideredAbandoned;
+			// Grace period an abandoned (no live websocket) session gets before it's torn down,
+			// letting a brief disconnect reconnect instead of losing the slot. Configurable via
+			// Core:reconnect_grace_period_ms; defaults to 30 seconds, unchanged from before this
+			// was configurable (the old comment here said "5 minutes", which was wrong - 30000 is
+			// milliseconds, i.e. 30 seconds).
+			return Environment.TickCount64 - m_timeAbandoned >= UserSessionSettings.ReconnectGracePeriodMS;
 		}
 
 		private bool m_bSubscribedToRealtimeSocialupdates = false;
