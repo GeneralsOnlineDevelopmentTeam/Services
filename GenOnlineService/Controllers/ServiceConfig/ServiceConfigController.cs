@@ -19,10 +19,13 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.WebSockets;
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace GenOnlineService.Controllers
 {
@@ -43,6 +46,25 @@ namespace GenOnlineService.Controllers
 			try
 			{
 				string strFileData = await System.IO.File.ReadAllTextAsync(Path.Combine("data", "serviceconfig.json"));
+
+				JsonNode? configNode = JsonNode.Parse(strFileData);
+				if (configNode is JsonObject configObject)
+				{
+					// 0 = library default, 1 = native ICE, 2 = WebRTC
+					int iceImplementation = Program.g_Config?.GetSection("Core").GetValue("ice_implementation", 2) ?? 2;
+
+					if (Int64.TryParse(this.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out Int64 userId))
+					{
+						List<Int64> lstTesterIDs = Program.g_Config?.GetSection("Core").GetSection("ice_implementation_testers").Get<List<Int64>>() ?? new List<Int64>();
+						if (lstTesterIDs.Contains(userId))
+						{
+							iceImplementation = Program.g_Config?.GetSection("Core").GetValue("ice_implementation_testers_value", 1) ?? 1;
+						}
+					}
+
+					configObject["ice_implementation"] = iceImplementation;
+					strFileData = configObject.ToJsonString();
+				}
 
 				Response.StatusCode = (int)HttpStatusCode.OK;
 				return strFileData;
