@@ -3030,7 +3030,7 @@ namespace GenOnlineService
 		public bool mesh_complete { get; set; }
 		public List<MissingConnectionEntry> missing_connections { get; set; } = new();
 
-		// "" if mesh_complete; else one of missing_connections/timeout/member_left/gave_up (FullMeshCheckOutcomeReason).
+		// "" if mesh_complete; else one of missing_connections/timeout/membership_changed/gave_up (FullMeshCheckOutcomeReason).
 		public string reason { get; set; } = string.Empty;
 	}
 

@@ -1077,7 +1077,7 @@ static class MatchmakingManager
 			}
 
 			// kept at or above the legacy threshold so short tuned checks don't show a start countdown on older clients
-			QueueSetupProgress(Math.Max(FullMeshCheckSettings.QuickMatchRefereeWindowMS + c_SetupClientTimeoutMarginMSec, c_LegacyClientCountdownThresholdMSec));
+			QueueSetupProgress(Math.Max(FullMeshCheckSettings.RefereeWindowMS + c_SetupClientTimeoutMarginMSec, c_LegacyClientCountdownThresholdMSec));
 
 			lobby.SendFullMeshConnectivityCheckRequestToMembers();
 
@@ -1087,6 +1087,7 @@ static class MatchmakingManager
 				if (memberSession != null)
 				{
 					await SendMatchmakingMessage(memberSession, "Preparing match...");
+					await SendMatchmakingMessage(memberSession, "Checking connections between all players...");
 				}
 			}
 		}
@@ -1151,7 +1152,7 @@ static class MatchmakingManager
 			return true;
 		}
 
-		private async Task AbortQuickMatchAutoStart(string reason)
+		private async Task AbortQuickMatchAutoStart(string reason, List<string>? extraMessagesBeforeRequeue = null)
 		{
 			List<UserSession> sessionsToRequeue = new();
 			lock (m_StateLock)
@@ -1208,6 +1209,15 @@ static class MatchmakingManager
 				if (await TryRequeueRegisteredPlayer(memberSession, requeueActionJSON))
 				{
 					await SendMatchmakingMessage(memberSession, reason);
+
+					if (extraMessagesBeforeRequeue != null)
+					{
+						foreach (string strExtraMessage in extraMessagesBeforeRequeue)
+						{
+							await SendMatchmakingMessage(memberSession, strExtraMessage);
+						}
+					}
+
 					await SendMatchmakingMessage(memberSession, "Re-queueing you into matchmaking...");
 				}
 			}
@@ -1312,6 +1322,7 @@ static class MatchmakingManager
 								UserSession? memberSession = member.GetAssociatedSession();
 								if (memberSession != null)
 								{
+									await SendMatchmakingMessage(memberSession, "All players are connected.");
 									await SendMatchmakingMessage(memberSession, $"Starting game in {c_GameStartCountdownMSec / 1000} seconds.");
 								}
 							}
@@ -1323,7 +1334,18 @@ static class MatchmakingManager
 								: !bMatchStillValid
 									? $"QuickMatch auto-start was aborted because the match is no longer valid: {verifyFailureReason}."
 									: "QuickMatch auto-start was aborted because not all players were fully mesh-connected.";
-							await AbortQuickMatchAutoStart(reason);
+
+							// Only meaningful when the mesh check itself is why we're aborting - pull the pair
+							// data before the lobby gets torn down below.
+							List<string>? missingConnectionMessages = null;
+							if (lobbyDuringMeshCheck.LastFullMeshConnectivityCheckOutcome == false
+								&& lobbyDuringMeshCheck.LastFullMeshConnectivityCheckMissingConnections.Count > 0)
+							{
+								missingConnectionMessages = lobbyDuringMeshCheck.BuildMissingConnectionMessages(
+									lobbyDuringMeshCheck.LastFullMeshConnectivityCheckMissingConnections);
+							}
+
+							await AbortQuickMatchAutoStart(reason, missingConnectionMessages);
 						}
 					}
 

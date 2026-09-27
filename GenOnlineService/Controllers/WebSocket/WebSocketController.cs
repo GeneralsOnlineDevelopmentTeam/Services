@@ -1032,7 +1032,7 @@ namespace GenOnlineService.Controllers
 					}
 
 					// lock slots (more people joining when we're already doing connectivity checks won't help the situation)
-					await lobbyInfo.CloseOpenSlots();
+					await lobbyInfo.CloseOpenSlots(true);
 
 					// mark lobby as in progress of full mesh connectivity checks
 					await lobbyInfo.StartFullMeshConnectivityCheck();
