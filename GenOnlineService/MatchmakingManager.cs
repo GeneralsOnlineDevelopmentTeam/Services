@@ -907,7 +907,7 @@ static class MatchmakingManager
 
 		private async Task TriggerFullMeshConnectivityChecks(Lobby lobby)
 		{
-			lobby.StartFullMeshConnectivityCheck();
+			await lobby.StartFullMeshConnectivityCheck();
 			lock (m_StateLock)
 			{
 				// Publish the state transition before any notification work. If a send fails, the
