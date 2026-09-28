@@ -989,9 +989,9 @@ public async Task FinalizeACChecks()
 			{
 				m_NextProbe = Environment.TickCount64 + 30000;
 			}
-			else // 30 to 40 min
+			else // 5 to 10 min
 			{
-				int nextProbeInterval = Random.Shared.Next(30, 40);
+				int nextProbeInterval = Random.Shared.Next(5, 10);
 				m_NextProbe = Environment.TickCount64 + nextProbeInterval * 60000;
 			}
 #endif
