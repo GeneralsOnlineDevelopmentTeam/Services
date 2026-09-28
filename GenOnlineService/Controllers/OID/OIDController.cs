@@ -157,7 +157,10 @@ namespace GenOnlineService.Controllers.LoginWithToken
 
 	public async Task<ClaimsPrincipal> ValidateEpicJwtAsync(string jwt)
 	{
-		var handler = new JwtSecurityTokenHandler();
+		// MapInboundClaims defaults to true, which renames "sub" to ClaimTypes.NameIdentifier
+		// (and friends) on the validated principal. We read the Epic claims by their original
+		// names, so leave them untouched.
+		var handler = new JwtSecurityTokenHandler { MapInboundClaims = false };
 		var token = handler.ReadJwtToken(jwt);
 
 		var kid = token.Header.Kid;
@@ -260,7 +263,7 @@ namespace GenOnlineService.Controllers.LoginWithToken
 				string jsonData = await reader.ReadToEndAsync();
 				var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(jsonData, options);
 
-				if (data != null && !data.ContainsKey("mw_token"))
+				if (data == null || !data.ContainsKey("mw_token"))
 				{
 					Response.StatusCode = (int)HttpStatusCode.Unauthorized;
 				}
