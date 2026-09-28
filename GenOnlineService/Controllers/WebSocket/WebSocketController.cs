@@ -673,12 +673,19 @@ namespace GenOnlineService.Controllers
 						Lobby? lobby = _lobbyManager.GetLobby(sourceUserSession.currentLobbyID);
 						if (lobby != null)
 						{
-							LobbyMember? member = lobby.GetMemberFromUserID(sourceUserSession.m_UserID);
-
-							if (member != null)
+							// Ready state is part of the lobby's mutable state, so it goes through the
+							// same per-lobby gate as slot/member mutations.
+							await lobby.RunExclusiveAsync(() =>
 							{
-								member.SetReadyState(bReady);
-							}
+								LobbyMember? member = lobby.GetMemberFromUserID(sourceUserSession.m_UserID);
+
+								if (member != null)
+								{
+									member.SetReadyState(bReady);
+								}
+
+								return Task.CompletedTask;
+							});
 						}
 					}
 				}
@@ -954,7 +961,7 @@ namespace GenOnlineService.Controllers
 					}
 
 					// lock slots
-					lobbyInfo.CloseOpenSlots();
+					await lobbyInfo.CloseOpenSlots();
 				}
 				else if (msgID == EWebSocketMessageID.START_GAME)
 				{
@@ -1027,10 +1034,12 @@ namespace GenOnlineService.Controllers
 					}
 
 					// lock slots (more people joining when we're already doing connectivity checks won't help the situation)
-					lobbyInfo.CloseOpenSlots();
+					// Awaited separately from StartFullMeshConnectivityCheck below: each is its own
+					// gated operation on the lobby, so neither ever nests inside the other's gate use.
+					await lobbyInfo.CloseOpenSlots();
 
 					// mark lobby as in progress of full mesh connectivity checks
-					lobbyInfo.StartFullMeshConnectivityCheck();
+					await lobbyInfo.StartFullMeshConnectivityCheck();
 
 					// start full mesh connectivity checks
 					lobbyInfo.SendFullMeshConnectivityCheckRequestToMembers();
@@ -1196,7 +1205,7 @@ namespace GenOnlineService.Controllers
 					if (data != null && data.ContainsKey("timestamp"))
 					{
 						string strExeCRC = data["timestamp"].GetString();
-						sourceUserSession.RegisterExeCRC(strExeCRC);
+						await sourceUserSession.RegisterExeCRC(strExeCRC);
 
 						if (lobbyInfo != null)
 						{

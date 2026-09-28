@@ -549,6 +549,19 @@ namespace GenOnlineService
 			return numSessions;
 		}
 
+		// Pure re-check used by CheckForTimeouts right before actually clearing a snapshotted
+		// abandoned+expired entry: refuses unless it's still the SAME session object (a reconnect in
+		// between would have registered a new one) and it is STILL abandoned and expired.
+		internal static bool ShouldStillClearAbandonedSession(UserSession? currentSession, UserSession snapshotSession)
+		{
+			if (!ReferenceEquals(currentSession, snapshotSession))
+			{
+				return false;
+			}
+
+			return currentSession.IsAbandoned() && currentSession.NeedsCleanup();
+		}
+
 		public static async Task CheckForTimeouts()
 		{
 			foreach (var sessionDataByClient in m_dictWebsockets)
@@ -560,7 +573,7 @@ namespace GenOnlineService
 			}
 
 			// do we need to clear out cache entries?
-			List<Tuple<Int64, EUserSessionType>> lstCacheEntriesToDestroy = new();
+			List<(Int64 UserID, EUserSessionType SessionType, UserSession Session)> lstCacheEntriesToDestroy = new();
 			foreach (var sessionDataPerClientType in m_dictUserSessions)
 			{
 				foreach (var sessionData in sessionDataPerClientType.Value)
@@ -569,15 +582,25 @@ namespace GenOnlineService
 					{
 						if (sessionData.Value.NeedsCleanup())
 						{
-							lstCacheEntriesToDestroy.Add(new Tuple<Int64, EUserSessionType>(sessionData.Key, sessionData.Value.GetSessionType()));
+							lstCacheEntriesToDestroy.Add((sessionData.Key, sessionData.Value.GetSessionType(), sessionData.Value));
 						}
 					}
 				}
 			}
 
-			foreach (Tuple<Int64, EUserSessionType> userData in lstCacheEntriesToDestroy)
+			foreach (var userData in lstCacheEntriesToDestroy)
 			{
-				await ClearDataFromUser(userData.Item1, userData.Item2);
+				// A reconnect between the snapshot above and now would have replaced this user's
+				// session with a live one; only clear if the SAME session object is still registered
+				// and still abandoned+expired, so a fresh reconnect never has its live session torn
+				// down (kicked from its lobby, deregistered from matchmaking) by a stale sweep entry.
+				UserSession? currentSession = GetSessionFromUser(userData.UserID, userData.SessionType);
+				if (!ShouldStillClearAbandonedSession(currentSession, userData.Session))
+				{
+					continue;
+				}
+
+				await ClearDataFromUser(userData.UserID, userData.SessionType);
 			}
 		}
 
@@ -1137,6 +1160,19 @@ namespace GenOnlineService
 		}
 	}
 
+	// Core:reconnect_grace_period_ms in appsettings.json, read on use. Mirrors the pattern used by
+	// FullMeshCheckSettings in LobbyManager.cs.
+	internal static class UserSessionSettings
+	{
+		internal static Int64 ReconnectGracePeriodMS => Get("reconnect_grace_period_ms", 30000);
+
+		private static Int64 Get(string key, Int64 defaultValue)
+		{
+			Int64 value = Program.g_Config?.GetSection("Core").GetValue(key, defaultValue) ?? defaultValue;
+			return value > 0 ? value : defaultValue;
+		}
+	}
+
 	public class UserSession
 	{
 		public Int64 m_UserID = -1;
@@ -1292,8 +1328,12 @@ namespace GenOnlineService
 
 		public bool NeedsCleanup()
 		{
-			const Int64 timeBeforeConsideredAbandoned = 30000; // 5 minutes
-			return Environment.TickCount64 - m_timeAbandoned >= timeBeforeConsideredAbandoned;
+			// Grace period an abandoned (no live websocket) session gets before it's torn down,
+			// letting a brief disconnect reconnect instead of losing the slot. Configurable via
+			// Core:reconnect_grace_period_ms; defaults to 30 seconds, unchanged from before this
+			// was configurable (the old comment here said "5 minutes", which was wrong - 30000 is
+			// milliseconds, i.e. 30 seconds).
+			return Environment.TickCount64 - m_timeAbandoned >= UserSessionSettings.ReconnectGracePeriodMS;
 		}
 
 		private bool m_bSubscribedToRealtimeSocialupdates = false;
@@ -1596,14 +1636,12 @@ namespace GenOnlineService
 			{
 				return true;
 			}
-			else if (sessType == EUserSessionType.ChatClient)
-			{
-				return false;
-			}
 
-			else if (sessType == EUserSessionType.GameLauncher)
+			// GameLauncher can read the server list but cannot join or mutate lobbies.
+			if (accessType == ESessionAccessType.ServerListReadOnly
+				&& sessType == EUserSessionType.GameLauncher)
 			{
-				return false;
+				return true;
 			}
 
 			return false;
