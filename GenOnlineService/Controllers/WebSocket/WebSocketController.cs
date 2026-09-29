@@ -673,8 +673,6 @@ namespace GenOnlineService.Controllers
 						Lobby? lobby = _lobbyManager.GetLobby(sourceUserSession.currentLobbyID);
 						if (lobby != null)
 						{
-							// Ready state is part of the lobby's mutable state, so it goes through the
-							// same per-lobby gate as slot/member mutations.
 							await lobby.RunExclusiveAsync(() =>
 							{
 								LobbyMember? member = lobby.GetMemberFromUserID(sourceUserSession.m_UserID);
@@ -1034,9 +1032,7 @@ namespace GenOnlineService.Controllers
 					}
 
 					// lock slots (more people joining when we're already doing connectivity checks won't help the situation)
-					// Awaited separately from StartFullMeshConnectivityCheck below: each is its own
-					// gated operation on the lobby, so neither ever nests inside the other's gate use.
-					await lobbyInfo.CloseOpenSlots();
+					await lobbyInfo.CloseOpenSlots(true);
 
 					// mark lobby as in progress of full mesh connectivity checks
 					await lobbyInfo.StartFullMeshConnectivityCheck();

@@ -54,30 +54,34 @@ namespace GenOnlineService
 				? currentAttempt == 1
 				: response.mesh_check_id == currentCheckID && response.attempt == currentAttempt;
 		}
-
-		internal static bool ShouldRetry(bool meshComplete, bool hasLegacyResponse, int currentAttempt, int maxAttempts)
-		{
-			// TODO: Remove legacy retry suppression together with the legacy response path.
-			return !meshComplete && !hasLegacyResponse && currentAttempt < maxAttempts;
-		}
 	}
 
-	// Core:full_mesh_check_* in appsettings.json, read on use
+	// "reason" values for FULL_MESH_CONNECTIVITY_CHECK_RESPONSE_COMPLETE_TO_HOST. "" means
+	// mesh_complete. A superseded check, or one whose requester is no longer owner, sends nothing
+	// (see Lobby.CompleteFullMeshConnectivityCheckLocked): at most one completion per current owner.
+	internal static class FullMeshCheckOutcomeReason
+	{
+		internal const string None = "";
+		internal const string MissingConnections = "missing_connections";
+		internal const string Timeout = "timeout";
+		// lobby membership changed while the check was pending - a join or a leave, not just a leave;
+		// MembershipVersion bumps on both, so this covers either. Neither the released client nor the
+		// in-progress client branch matches on this value (both only log it), so it's a plain rename
+		// rather than adding a separate "member_joined" value.
+		internal const string MembershipChanged = "membership_changed";
+		// a member reported giving up on a peer (gave_up_user_ids)
+		internal const string GaveUp = "gave_up";
+	}
+
+	// Core:full_mesh_check_* in appsettings.json, read on use. Every check passes once the mesh is complete,
+	// fails once a member reports giving up, and times out as a backstop for clients that never report it.
 	internal static class FullMeshCheckSettings
 	{
-		// how long an attempt waits for every connection before judging it
-		internal static int AttemptWindowMS => Get("full_mesh_check_attempt_window_ms", 8000);
-
-		// how often an incomplete attempt asks members for a fresh snapshot
+		// how often the window asks members for a fresh snapshot while it waits
 		internal static int SnapshotIntervalMS => Get("full_mesh_check_snapshot_interval_ms", 1000);
 
-		// time given to re-signalled connections before the next attempt
-		internal static int RetryDelayMS => Get("full_mesh_check_retry_delay_ms", 3000);
-
-		internal static int MaxAttempts => Get("full_mesh_check_max_attempts", 2);
-
-		// upper bound for a whole check, used as the clients' setup timeout
-		internal static int MaxDurationMS => (AttemptWindowMS * MaxAttempts) + (RetryDelayMS * (MaxAttempts - 1));
+		// covers the clients' own retries (2 attempts x 10s GNS default)
+		internal static int RefereeWindowMS => Get("full_mesh_check_referee_window_ms", 20000);
 
 		private static int Get(string key, int defaultValue)
 		{
@@ -105,25 +109,21 @@ namespace GenOnlineService
 		[JsonIgnore]
 		public Int64 TimeStartFullMeshChecks { get; private set; } = -1;
 
-		// Single per-lobby exclusive gate for every mutation of this lobby's Members/Owner, slot
-		// state/fields, ready state, and mesh-check state. Everything that used to be split across
-		// g_SlotLock (slots) and m_FullMeshCheckLock (mesh-check fields) now goes through this one
-		// SemaphoreSlim, so there is exactly one lock to reason about and no lock-ordering hazard
-		// between the two. It is NOT reentrant: a callback passed to RunExclusiveAsync must never
-		// call back into RunExclusiveAsync on this same lobby, or it will deadlock - callers that are
-		// already inside a callback (e.g. DoHostMigration, called from RemoveMember's callback) must
-		// mutate state directly instead. Sending a websocket message from inside a callback is safe:
-		// QueueWebsocketSend only enqueues bytes onto an in-memory bounded channel (a non-blocking
-		// TryWrite) - it never performs real network I/O itself, so it cannot block while the gate is
-		// held.
+		// Incremented under m_LobbyGate on every human add/remove; ties a check's outcome to the
+		// membership it ran against.
+		[JsonIgnore]
+		public int MembershipVersion { get; private set; } = 0;
+
+		// MembershipVersion when the current/most recent check began.
+		[JsonIgnore]
+		public int MembershipVersionAtLastCheckStart { get; private set; } = -1;
+
+		// Exclusive gate for every mutation of Members/Owner, slot state/fields, ready state, and
+		// mesh-check state. Not reentrant: a callback must not call RunExclusiveAsync on this lobby again.
 		private readonly SemaphoreSlim m_LobbyGate = new SemaphoreSlim(1, 1);
 
 #if DEBUG
-		// Debug-only reentrancy guard. AsyncLocal flows through the awaited async chain (and into
-		// fire-and-forget children too, since ExecutionContext is captured when they're created), so
-		// a callback that calls back into RunExclusiveAsync on this same lobby - the exact bug class
-		// HOST_ACTION_KICK_USER hit - throws immediately here instead of deadlocking (if awaited) or
-		// silently racing (if not). Cheap enough to leave on for tests; compiled out of Release.
+		// Reentrancy guard: throws instead of deadlocking if RunExclusiveAsync is re-entered.
 		private readonly AsyncLocal<bool> m_bGateHeldInThisFlow = new();
 #endif
 
@@ -184,14 +184,16 @@ namespace GenOnlineService
 		[JsonIgnore]
 		public bool? LastFullMeshConnectivityCheckOutcome { get; private set; } = null;
 
+		// Pairs the last check found unconnected, so callers (custom lobby chat, quick match's
+		// requeue message) can tell members why it failed without re-deriving it themselves.
+		[JsonIgnore]
+		public List<MissingConnectionEntry> LastFullMeshConnectivityCheckMissingConnections { get; private set; } = new();
+
 		[JsonIgnore]
 		public int FullMeshCheckAttempt { get; private set; } = 0;
 
 		[JsonIgnore]
 		public Int64 FullMeshCheckID { get; private set; } = 0;
-
-		[JsonIgnore]
-		private Int64 m_TimeToRetryFullMeshChecks = -1;
 
 		[JsonIgnore]
 		private Int64 m_TimeNextFullMeshSnapshotRequest = -1;
@@ -200,10 +202,36 @@ namespace GenOnlineService
 		[JsonIgnore]
 		private Dictionary<Int64, HashSet<Int64>> m_FullMeshConnecting = new();
 
+		// Set while a check is pending if a member leaves before it completes; reset on next check start.
 		[JsonIgnore]
-		private bool m_bCurrentAttemptHasLegacyResponse = false;
+		private bool m_bMemberLeftDuringCurrentCheck = false;
+
+		// any snapshot reported gave_up_user_ids
+		[JsonIgnore]
+		private bool m_bAnyMemberGaveUp = false;
+
+		// slots a start check closed, reopened if it fails
+		[JsonIgnore]
+		private readonly List<UInt16> m_SlotsClosedByMeshCheck = new();
+
+		// legacy clients don't echo mesh_check_id/attempt, so their replies are matched by order
+		[JsonIgnore]
+		private readonly ConcurrentDictionary<Int64, int> m_MeshRequestsOutstanding = new();
+
+		[JsonIgnore]
+		private readonly ConcurrentDictionary<Int64, int> m_StaleLegacyMeshReplies = new();
+
+		// quick match reports check progress as matchmaking messages, not lobby announcements
+		private bool IsQuickMatch => LobbyType == ELobbyType.QuickMatch;
+
+		// Owner when the current check started; the outcome is only sent to this user while they still own it.
+		[JsonIgnore]
+		private Int64 m_MeshCheckRequestingUserID = -1;
 
 		private static Int64 s_NextFullMeshCheckID = 0;
+
+		// Backing counter for LobbyMember.JoinSequence; per-lobby, starts at 1.
+		private Int64 m_NextJoinSequence = 0;
 
 		[JsonIgnore]
 		public ConcurrentDictionary<Int64, ConcurrentList<Int64>> FullMeshConnectivityChecks { get; set; } = new();
@@ -223,8 +251,6 @@ namespace GenOnlineService
 		ConcurrentDictionary<Int64, int> m_dictProbe2_Received = new();
 		public void RegisterProbeSent_Type1(Int64 userID)
 		{
-			// AddOrUpdate is atomic; the previous check-then-write on the dictionary indexer
-			// could lose an increment when two probes for the same user race.
 			m_dictProbe1_Sent.AddOrUpdate(userID, 1, (_, count) => count + 1);
 		}
 
@@ -266,13 +292,43 @@ namespace GenOnlineService
 		{
 			await RunExclusiveAsync(() =>
 			{
+				if (PendingFullMeshConnectivityChecks)
+				{
+					DiscardPendingFullMeshCheckLocked();
+				}
+
+				// unanswered requests belong to earlier checks
+				m_StaleLegacyMeshReplies.Clear();
+				foreach (var outstanding in m_MeshRequestsOutstanding)
+				{
+					m_StaleLegacyMeshReplies[outstanding.Key] = outstanding.Value;
+				}
+
 				FullMeshCheckID = Interlocked.Increment(ref s_NextFullMeshCheckID);
 				FullMeshCheckAttempt = 1;
-				m_TimeToRetryFullMeshChecks = -1;
 				LastFullMeshConnectivityCheckOutcome = null;
+				m_bMemberLeftDuringCurrentCheck = false;
+				m_bAnyMemberGaveUp = false;
+				MembershipVersionAtLastCheckStart = MembershipVersion;
+				m_MeshCheckRequestingUserID = Owner;
 				BeginFullMeshConnectivityCheckAttempt();
+
+				// custom lobbies only; quick match reports progress over its own matchmaking-status channel
+				if (!IsQuickMatch)
+				{
+					BroadcastLobbyAnnouncement("Checking connections between all players...", m_MeshCheckRequestingUserID);
+				}
+
 				return Task.CompletedTask;
 			});
+		}
+
+		// Must be called while holding m_LobbyGate. Does not send a completion.
+		private void DiscardPendingFullMeshCheckLocked()
+		{
+			PendingFullMeshConnectivityChecks = false;
+			TimeStartFullMeshChecks = -1;
+			LastFullMeshConnectivityCheckOutcome = null;
 		}
 
 		private void BeginFullMeshConnectivityCheckAttempt()
@@ -280,7 +336,6 @@ namespace GenOnlineService
 			PendingFullMeshConnectivityChecks = true;
 			FullMeshConnectivityChecks = new();
 			m_FullMeshConnecting = new();
-			m_bCurrentAttemptHasLegacyResponse = false;
 			TimeStartFullMeshChecks = Environment.TickCount64;
 			m_TimeNextFullMeshSnapshotRequest = TimeStartFullMeshChecks + FullMeshCheckSettings.SnapshotIntervalMS;
 		}
@@ -291,7 +346,7 @@ namespace GenOnlineService
 				|| (m_FullMeshConnecting.TryGetValue(userB, out HashSet<Int64>? fromB) && fromB.Contains(userA));
 		}
 
-		// one line per judged attempt, so the window can be tuned from real connect times
+		// one line per judged check, so the window can be tuned from real connect times
 		private void LogFullMeshCheckAttempt(bool bMeshComplete, List<MissingConnectionEntry> lstMissingConnections)
 		{
 			Int64 elapsedMS = Environment.TickCount64 - TimeStartFullMeshChecks;
@@ -305,8 +360,8 @@ namespace GenOnlineService
 				.Distinct()
 				.Select(p => $"{p.Item1}<->{p.Item2}"));
 
-			Console.WriteLine("[Lobby {0}] Mesh check {1} attempt {2}/{3}: {4} after {5} ms with {6} humans{7}",
-				LobbyID, FullMeshCheckID, FullMeshCheckAttempt, FullMeshCheckSettings.MaxAttempts,
+			Console.WriteLine("[Lobby {0}] Mesh check {1}: {2} after {3} ms with {4} humans{5}",
+				LobbyID, FullMeshCheckID,
 				bMeshComplete ? "complete" : "incomplete", elapsedMS, GetNumberOfHumans(),
 				bMeshComplete ? "" : $", missing {strMissing}{(strConnecting.Length > 0 ? $" (still connecting {strConnecting})" : "")}");
 		}
@@ -323,75 +378,96 @@ namespace GenOnlineService
 			{
 				if (member.GetSession().TryGetTarget(out UserSession? session) && session != null)
 				{
+					m_MeshRequestsOutstanding.AddOrUpdate(member.UserID, 1, (_, count) => count + 1);
 					session.QueueWebsocketSend(bytesJSON);
 				}
 			}
 		}
 
-		// Re-issues signalling between the pairs that failed to connect. This is the same handshake a player
-		// gets when they join, which is why manually rejoining the lobby often repairs a broken mesh.
-		private void RestartSignallingForMissingConnections(List<MissingConnectionEntry> lstMissingConnections)
+		// Reuses the released client's existing lobby chat/announcement display (LOBBY_CHAT_FROM_SERVER,
+		// announcement=true - the same path WOLGameSetupMenu already prints host/system lines from) for
+		// server-driven connectivity-check status, rather than a message ID older clients would ignore.
+		private void BroadcastLobbyAnnouncement(string message, Int64 excludeUserID)
 		{
-			HashSet<(Int64, Int64)> alreadyResignalled = new();
+			WebSocketMessage_LobbyChatMessageOutbound outboundMsg = new WebSocketMessage_LobbyChatMessageOutbound();
+			outboundMsg.msg_id = (int)EWebSocketMessageID.LOBBY_CHAT_FROM_SERVER;
+			outboundMsg.user_id = -2; // server/system line, not from a real player
+			outboundMsg.message = message;
+			outboundMsg.announcement = true;
+			outboundMsg.show_announcement_to_host = true; // irrelevant here: recipients are filtered below
+			byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outboundMsg));
 
-			foreach (MissingConnectionEntry missingConnection in lstMissingConnections)
+			foreach (LobbyMember member in Members)
 			{
-				Int64 lowUserID = Math.Min(missingConnection.source_user_id, missingConnection.target_user_id);
-				Int64 highUserID = Math.Max(missingConnection.source_user_id, missingConnection.target_user_id);
-
-				if (!alreadyResignalled.Add((lowUserID, highUserID)))
+				if (member.UserID == excludeUserID)
 				{
 					continue;
 				}
 
-				LobbyMember? sourceMember = GetMemberFromUserID(missingConnection.source_user_id);
-				LobbyMember? targetMember = GetMemberFromUserID(missingConnection.target_user_id);
-
-				if (sourceMember == null || targetMember == null)
+				if (member.GetSession().TryGetTarget(out UserSession? session) && session != null)
 				{
-					continue;
+					session.QueueWebsocketSend(bytesJSON);
 				}
-
-				Console.WriteLine("[Lobby {0}] Re-signalling {1} <-> {2} before mesh check retry", LobbyID, sourceMember.UserID, targetMember.UserID);
-
-				SendStartSignallingToMember(sourceMember, targetMember);
-				SendStartSignallingToMember(targetMember, sourceMember);
 			}
 		}
 
-		private void SendStartSignallingToMember(LobbyMember recipient, LobbyMember peer)
+		// One deduped "{A} can't connect to {B}" line per unique unordered pair.
+		public List<string> BuildMissingConnectionMessages(List<MissingConnectionEntry> missingConnections)
 		{
-			if (recipient.GetSession().TryGetTarget(out UserSession? recipientSession) && recipientSession != null)
+			HashSet<(Int64, Int64)> seenPairs = new();
+			List<string> messages = new();
+
+			foreach (MissingConnectionEntry entry in missingConnections)
 			{
-				WebSocketMessage_NetworkStartSignalling signallingMsg = new WebSocketMessage_NetworkStartSignalling();
-				signallingMsg.msg_id = (int)EWebSocketMessageID.NETWORK_CONNECTION_START_SIGNALLING;
-				signallingMsg.lobby_id = LobbyID;
-				signallingMsg.user_id = peer.UserID;
-				signallingMsg.preferred_port = peer.Port;
-				signallingMsg.middleware_id = peer.MiddlewareUserID;
-				recipientSession.QueueWebsocketSend(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(signallingMsg)));
+				Int64 lowUserID = Math.Min(entry.source_user_id, entry.target_user_id);
+				Int64 highUserID = Math.Max(entry.source_user_id, entry.target_user_id);
+
+				if (!seenPairs.Add((lowUserID, highUserID)))
+				{
+					continue;
+				}
+
+				string strA = GetMemberFromUserID(entry.source_user_id)?.DisplayName ?? entry.source_user_id.ToString();
+				string strB = GetMemberFromUserID(entry.target_user_id)?.DisplayName ?? entry.target_user_id.ToString();
+
+				messages.Add($"{strA} can't connect to {strB}");
 			}
+
+			return messages;
 		}
 
 		public async Task StoreFullMeshConnectivityResponse(Int64 sourceUser, WebSocketMessage_FullMeshConnectivityCheckResponseFromUser response)
 		{
 			await RunExclusiveAsync(() =>
 			{
-				bool bLegacyResponse = FullMeshCheckProtocol.IsLegacyResponse(response);
 				bool bMatchesCurrentAttempt = FullMeshCheckProtocol.MatchesCurrentAttempt(
 					response,
 					FullMeshCheckID,
 					FullMeshCheckAttempt);
 
+				// a legacy reply to an earlier check's request
+				if (FullMeshCheckProtocol.IsLegacyResponse(response)
+					&& m_StaleLegacyMeshReplies.TryGetValue(sourceUser, out int staleReplies)
+					&& staleReplies > 0)
+				{
+					m_StaleLegacyMeshReplies[sourceUser] = staleReplies - 1;
+					bMatchesCurrentAttempt = false;
+				}
+
+				m_MeshRequestsOutstanding.AddOrUpdate(sourceUser, 0, (_, count) => Math.Max(0, count - 1));
+
 				LobbyMember? sourceMember = GetMemberFromUserID(sourceUser);
 				if (PendingFullMeshConnectivityChecks
-					&& m_TimeToRetryFullMeshChecks == -1
 					&& sourceMember?.IsHuman() == true
 					&& bMatchesCurrentAttempt)
 				{
-					m_bCurrentAttemptHasLegacyResponse |= bLegacyResponse;
 					FullMeshConnectivityChecks[sourceUser] = new ConcurrentList<Int64>(response.connectivity_map);
 					m_FullMeshConnecting[sourceUser] = new HashSet<Int64>(response.connecting_map);
+
+					if (response.gave_up_user_ids.Count > 0)
+					{
+						m_bAnyMemberGaveUp = true;
+					}
 				}
 
 				ProcessPendingFullMeshConnectivityChecksInternal();
@@ -416,26 +492,13 @@ namespace GenOnlineService
 				return;
 			}
 
-			// Give re-signalled connections time to establish before starting the retry.
-			if (m_TimeToRetryFullMeshChecks != -1)
-			{
-				if (Environment.TickCount64 < m_TimeToRetryFullMeshChecks)
-				{
-					return;
-				}
-
-				m_TimeToRetryFullMeshChecks = -1;
-				BeginFullMeshConnectivityCheckAttempt();
-				SendFullMeshConnectivityCheckRequestToMembers();
-				return;
-			}
-
 			{
 				bool bDoneChecks = false;
 
 				// judged as soon as anyone replies: members who haven't replied yet count as missing, and gaps before
 				// the window closes are re-polled below, which also recovers replies lost to a reconnect
-				bool bWindowElapsed = (Environment.TickCount64 - TimeStartFullMeshChecks) >= FullMeshCheckSettings.AttemptWindowMS;
+				bool bWindowElapsed = (Environment.TickCount64 - TimeStartFullMeshChecks) >= FullMeshCheckSettings.RefereeWindowMS;
+				bool bGaveUpForcesCompletion = m_bAnyMemberGaveUp;
 				bDoneChecks = bWindowElapsed || !FullMeshConnectivityChecks.IsEmpty;
 
 				List<MissingConnectionEntry> lstMissingConnections = new();
@@ -510,11 +573,11 @@ namespace GenOnlineService
 
 
 
-					bool bMeshComplete = bDisableMeshCheck || lstMissingConnections.Count == 0;
+					bool bMeshComplete = !bGaveUpForcesCompletion && (bDisableMeshCheck || lstMissingConnections.Count == 0);
 
 					// members report a snapshot, so a gap before the window closes may be a connection still forming:
 					// keep asking for fresh snapshots rather than re-signalling it early
-					if (!bMeshComplete && !bWindowElapsed)
+					if (!bMeshComplete && !bWindowElapsed && !bGaveUpForcesCompletion)
 					{
 						if (Environment.TickCount64 >= m_TimeNextFullMeshSnapshotRequest)
 						{
@@ -527,55 +590,166 @@ namespace GenOnlineService
 
 					LogFullMeshCheckAttempt(bMeshComplete, lstMissingConnections);
 
-					if (FullMeshCheckProtocol.ShouldRetry(
-						bMeshComplete,
-						m_bCurrentAttemptHasLegacyResponse,
-						FullMeshCheckAttempt,
-						FullMeshCheckSettings.MaxAttempts))
-					{
-						++FullMeshCheckAttempt;
-
-						// a pair still negotiating would be torn down by a re-signal; the next attempt re-checks it
-						RestartSignallingForMissingConnections(lstMissingConnections
-							.Where(c => !IsFullMeshPairStillConnecting(c.source_user_id, c.target_user_id))
-							.ToList());
-						m_TimeToRetryFullMeshChecks = Environment.TickCount64 + FullMeshCheckSettings.RetryDelayMS;
-						return;
-					}
-
 					// inform host that we are done
-					// start full mesh connectivity checks
-					WebSocketMessage_FullMeshConnectivityCheckOutcome outcome = new WebSocketMessage_FullMeshConnectivityCheckOutcome();
-					outcome.msg_id = (int)EWebSocketMessageID.FULL_MESH_CONNECTIVITY_CHECK_RESPONSE_COMPLETE_TO_HOST;
+					bool bMembershipChangedDuringCheck = MembershipVersion != MembershipVersionAtLastCheckStart;
+					bool bMeshCompleteFinal = !bGaveUpForcesCompletion && !bMembershipChangedDuringCheck && (bDisableMeshCheck || lstMissingConnections.Count == 0);
+					List<MissingConnectionEntry> lstFinalMissingConnections = bDisableMeshCheck
+						? new List<MissingConnectionEntry>()
+						: lstMissingConnections;
 
-					if (bDisableMeshCheck)
+					string reason;
+					if (bMeshCompleteFinal)
 					{
-						outcome.mesh_complete = true;
-						outcome.missing_connections = new List<MissingConnectionEntry>();
+						reason = FullMeshCheckOutcomeReason.None;
+					}
+					else if (bGaveUpForcesCompletion)
+					{
+						reason = FullMeshCheckOutcomeReason.GaveUp;
+					}
+					else if (bMembershipChangedDuringCheck || m_bMemberLeftDuringCurrentCheck)
+					{
+						reason = FullMeshCheckOutcomeReason.MembershipChanged;
+					}
+					else if (FullMeshConnectivityChecks.IsEmpty)
+					{
+						reason = FullMeshCheckOutcomeReason.Timeout;
 					}
 					else
 					{
-						outcome.mesh_complete = lstMissingConnections.Count == 0;
-						outcome.missing_connections = lstMissingConnections;
+						reason = FullMeshCheckOutcomeReason.MissingConnections;
 					}
 
-					LastFullMeshConnectivityCheckOutcome = outcome.mesh_complete;
-
-					// TODO_EFCORE: Later, these should really use lobby list instead of getting session from ID
-
-					// send to host
-					UserSession? hostSession = WebSocketManager.GetSessionFromUser(Owner, EUserSessionType.GameClient); // host should be a game client
-					if (hostSession != null)
-					{
-						byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outcome));
-						hostSession.QueueWebsocketSend(bytesJSON);
-					}
-
-					// reset state
-					PendingFullMeshConnectivityChecks = false;
-					TimeStartFullMeshChecks = -1;
-					m_TimeToRetryFullMeshChecks = -1;
+					CompleteFullMeshConnectivityCheckLocked(bMeshCompleteFinal, lstFinalMissingConnections, reason);
 				}
+			}
+		}
+
+		// Must be called while holding m_LobbyGate.
+		private void CompleteFullMeshConnectivityCheckLocked(bool bMeshComplete, List<MissingConnectionEntry> lstMissingConnections, string reason)
+		{
+			WebSocketMessage_FullMeshConnectivityCheckOutcome outcome = new WebSocketMessage_FullMeshConnectivityCheckOutcome();
+			outcome.msg_id = (int)EWebSocketMessageID.FULL_MESH_CONNECTIVITY_CHECK_RESPONSE_COMPLETE_TO_HOST;
+			outcome.mesh_complete = bMeshComplete;
+			outcome.missing_connections = lstMissingConnections;
+			outcome.reason = bMeshComplete ? FullMeshCheckOutcomeReason.None : reason;
+
+			LastFullMeshConnectivityCheckOutcome = outcome.mesh_complete;
+			LastFullMeshConnectivityCheckMissingConnections = lstMissingConnections;
+
+			// TODO_EFCORE: Later, these should really use lobby list instead of getting session from ID
+
+			if (m_MeshCheckRequestingUserID == Owner)
+			{
+				UserSession? hostSession = WebSocketManager.GetSessionFromUser(Owner, EUserSessionType.GameClient); // host should be a game client
+				if (hostSession != null)
+				{
+					byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outcome));
+					hostSession.QueueWebsocketSend(bytesJSON);
+				}
+			}
+
+			// Custom lobbies: tell the whole room (except the host, whose client already prints its own
+			// local "Connections: ..." lines for this check). Quick match has no real host and uses its
+			// own matchmaking-status channel instead (see MatchmakingManager.TriggerFullMeshConnectivityChecks
+			// and the mesh-check completion handling in MatchmakingBucket.Tick).
+			if (!IsQuickMatch)
+			{
+				if (bMeshComplete)
+				{
+					BroadcastLobbyAnnouncement("All players are connected.", m_MeshCheckRequestingUserID);
+				}
+				else if (lstMissingConnections.Count > 0)
+				{
+					foreach (string strMissingConnectionMessage in BuildMissingConnectionMessages(lstMissingConnections))
+					{
+						BroadcastLobbyAnnouncement(strMissingConnectionMessage, m_MeshCheckRequestingUserID);
+					}
+
+					// clients don't retry a pair the peer closed cleanly, so repair it for the next start attempt
+					RestartSignallingForMissingConnections(lstMissingConnections);
+				}
+			}
+
+			if (!bMeshComplete && !IsQuickMatch)
+			{
+				ReopenSlotsClosedByMeshCheckLocked();
+			}
+
+			m_SlotsClosedByMeshCheck.Clear();
+
+			// reset state
+			PendingFullMeshConnectivityChecks = false;
+			TimeStartFullMeshChecks = -1;
+		}
+
+		// Must be called while holding m_LobbyGate. Only slots still closed.
+		private void ReopenSlotsClosedByMeshCheckLocked()
+		{
+			bool bReopened = false;
+
+			foreach (UInt16 slotIndex in m_SlotsClosedByMeshCheck)
+			{
+				if (slotIndex < Members.Length && Members[slotIndex].SlotState == EPlayerType.SLOT_CLOSED)
+				{
+					Members[slotIndex].SetPlayerSlotState(EPlayerType.SLOT_OPEN);
+					bReopened = true;
+				}
+			}
+
+			if (bReopened)
+			{
+				DirtyRetransmit();
+			}
+		}
+
+		// Repeats the join-time signalling for pairs that failed to connect.
+		// Must be called while holding m_LobbyGate.
+		private void RestartSignallingForMissingConnections(List<MissingConnectionEntry> lstMissingConnections)
+		{
+			HashSet<(Int64, Int64)> alreadyResignalled = new();
+
+			foreach (MissingConnectionEntry missingConnection in lstMissingConnections)
+			{
+				Int64 lowUserID = Math.Min(missingConnection.source_user_id, missingConnection.target_user_id);
+				Int64 highUserID = Math.Max(missingConnection.source_user_id, missingConnection.target_user_id);
+
+				if (!alreadyResignalled.Add((lowUserID, highUserID)))
+				{
+					continue;
+				}
+
+				// re-signalling would reset a pair still negotiating
+				if (IsFullMeshPairStillConnecting(lowUserID, highUserID))
+				{
+					continue;
+				}
+
+				LobbyMember? sourceMember = GetMemberFromUserID(missingConnection.source_user_id);
+				LobbyMember? targetMember = GetMemberFromUserID(missingConnection.target_user_id);
+
+				if (sourceMember == null || targetMember == null)
+				{
+					continue;
+				}
+
+				Console.WriteLine("[Lobby {0}] Re-signalling {1} <-> {2} after a failed mesh check", LobbyID, sourceMember.UserID, targetMember.UserID);
+
+				SendStartSignallingToMember(sourceMember, targetMember);
+				SendStartSignallingToMember(targetMember, sourceMember);
+			}
+		}
+
+		private void SendStartSignallingToMember(LobbyMember recipient, LobbyMember peer)
+		{
+			if (recipient.GetSession().TryGetTarget(out UserSession? recipientSession) && recipientSession != null)
+			{
+				WebSocketMessage_NetworkStartSignalling signallingMsg = new WebSocketMessage_NetworkStartSignalling();
+				signallingMsg.msg_id = (int)EWebSocketMessageID.NETWORK_CONNECTION_START_SIGNALLING;
+				signallingMsg.lobby_id = LobbyID;
+				signallingMsg.user_id = peer.UserID;
+				signallingMsg.preferred_port = peer.Port;
+				signallingMsg.middleware_id = peer.MiddlewareUserID;
+				recipientSession.QueueWebsocketSend(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(signallingMsg)));
 			}
 		}
 
@@ -858,13 +1032,16 @@ namespace GenOnlineService
 
         public event Action<Lobby>? OnLobbyNeedsDestroyed;
 
-		// Must only be called while holding m_LobbyGate (from within RemoveMember's callback): it reads
-		// and mutates Members/Owner and must observe RemoveMember's slot clear atomically with any
-		// concurrent join/leave/migration.
+		// Must be called while holding m_LobbyGate.
 		private void OnAfterPlayerLeftLocked(Int64 leavingUserID)
 		{
 			// NOTE: By the time this is called, the member is no longer in the members list
 			bool bNeedsHostMigrate = Owner == leavingUserID;
+
+			if (PendingFullMeshConnectivityChecks)
+			{
+				m_bMemberLeftDuringCurrentCheck = true;
+			}
 
 			// we need human members, not real members
 			int numHumanMembers = GetNumberOfHumans();
@@ -930,12 +1107,7 @@ public async Task FinalizeACChecks()
 			}
 		}
 
-		// Runs under the per-lobby gate: this mutates slot state and previously ran unguarded,
-		// racing against AddMember/RemoveMember/other slot updates. Sequential with (never nested
-		// inside) StartFullMeshConnectivityCheck's own gate use - callers await this first and then
-		// await StartFullMeshConnectivityCheck as a separate gated operation, so the gate is never
-		// re-entered.
-		public async Task CloseOpenSlots()
+		public async Task CloseOpenSlots(bool bReopenIfMeshCheckFails = false)
 		{
 			await RunExclusiveAsync(() =>
 			{
@@ -944,6 +1116,11 @@ public async Task FinalizeACChecks()
 					if (member.SlotState == EPlayerType.SLOT_OPEN)
 					{
 						member.SetPlayerSlotState(EPlayerType.SLOT_CLOSED);
+
+						if (bReopenIfMeshCheckFails && !IsQuickMatch)
+						{
+							m_SlotsClosedByMeshCheck.Add(member.SlotIndex);
+						}
 					}
 				}
 
@@ -952,8 +1129,7 @@ public async Task FinalizeACChecks()
 			});
 		}
 
-		// Must only be called while holding m_LobbyGate (currently only true from
-		// OnAfterPlayerLeftLocked, itself only called from within RemoveMember's callback).
+		// Must be called while holding m_LobbyGate.
 		private void DoHostMigration()
 		{
 			Int64 oldOwner = Owner;
@@ -969,8 +1145,11 @@ public async Task FinalizeACChecks()
 						Owner = member.UserID;
 
 						member.UpdateSlotIndex(0);
-						Members[0] = member;
-						Members[oldSlot] = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, -1, -1, -1, EPlayerType.SLOT_OPEN, oldSlot, true);
+						// one array swap, so lock-free readers never see the member twice
+						LobbyMember[] migratedMembers = (LobbyMember[])Members.Clone();
+						migratedMembers[0] = member;
+						migratedMembers[oldSlot] = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, -1, -1, -1, EPlayerType.SLOT_OPEN, oldSlot, true);
+						Members = migratedMembers;
 
 						member.SetReadyState(true);
 						DirtyRetransmitLobbyList();
@@ -1083,8 +1262,6 @@ public async Task FinalizeACChecks()
 
 		public async Task<bool> AddMember(UserSession playerSession, string strDisplayName, UInt16 userPreferredPort, bool bHasMap, UserLobbyPreferences lobbyPrefs)
 		{
-			// NOTE: AddMember runs inside the per-lobby gate, so timing + slot determination can no
-			// longer result in two concurrent joins picking the same slot.
 			return await RunExclusiveAsync(async () =>
 			{
 				if (State != ELobbyState.GAME_SETUP)
@@ -1163,6 +1340,8 @@ public async Task FinalizeACChecks()
 				strDisplayName = String.Format("{0} ({1})", strDisplayName, dupesSeen);
 			}
 
+			Int64 joinSequence = Interlocked.Increment(ref m_NextJoinSequence);
+
 			// only apply lobby prefs if not QM
 			LobbyMember? newMember = null;
 			if (LobbyType == ELobbyType.CustomGame)
@@ -1188,7 +1367,7 @@ public async Task FinalizeACChecks()
 					}
 				}
 
-				newMember = new LobbyMember(this, playerSession, playerSession.m_UserID, strDisplayName, strOriginalDisplayName, userPreferredPort, sideToUse, colorToUse, -1, EPlayerType.SLOT_PLAYER, slotIndex, bHasMap);
+				newMember = new LobbyMember(this, playerSession, playerSession.m_UserID, strDisplayName, strOriginalDisplayName, userPreferredPort, sideToUse, colorToUse, -1, EPlayerType.SLOT_PLAYER, slotIndex, bHasMap, joinSequence);
 			}
 			else
 			{
@@ -1212,11 +1391,14 @@ public async Task FinalizeACChecks()
 				int sideToUse = allowedTeams[Random.Shared.Next(0, allowedTeams.Length)];
 
 				// team is random for now, matchmaker will assign teams on start
-				newMember = new LobbyMember(this, playerSession, playerSession.m_UserID, strDisplayName, strOriginalDisplayName, userPreferredPort, sideToUse, -1, -1, EPlayerType.SLOT_PLAYER, slotIndex, bHasMap);
+				newMember = new LobbyMember(this, playerSession, playerSession.m_UserID, strDisplayName, strOriginalDisplayName, userPreferredPort, sideToUse, -1, -1, EPlayerType.SLOT_PLAYER, slotIndex, bHasMap, joinSequence);
 			}
 
 			Members[slotIndex] = newMember;
 			TimeMemberLeft[playerSession.m_UserID] = DateTime.UnixEpoch;
+
+			++MembershipVersion;
+			LastFullMeshConnectivityCheckOutcome = null;
 
 			// Lobby members leave public-room presence.
 			playerSession.TryUpdateSessionNetworkRoom(-1);
@@ -1314,11 +1496,6 @@ public async Task FinalizeACChecks()
 
 		public async Task RemoveMember(LobbyMember member)
 		{
-			// Matchmaking cancellation and the client's explicit lobby leave can arrive concurrently.
-			// Claim the slot once, and run host migration in the same critical section as the slot
-			// clear, so teardown, host migration, and destruction callbacks stay atomic and idempotent
-			// (previously DoHostMigration ran after this gate was released, so it could interleave
-			// with a concurrent AddMember/RemoveMember and observe a half-updated Members/Owner).
 			bool bRemoved = await RunExclusiveAsync(() =>
 			{
 				if (member.SlotIndex < 0
@@ -1331,6 +1508,14 @@ public async Task FinalizeACChecks()
 				LobbyMember placeholderMember = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, -1, -1, -1, EPlayerType.SLOT_OPEN, member.SlotIndex, true);
 				Members[member.SlotIndex] = placeholderMember;
 				TimeMemberLeft[member.UserID] = DateTime.UtcNow;
+
+				++MembershipVersion;
+				LastFullMeshConnectivityCheckOutcome = null;
+
+				if (LobbyType == ELobbyType.QuickMatch)
+				{
+					MatchmakingManager.InvalidateAutoStartForLobby(LobbyID);
+				}
 
 				OnAfterPlayerLeftLocked(member.UserID);
 
@@ -1387,6 +1572,38 @@ public async Task FinalizeACChecks()
 			}
 
 			DirtyRetransmitLobbyList();
+		}
+
+		// Advisory pre-check for joiners; AddMember re-checks under the gate.
+		public bool HasOpenSlot()
+		{
+			if (State != ELobbyState.GAME_SETUP)
+			{
+				return false;
+			}
+
+			foreach (LobbyMember memberEntry in Members)
+			{
+				if (memberEntry.SlotState == EPlayerType.SLOT_OPEN)
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		public bool HasOtherHumans(Int64 excludedUserID)
+		{
+			foreach (LobbyMember memberEntry in Members)
+			{
+				if (memberEntry.SlotState == EPlayerType.SLOT_PLAYER && memberEntry.UserID != excludedUserID)
+				{
+					return true;
+				}
+			}
+
+			return false;
 		}
 
 		public int GetNumberOfHumans()
@@ -1706,6 +1923,9 @@ public async Task FinalizeACChecks()
 		public string Region { get; private set; } = "Unknown";
 		public string MiddlewareUserID { get; private set; } = String.Empty;
 
+		// Per-lobby monotonic join order; 0 for AI/open/closed slots.
+		public Int64 JoinSequence { get; private set; } = 0;
+
 		[JsonIgnore] // cant serialize refs
 		private WeakReference<Lobby?> CurrentLobby = new(null);
 
@@ -1717,7 +1937,7 @@ public async Task FinalizeACChecks()
 			return PlayerSession;
 		}
 
-		public LobbyMember(Lobby owningLobby, UserSession? owningSession, Int64 UserID_in, string DisplayName_in, string strUndedupedDisplayName, UInt16 Port_in, int Side_in, int Color_in, int StartingPosition_in, EPlayerType SlotState_in, UInt16 SlotIndex_in, bool bHasMap_in)
+		public LobbyMember(Lobby owningLobby, UserSession? owningSession, Int64 UserID_in, string DisplayName_in, string strUndedupedDisplayName, UInt16 Port_in, int Side_in, int Color_in, int StartingPosition_in, EPlayerType SlotState_in, UInt16 SlotIndex_in, bool bHasMap_in, Int64 JoinSequence_in = 0)
 		{
 			CurrentLobby = new WeakReference<Lobby?>(owningLobby);
 			PlayerSession = new WeakReference<UserSession?>(owningSession);
@@ -1732,6 +1952,7 @@ public async Task FinalizeACChecks()
 			HasMap = bHasMap_in;
 			SlotState = SlotState_in;
 			SlotIndex = SlotIndex_in;
+			JoinSequence = JoinSequence_in;
 
 			// default slots are created with null
 			if (owningSession != null)
@@ -1841,11 +2062,7 @@ public async Task FinalizeACChecks()
 
 		private Int64 m_NextLobbyID = 0;
 
-		// Concurrent CreateLobby calls (e.g. a custom lobby and a QuickMatch allocation racing) must never be
-		// handed the same ID. Interlocked.Increment returns the post-increment value, so subtracting 1 keeps
-		// the original "starts at 0" sequence while making the read-and-bump atomic.
-		// Internal (not private) so it is unit-testable via InternalsVisibleTo without needing the rest of
-		// CreateLobby's database dependencies.
+		// Atomic; sequence starts at 0.
 		internal Int64 GenerateNextLobbyID()
 		{
 			return Interlocked.Increment(ref m_NextLobbyID) - 1;
@@ -1993,6 +2210,12 @@ public async Task FinalizeACChecks()
 			{
 				if (ownedLobby.State == ELobbyState.GAME_SETUP) // only those in setup, in game games can continue
 				{
+					// other humans keep the lobby; the leave below migrates the host
+					if (ownedLobby.GetMemberFromUserID(UserID) != null && ownedLobby.HasOtherHumans(UserID))
+					{
+						continue;
+					}
+
 					await DeleteLobby(ownedLobby);
 				}
 			}

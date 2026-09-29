@@ -29,6 +29,11 @@ public static class EloConfig
 	public static int SecondsBetweenEloExpansionsInMatchmaking = 10;
 
     public static int HighEloThreshold = 2000;
+
+	// Once a bucket's own widening range (eloExpansionIteration * its expansion value) exceeds this,
+	// it stops caring about Elo at all: merges involving it skip the threshold check, new players may
+	// join it regardless of Elo, and it stops sending per-step widening messages.
+	public static int MaxEloRangeBeforeSearchingAll = 1500;
 }
 
 public class EloData

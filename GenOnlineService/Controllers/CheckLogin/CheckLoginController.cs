@@ -205,8 +205,7 @@ namespace GenOnlineService.Controllers
 												await Database.UserDevices.RegisterUserDevice(db, user_id, hwid_0, hwid_1, hwid_2, ipAddr);
 											}
 
-											string exe_crc = data.ContainsKey("exe_crc") ? data["exe_crc"].ToString() : "NONE";
-											Helpers.RegisterInitialPlayerExeCRC(user_id, exe_crc);
+											Helpers.RegisterInitialPlayerCRCsFromLoginPayload(user_id, data);
 
 											var sessiontoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Session, knownClientID, sessionType, bIsAdmin);
 											var refreshtoken = Program.g_tokenGenerator.GenerateToken(strDisplayName, user_id, ipAddr, Program.JwtTokenGenerator.ETokenType.Refresh, knownClientID, sessionType, false, out string refreshJti);

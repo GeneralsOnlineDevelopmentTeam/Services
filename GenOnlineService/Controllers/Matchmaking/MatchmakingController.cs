@@ -99,7 +99,7 @@ namespace GenOnlineService.Controllers
 
 		[HttpPost("Widen")]
 		[Authorize(Roles = "GameClient")]
-		public void Put_Widen()
+		public async Task Put_Widen()
 		{
 			// TODO_QUICKMATCH: What if a user widens after already being matched? We should probably tell them no
 			// widen the search
@@ -111,7 +111,7 @@ namespace GenOnlineService.Controllers
 
 				if (playerSession != null)
 				{
-					MatchmakingManager.PlayerWidenSearch(playerSession);
+					await MatchmakingManager.PlayerWidenSearch(playerSession);
 				}
 			}
 		}

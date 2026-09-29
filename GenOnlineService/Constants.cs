@@ -549,9 +549,7 @@ namespace GenOnlineService
 			return numSessions;
 		}
 
-		// Pure re-check used by CheckForTimeouts right before actually clearing a snapshotted
-		// abandoned+expired entry: refuses unless it's still the SAME session object (a reconnect in
-		// between would have registered a new one) and it is STILL abandoned and expired.
+		// True only if currentSession is the same object as snapshotSession and still abandoned+expired.
 		internal static bool ShouldStillClearAbandonedSession(UserSession? currentSession, UserSession snapshotSession)
 		{
 			if (!ReferenceEquals(currentSession, snapshotSession))
@@ -590,10 +588,6 @@ namespace GenOnlineService
 
 			foreach (var userData in lstCacheEntriesToDestroy)
 			{
-				// A reconnect between the snapshot above and now would have replaced this user's
-				// session with a live one; only clear if the SAME session object is still registered
-				// and still abandoned+expired, so a fresh reconnect never has its live session torn
-				// down (kicked from its lobby, deregistered from matchmaking) by a stale sweep entry.
 				UserSession? currentSession = GetSessionFromUser(userData.UserID, userData.SessionType);
 				if (!ShouldStillClearAbandonedSession(currentSession, userData.Session))
 				{
@@ -657,6 +651,8 @@ namespace GenOnlineService
 				if (sourceData != null)
 				{
 					sourceData.MarkAbandoned();
+
+					MatchmakingManager.InvalidateAutoStartForLobby(sourceData.currentLobbyID);
 
 					// If the player was in an active game when their connection dropped, record the
 					// abandon time NOW (before any lobby-structure cleanup runs).  This timestamp is
@@ -1160,8 +1156,7 @@ namespace GenOnlineService
 		}
 	}
 
-	// Core:reconnect_grace_period_ms in appsettings.json, read on use. Mirrors the pattern used by
-	// FullMeshCheckSettings in LobbyManager.cs.
+	// Core:reconnect_grace_period_ms in appsettings.json.
 	internal static class UserSessionSettings
 	{
 		internal static Int64 ReconnectGracePeriodMS => Get("reconnect_grace_period_ms", 30000);
@@ -1256,10 +1251,15 @@ namespace GenOnlineService
 			m_UserID = ownerID;
 
 			// store the exe CRC (this is actually the .CODE section, for AC)
-			if (Helpers.g_dictInitialExeCRCs.ContainsKey(ownerID))
+			if (Helpers.g_dictInitialExeCRCs.TryRemove(ownerID, out (string ExeCrcHash, Int64 RegisteredAtTicks) acExeCrcEntry))
 			{
-				ACExeCRC = Helpers.g_dictInitialExeCRCs[ownerID].ToUpper();
-				Helpers.g_dictInitialExeCRCs.Remove(ownerID, out string removedCRC);
+				ACExeCRC = acExeCrcEntry.ExeCrcHash.ToUpper();
+			}
+
+			if (Helpers.g_dictInitialGameCRCs.TryRemove(ownerID, out (UInt32 ExeCRC, UInt32 IniCRC, Int64 RegisteredAtTicks) gameCRCs))
+			{
+				ExeCRC = gameCRCs.ExeCRC;
+				IniCRC = gameCRCs.IniCRC;
 			}
 		}
 
@@ -1328,11 +1328,7 @@ namespace GenOnlineService
 
 		public bool NeedsCleanup()
 		{
-			// Grace period an abandoned (no live websocket) session gets before it's torn down,
-			// letting a brief disconnect reconnect instead of losing the slot. Configurable via
-			// Core:reconnect_grace_period_ms; defaults to 30 seconds, unchanged from before this
-			// was configurable (the old comment here said "5 minutes", which was wrong - 30000 is
-			// milliseconds, i.e. 30 seconds).
+			// Grace period before an abandoned session is torn down. Core:reconnect_grace_period_ms, default 30s.
 			return Environment.TickCount64 - m_timeAbandoned >= UserSessionSettings.ReconnectGracePeriodMS;
 		}
 
@@ -3016,6 +3012,9 @@ namespace GenOnlineService
 
 		// peers the member is still negotiating with; absent from older clients
 		public List<Int64> connecting_map { get; set; } = new();
+
+		// user IDs this member has exhausted its connection attempts against; absent/empty from older clients
+		public List<Int64> gave_up_user_ids { get; set; } = new();
 	}
 
 	public class WebSocketMessage_Social_NewFriendRequest : WebSocketMessage
@@ -3023,10 +3022,16 @@ namespace GenOnlineService
 		public string display_name { get; set; } = String.Empty;
 	}
 
+	// FULL_MESH_CONNECTIVITY_CHECK_RESPONSE_COMPLETE_TO_HOST. Sent at most once per check, only to
+	// the current owner; a superseded or stale-requester check sends nothing (see
+	// Lobby.CompleteFullMeshConnectivityCheckLocked).
 	public class WebSocketMessage_FullMeshConnectivityCheckOutcome: WebSocketMessage
 	{
 		public bool mesh_complete { get; set; }
 		public List<MissingConnectionEntry> missing_connections { get; set; } = new();
+
+		// "" if mesh_complete; else one of missing_connections/timeout/membership_changed/gave_up (FullMeshCheckOutcomeReason).
+		public string reason { get; set; } = string.Empty;
 	}
 
 	public class WebSocketMessage_FullMeshConnectivityCheckOutcomeForHost : WebSocketMessage
@@ -3194,6 +3199,12 @@ namespace GenOnlineService
 	{
 
 		public Int64 lobby_id
+		{
+			get; set;
+		}
+
+		// Same shape as GET lobby's "lobby" field. Optional; older clients ignore it.
+		public Lobby? lobby
 		{
 			get; set;
 		}

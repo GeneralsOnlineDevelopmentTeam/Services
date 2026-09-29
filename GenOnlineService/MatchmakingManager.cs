@@ -153,8 +153,11 @@ public class Playlist
 	public UInt16 PlaylistID { get; private set; }
 	public string Name { get; private set; }
 	public int MinPlayers { get; private set; }
-	public int DesiredPlayers { get; private set; }
+	public int MaxPlayers { get; private set; }
 	public int MinSelectedMaps { get; private set; }
+
+	// Wire-compat alias for GET Playlists; MaxPlayers is the additive field.
+	public int DesiredPlayers => MaxPlayers;
 
 	public bool AllowTeams { get; private set; }
 	public int TeamSize { get; private set; }
@@ -163,13 +166,13 @@ public class Playlist
 	public List<PlaylistMap> Maps { get; private set; }
 
 	public Playlist(UInt16 a_PlaylistID, string a_strName,
-		int a_MinPlayers, int a_DesiredPlayers, int a_MinSelectedMaps, bool a_bAllowTeams, int a_TeamSize, bool a_bAllowArmySelection, UInt16 a_gracePeriodAtMinPlayersMSec, List<PlaylistMap> allowedMaps)
+		int a_MinPlayers, int a_MaxPlayers, int a_MinSelectedMaps, bool a_bAllowTeams, int a_TeamSize, bool a_bAllowArmySelection, UInt16 a_gracePeriodAtMinPlayersMSec, List<PlaylistMap> allowedMaps)
 	{
 		PlaylistID = a_PlaylistID;
 		Name = a_strName;
 		MinPlayers = a_MinPlayers;
 		MinSelectedMaps = a_MinSelectedMaps;
-		DesiredPlayers = a_DesiredPlayers;
+		MaxPlayers = a_MaxPlayers;
 		AllowTeams = a_bAllowTeams;
 		TeamSize = a_TeamSize;
 		AllowArmySelection = a_bAllowArmySelection;
@@ -180,6 +183,70 @@ public class Playlist
 
 static class MatchmakingManager
 {
+	// Min<=Max, every map's slot count within [Min,Max], every N in [Min,Max] has >=1 exact-N map.
+	internal static bool ValidatePlaylistMapSizes(Playlist playlist, out List<string> errors)
+	{
+		errors = new List<string>();
+
+		if (playlist.MinPlayers > playlist.MaxPlayers)
+		{
+			errors.Add($"MinPlayers ({playlist.MinPlayers}) > MaxPlayers ({playlist.MaxPlayers})");
+		}
+
+		foreach (PlaylistMap map in playlist.Maps)
+		{
+			if (map.MaxPlayers < playlist.MinPlayers || map.MaxPlayers > playlist.MaxPlayers)
+			{
+				errors.Add($"Map '{map.Name}' has {map.MaxPlayers} slots, outside [{playlist.MinPlayers},{playlist.MaxPlayers}]");
+			}
+		}
+
+		for (int n = playlist.MinPlayers; n <= playlist.MaxPlayers; n++)
+		{
+			bool bHasExactMap = false;
+			foreach (PlaylistMap map in playlist.Maps)
+			{
+				if (map.MaxPlayers == n)
+				{
+					bHasExactMap = true;
+					break;
+				}
+			}
+
+			if (!bHasExactMap)
+			{
+				errors.Add($"No map with exactly {n} slots");
+			}
+		}
+
+		return errors.Count == 0;
+	}
+
+	// Invalid playlists are excluded and logged rather than crashing startup.
+	public static void ValidatePlaylistsAtStartup()
+	{
+		List<UInt16> invalidPlaylistIDs = new();
+		foreach (var kvPair in g_Playlists)
+		{
+			if (!ValidatePlaylistMapSizes(kvPair.Value, out List<string> errors))
+			{
+				Console.ForegroundColor = ConsoleColor.Red;
+				Console.WriteLine("[FATAL] Playlist {0} ('{1}') failed validation and is excluded from matchmaking:", kvPair.Key, kvPair.Value.Name);
+				foreach (string error in errors)
+				{
+					Console.WriteLine("  - {0}", error);
+				}
+				Console.ForegroundColor = ConsoleColor.Gray;
+				invalidPlaylistIDs.Add(kvPair.Key);
+			}
+		}
+
+		foreach (UInt16 invalidID in invalidPlaylistIDs)
+		{
+			g_Playlists.Remove(invalidID);
+		}
+	}
+
 	// World Series 2026 Qualification in September requires the matchmaking to be
 	// based off the monthly ELO.
 	internal static int GetMatchmakingElo(PlayerStats stats)
@@ -193,7 +260,7 @@ static class MatchmakingManager
 			: stats.EloRating;
 	}
 
-	public static void PlayerWidenSearch(UserSession playerSession)
+	public static async Task PlayerWidenSearch(UserSession playerSession)
 	{
 		// NOTE: we dont check the state of the bucket here, but it doesn't really matter since expanding the maps after it started won't do anything anyway
 
@@ -227,6 +294,8 @@ static class MatchmakingManager
 						// update our player too
 						playerSession.MatchmakingMapIndicies = new ConcurrentList<int>(lstAllMaps);
 
+						await SendMatchmakingMessage(playerSession, "Search widened: you can now be matched on any map in this playlist.");
+
 						// can't be in multiple buckets
 						return;
 					}
@@ -245,6 +314,8 @@ static class MatchmakingManager
 			}
 
 			playerSession.MatchmakingMapIndicies = new ConcurrentList<int>(lstAllMaps);
+
+			await SendMatchmakingMessage(playerSession, "Search widened: you can now be matched on any map in this playlist.");
 		}
 	}
 
@@ -346,7 +417,7 @@ static class MatchmakingManager
 
 		public UInt16 PlaylistID { get; private set; }
 		public int MinPlayers { get; private set; }
-		public int DesiredPlayers { get; private set; }
+		public int MaxPlayers { get; private set; }
 
 		public UInt32 ExeCRC { get; private set; }
 		public UInt32 IniCRC { get; private set; }
@@ -364,6 +435,20 @@ static class MatchmakingManager
 		DateTime m_CreationTime = DateTime.Now;
         DateTime m_LastELOExpansionTime = DateTime.Now;
 
+		// Once true, further widening steps for this bucket stop mattering: merges skip the Elo
+		// check, new players may join regardless of Elo, and the per-step widening message stops.
+		private bool m_bHasNotifiedSearchingAllSkillRanges = false;
+
+		public int GetEloExpansionValueForThisBucket()
+		{
+			return GetAvgElo() >= EloConfig.HighEloThreshold ? EloConfig.EloExpansionValue_HighELO : EloConfig.EloExpansionValue_Standard;
+		}
+
+		public bool HasExceededMaxEloRange()
+		{
+			return (eloExpansionIteration * GetEloExpansionValueForThisBucket()) > EloConfig.MaxEloRangeBeforeSearchingAll;
+		}
+
 		private TimeSpan TimeSinceLastEloExpansion()
 		{
             TimeSpan timeDifference = DateTime.Now - m_LastELOExpansionTime;
@@ -380,19 +465,22 @@ static class MatchmakingManager
 			return null;
 		}
 
-		public void DetermineMap(out string strMapName, out string strMapPath)
+		// Selects a map with EXACTLY matchSize slots, never a different size. Returns false if none exists.
+		// bWasFallback is true when no map in the group's shared selection has exactly matchSize slots,
+		// so a random exact-size map outside that selection was picked instead.
+		public bool TryDetermineMapForSize(int matchSize, out string strMapName, out string strMapPath, out bool bWasFallback)
 		{
-			// If they are in this bucket, they had SOME map overlap with the bucket creator, now we need to find the common ground between everyone
+			strMapName = string.Empty;
+			strMapPath = string.Empty;
+			bWasFallback = false;
 
-			// TODO_QUICKMATCH: what if we cant find a suitable map?
-
-			// first condense the map list doesn to a list that has mutually agreed upon maps/preferences from all participants
-			//var mapSetFromBucketCreator = new HashSet<int>(lstMapIndices);
+			if (!MatchmakingManager.g_Playlists.TryGetValue(PlaylistID, out Playlist? playlist))
+			{
+				return false;
+			}
 
 			var perPlayerMapSet = new List<HashSet<int>>();
-			var finalMapSet = new HashSet<int>(lstMapIndices.ToList()); // we need to check intersection against this, so pre-populate it with the original bucket creation list, because that's the "biggest set" in theory
-
-			// TODO_QUICKMATCH: Optimize this, it's inefficient
+			var finalMapSet = new HashSet<int>(lstMapIndices.ToList());
 
 			foreach (MatchmakingBucketMember member in m_lstMembers)
 			{
@@ -403,97 +491,35 @@ static class MatchmakingManager
 				}
 			}
 
-			// Find shared values across all of perPlayerMapSet
-			if (perPlayerMapSet.Count > 0)
+			foreach (HashSet<int> memberMapSet in perPlayerMapSet)
 			{
-				for (int i = 0; i < perPlayerMapSet.Count; i++)
-				{
-					finalMapSet.IntersectWith(perPlayerMapSet[i]);
-				}
+				finalMapSet.IntersectWith(memberMapSet);
 			}
 
-			// remove any maps that aren't big enough (mainly applies to FFA's where maps may be 6 players but bucket could be 8 players)
-			// NOTE: iterate a real copy, we are mutating finalMapSet below
-			var copyMapSetForIter = new HashSet<int>(finalMapSet);
-			foreach (int mapIndex in copyMapSetForIter)
+			List<int> exactMatches = finalMapSet
+				.Where(mapIndex => mapIndex >= 0 && mapIndex < playlist.Maps.Count && playlist.Maps[mapIndex].MaxPlayers == matchSize)
+				.ToList();
+
+			if (exactMatches.Count > 0)
 			{
-				if (MatchmakingManager.g_Playlists.TryGetValue(PlaylistID, out Playlist? playlist))
-				{
-					if (mapIndex >= 0 && mapIndex < playlist.Maps.Count)
-					{
-						if (playlist.Maps[mapIndex].MaxPlayers < CurrentMemberCount())
-						{
-							finalMapSet.Remove(mapIndex);
-						}
-					}
-				}
+				int mapIndex = exactMatches[Random.Shared.Next(exactMatches.Count)];
+				strMapName = playlist.Maps[mapIndex].Name;
+				strMapPath = playlist.Maps[mapIndex].Path;
+				return true;
 			}
 
-			// Randomly select a map from the map list
-			if (finalMapSet.Count > 0)
+			List<PlaylistMap> exactSizeMaps = playlist.Maps.Where(map => map.MaxPlayers == matchSize).ToList();
+			if (exactSizeMaps.Count > 0)
 			{
-				// Get the playlist for this bucket
-				if (MatchmakingManager.g_Playlists.TryGetValue(PlaylistID, out Playlist? playlist))
-				{
-					var finalMapIndices = finalMapSet.ToList();
-					int selectedIndex = Random.Shared.Next(finalMapIndices.Count);
-					int mapIndex = finalMapIndices[selectedIndex];
-
-					// Defensive: ensure index is valid for playlist.Maps
-					if (mapIndex >= 0 && mapIndex < playlist.Maps.Count)
-					{
-						strMapName = playlist.Maps[mapIndex].Name;
-						strMapPath = playlist.Maps[mapIndex].Path;
-						return;
-					}
-				}
-			}
-			else
-			{
-				// pick a sensible default (biggest map in playlist), probably not what the players asked for, but we cant play on no map
-				Console.WriteLine("WARNING: No mutually agreed upon map found for matchmaking bucket, falling back to largest map in playlist");
-
-				if (MatchmakingManager.g_Playlists.TryGetValue(PlaylistID, out Playlist? playlist))
-				{
-					int biggestCountSeen = 0;
-					PlaylistMap? mapToUse = null;
-					foreach (var map in playlist.Maps)
-					{
-						if (map.MaxPlayers > biggestCountSeen)
-						{
-							biggestCountSeen = map.MaxPlayers;
-							mapToUse = map;
-						}
-					}
-
-					// TODO_QUICKMATCH: What if it's still null? don't think we can get into that state since we must have some kind of map in the playlist
-					if (mapToUse != null)
-					{
-						strMapName = mapToUse.Name;
-						strMapPath = mapToUse.Path;
-						return;
-					}
-				}
+				PlaylistMap chosenMap = exactSizeMaps[Random.Shared.Next(exactSizeMaps.Count)];
+				strMapName = chosenMap.Name;
+				strMapPath = chosenMap.Path;
+				bWasFallback = true;
+				return true;
 			}
 
-			// TODO_QUICKMATCH: What happens if you widen when already in a bucket? tell the user htey cant? you would need everyone to expand, or just expand for everyone?
-
-			// Fallback: use first map from bucket creator's list if available
-			if (lstMapIndices.Count > 0 && MatchmakingManager.g_Playlists.TryGetValue(PlaylistID, out Playlist? fallbackPlaylist))
-			{
-				int fallbackIndex = lstMapIndices[0];
-				if (fallbackIndex >= 0 && fallbackIndex < fallbackPlaylist.Maps.Count)
-				{
-					strMapName = fallbackPlaylist.Maps[fallbackIndex].Name;
-					strMapPath = fallbackPlaylist.Maps[fallbackIndex].Path;
-					return;
-				}
-			}
-
-			// If no map found, set to empty
-			strMapName = string.Empty;
-			strMapPath = string.Empty;
-
+			Console.WriteLine("WARNING: Playlist {0} has no exact-{1}-player map; a match cannot form at this size.", PlaylistID, matchSize);
+			return false;
 		}
 
 		public bool DoMapSelectionsIntersect(ConcurrentList<int> lstRhs)
@@ -548,11 +574,15 @@ static class MatchmakingManager
 				return false;
 			}
 
-			// must be within the eloThreshold
-			int eloExpansionToUse = (bucketToMerge.GetAvgElo() >= EloConfig.HighEloThreshold || GetAvgElo() >= EloConfig.HighEloThreshold) ? EloConfig.EloExpansionValue_HighELO : EloConfig.EloExpansionValue_Standard;
-			if (!IsAvgEloWithinThreshold(bucketToMerge.GetAvgElo(), eloExpansionIteration * eloExpansionToUse))
+			// must be within the eloThreshold, unless either side has widened past the point of caring
+			// about Elo at all - the long-waiting side just wants any match
+			if (!HasExceededMaxEloRange() && !bucketToMerge.HasExceededMaxEloRange())
 			{
-				return false;
+				int eloExpansionToUse = (bucketToMerge.GetAvgElo() >= EloConfig.HighEloThreshold || GetAvgElo() >= EloConfig.HighEloThreshold) ? EloConfig.EloExpansionValue_HighELO : EloConfig.EloExpansionValue_Standard;
+				if (!IsAvgEloWithinThreshold(bucketToMerge.GetAvgElo(), eloExpansionIteration * eloExpansionToUse))
+				{
+					return false;
+				}
 			}
 
 			// cant be blocked by any participant (or have any participant blocked)
@@ -609,7 +639,7 @@ static class MatchmakingManager
 				UserSession? session = member.GetAssociatedSession();
 				if (session != null)
 				{
-					await SendMatchmakingMessage(session, String.Format("Your matchmaking bucket was merged with another bucket. Status: {0}/{1} players. ({2} required to start)", CurrentMemberCount(), DesiredPlayers, MinPlayers));
+					await SendMatchmakingMessage(session, String.Format("Your matchmaking bucket was merged with another bucket. Status: {0}/{1} players. ({2} required to start)", CurrentMemberCount(), MaxPlayers, MinPlayers));
 				}
 			}
 		}
@@ -694,6 +724,22 @@ static class MatchmakingManager
 			}
 		}
 
+		public bool OwnsLobby(Int64 lobbyID)
+		{
+			return lobbyID != -1 && m_LobbyID == lobbyID;
+		}
+
+		public void InvalidateAutoStart()
+		{
+			lock (m_StateLock)
+			{
+				if (m_bWaitingOnLobbyJoins || m_bHasStartedCountdown || m_bWaitingOnMeshConnectivityChecks)
+				{
+					m_bAutoStartInvalidated = true;
+				}
+			}
+		}
+
 		// TODO_EFCORE: Shared User data, and session<->websocket could be weakrefs
 		public bool IsJoiningUserBlockedByOrHasBlockedAnyBucketMember(UserSession? joiningUserSession, Int64 joining_user)
 		{
@@ -751,7 +797,7 @@ static class MatchmakingManager
 				return false;
 			}
 
-			return numUsers <= (DesiredPlayers - m_lstMembers.Count);
+			return numUsers <= (MaxPlayers - m_lstMembers.Count);
 		}
 
 		public bool IsAvgEloWithinThreshold(int playerElo, int eloThreshold)
@@ -824,7 +870,7 @@ static class MatchmakingManager
 						UserSession? memberSession = member.GetAssociatedSession();
                         if (memberSession != null)
                         {
-                            await SendMatchmakingMessage(memberSession, String.Format("Status: {0}/{1} players. ({2} required to start)", CurrentMemberCount(), DesiredPlayers, MinPlayers));
+                            await SendMatchmakingMessage(memberSession, String.Format("Status: {0}/{1} players. ({2} required to start)", CurrentMemberCount(), MaxPlayers, MinPlayers));
                         }
                     }
 
@@ -835,17 +881,129 @@ static class MatchmakingManager
             return false;
 		}
 
-		public MatchmakingBucket(UInt16 playlistID, UserSession owningSession, int minPlayers, int desiredPlayers, ConcurrentList<int> mapIndices, UInt32 exe_crc, UInt32 ini_crc, EKnownAnticheatID anticheatID)
+		public MatchmakingBucket(UInt16 playlistID, UserSession owningSession, int minPlayers, int maxPlayers, ConcurrentList<int> mapIndices, UInt32 exe_crc, UInt32 ini_crc, EKnownAnticheatID anticheatID)
 		{
 			PlaylistID = playlistID;
 			MinPlayers = minPlayers;
-			DesiredPlayers = desiredPlayers;
+			MaxPlayers = maxPlayers;
 			lstMapIndices = mapIndices;
 			ExeCRC = exe_crc;
 			IniCRC = ini_crc;
 			AnticheatID = anticheatID;
 
 			m_lstMembers.Add(new MatchmakingBucketMember(owningSession));
+		}
+
+		internal void AddExistingMember(MatchmakingBucketMember member)
+		{
+			lock (m_StateLock)
+			{
+				m_lstMembers.Add(member);
+			}
+		}
+
+		private static bool PlaylistHasExactSizeMap(Playlist playlist, int n)
+		{
+			foreach (PlaylistMap map in playlist.Maps)
+			{
+				if (map.MaxPlayers == n)
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		// Forms immediately at MaxPlayers; after the grace period, forms at the largest N in
+		// [MinPlayers, min(current, MaxPlayers)] that has an exact-N map.
+		internal bool TryDetermineFormationSize(Playlist playlist, bool bGraceExpired, out int matchSize)
+		{
+			int currentCount = CurrentMemberCount();
+
+			if (currentCount >= playlist.MaxPlayers)
+			{
+				matchSize = playlist.MaxPlayers;
+				return true;
+			}
+
+			if (!bGraceExpired)
+			{
+				matchSize = 0;
+				return false;
+			}
+
+			for (int n = Math.Min(currentCount, playlist.MaxPlayers); n >= playlist.MinPlayers; n--)
+			{
+				if (PlaylistHasExactSizeMap(playlist, n))
+				{
+					matchSize = n;
+					return true;
+				}
+			}
+
+			matchSize = 0;
+			return false;
+		}
+
+		// Keeps the first keepCount members; moves the rest into a new bucket with the same grouping.
+		private async Task SplitOffExcessMembersToNewBucketAsync(int keepCount)
+		{
+			List<MatchmakingBucketMember> excessMembers = new();
+			lock (m_StateLock)
+			{
+				List<MatchmakingBucketMember> all = m_lstMembers.ToList();
+				for (int i = keepCount; i < all.Count; i++)
+				{
+					if (m_lstMembers.Remove(all[i]))
+					{
+						excessMembers.Add(all[i]);
+					}
+				}
+			}
+
+			if (excessMembers.Count == 0)
+			{
+				return;
+			}
+
+			// Pick the first excess member who still has a live session to own the new bucket - the
+			// constructor requires one. A dead session at index 0 must not lose every other (live)
+			// excess member; if nobody has a live session left, there's nothing to bucket or notify.
+			MatchmakingBucketMember? newBucketOwner = null;
+			foreach (MatchmakingBucketMember excessMember in excessMembers)
+			{
+				if (excessMember.GetAssociatedSession() != null)
+				{
+					newBucketOwner = excessMember;
+					break;
+				}
+			}
+
+			if (newBucketOwner == null)
+			{
+				return;
+			}
+
+			MatchmakingBucket newBucket = new MatchmakingBucket(PlaylistID, newBucketOwner.GetAssociatedSession()!, MinPlayers, MaxPlayers, new ConcurrentList<int>(lstMapIndices.ToList()), ExeCRC, IniCRC, AnticheatID);
+			foreach (MatchmakingBucketMember excessMember in excessMembers)
+			{
+				if (excessMember != newBucketOwner && excessMember.GetAssociatedSession() != null)
+				{
+					newBucket.AddExistingMember(excessMember);
+				}
+			}
+
+			MatchmakingManager.RegisterExistingBucket(PlaylistID, newBucket);
+
+			foreach (MatchmakingBucketMember excessMember in excessMembers)
+			{
+				UserSession? excessSession = excessMember.GetAssociatedSession();
+				if (excessSession != null)
+				{
+					await SendMatchmakingMessage(excessSession, "Still searching for more players...");
+				}
+			}
 		}
 
 		public Int64 GetLobbyID()
@@ -856,6 +1014,9 @@ static class MatchmakingManager
 		Int64 m_LobbyID = -1;
 		Int64 m_StartTime = -1;
 		Int64 m_timeStartedWaitingOnLobbyJoins = -1;
+
+		// Player count the match was formed with; the map's slot count must match this.
+		int m_MatchFormedSize = -1;
 
 		// how long we give everyone to actually connect to the QuickMatch lobby before we give up on the stragglers
 		private const Int64 c_LobbyJoinTimeoutMSec = 45000;
@@ -916,7 +1077,7 @@ static class MatchmakingManager
 			}
 
 			// kept at or above the legacy threshold so short tuned checks don't show a start countdown on older clients
-			QueueSetupProgress(Math.Max(FullMeshCheckSettings.MaxDurationMS + c_SetupClientTimeoutMarginMSec, c_LegacyClientCountdownThresholdMSec));
+			QueueSetupProgress(Math.Max(FullMeshCheckSettings.RefereeWindowMS + c_SetupClientTimeoutMarginMSec, c_LegacyClientCountdownThresholdMSec));
 
 			lobby.SendFullMeshConnectivityCheckRequestToMembers();
 
@@ -926,11 +1087,72 @@ static class MatchmakingManager
 				if (memberSession != null)
 				{
 					await SendMatchmakingMessage(memberSession, "Preparing match...");
+					await SendMatchmakingMessage(memberSession, "Checking connections between all players...");
 				}
 			}
 		}
 
-		private async Task AbortQuickMatchAutoStart(string reason)
+		// Re-verifies the match is still valid to start: same players, all live, mesh check still valid.
+		internal bool VerifyMatchIsStillValid(Lobby lobby, out string failureReason)
+		{
+			List<LobbyMember> humanMembers = lobby.Members.Where(m => m.IsHuman()).ToList();
+
+			if (humanMembers.Count != m_MatchFormedSize)
+			{
+				failureReason = "the lobby no longer holds the number of players the match was formed with";
+				return false;
+			}
+
+			if (lobby.MaxPlayers != m_MatchFormedSize)
+			{
+				failureReason = "the lobby's slot count no longer matches the map's player count";
+				return false;
+			}
+
+			HashSet<Int64> lobbyUserIDs = humanMembers.Select(m => m.UserID).ToHashSet();
+
+			HashSet<Int64> bucketUserIDs = new();
+			foreach (MatchmakingBucketMember bucketMember in m_lstMembers)
+			{
+				UserSession? bucketMemberSession = bucketMember.GetAssociatedSession();
+				if (bucketMemberSession != null)
+				{
+					bucketUserIDs.Add(bucketMemberSession.m_UserID);
+				}
+			}
+
+			if (!lobbyUserIDs.SetEquals(bucketUserIDs))
+			{
+				failureReason = "the lobby's players no longer match the players the match was formed with";
+				return false;
+			}
+
+			foreach (LobbyMember member in humanMembers)
+			{
+				if (!member.GetSession().TryGetTarget(out UserSession? session) || session == null || session.IsAbandoned())
+				{
+					failureReason = $"user {member.UserID}'s connection is no longer live";
+					return false;
+				}
+			}
+
+			if (lobby.MembershipVersion != lobby.MembershipVersionAtLastCheckStart)
+			{
+				failureReason = "lobby membership changed after the connectivity check";
+				return false;
+			}
+
+			if (lobby.LastFullMeshConnectivityCheckOutcome != true)
+			{
+				failureReason = "the last connectivity check did not report everyone connected";
+				return false;
+			}
+
+			failureReason = string.Empty;
+			return true;
+		}
+
+		private async Task AbortQuickMatchAutoStart(string reason, List<string>? extraMessagesBeforeRequeue = null)
 		{
 			List<UserSession> sessionsToRequeue = new();
 			lock (m_StateLock)
@@ -987,6 +1209,15 @@ static class MatchmakingManager
 				if (await TryRequeueRegisteredPlayer(memberSession, requeueActionJSON))
 				{
 					await SendMatchmakingMessage(memberSession, reason);
+
+					if (extraMessagesBeforeRequeue != null)
+					{
+						foreach (string strExtraMessage in extraMessagesBeforeRequeue)
+						{
+							await SendMatchmakingMessage(memberSession, strExtraMessage);
+						}
+					}
+
 					await SendMatchmakingMessage(memberSession, "Re-queueing you into matchmaking...");
 				}
 			}
@@ -1057,6 +1288,8 @@ static class MatchmakingManager
 
 					if (!lobbyDuringMeshCheck.PendingFullMeshConnectivityChecks)
 					{
+						bool bMatchStillValid = VerifyMatchIsStillValid(lobbyDuringMeshCheck, out string verifyFailureReason);
+
 						bool bStartCountdown;
 						bool bAbortStart;
 						bool bInvalidatedAtDecision;
@@ -1071,7 +1304,7 @@ static class MatchmakingManager
 							else
 							{
 								m_bWaitingOnMeshConnectivityChecks = false;
-								bStartCountdown = !bInvalidatedAtDecision && lobbyDuringMeshCheck.LastFullMeshConnectivityCheckOutcome == true;
+								bStartCountdown = !bInvalidatedAtDecision && bMatchStillValid;
 								bAbortStart = !bStartCountdown;
 								if (bStartCountdown)
 								{
@@ -1089,6 +1322,7 @@ static class MatchmakingManager
 								UserSession? memberSession = member.GetAssociatedSession();
 								if (memberSession != null)
 								{
+									await SendMatchmakingMessage(memberSession, "All players are connected.");
 									await SendMatchmakingMessage(memberSession, $"Starting game in {c_GameStartCountdownMSec / 1000} seconds.");
 								}
 							}
@@ -1097,8 +1331,21 @@ static class MatchmakingManager
 						{
 							string reason = bInvalidatedAtDecision
 								? "QuickMatch auto-start was aborted because a player left during match setup."
-								: "QuickMatch auto-start was aborted because not all players were fully mesh-connected.";
-							await AbortQuickMatchAutoStart(reason);
+								: !bMatchStillValid
+									? $"QuickMatch auto-start was aborted because the match is no longer valid: {verifyFailureReason}."
+									: "QuickMatch auto-start was aborted because not all players were fully mesh-connected.";
+
+							// Only meaningful when the mesh check itself is why we're aborting - pull the pair
+							// data before the lobby gets torn down below.
+							List<string>? missingConnectionMessages = null;
+							if (lobbyDuringMeshCheck.LastFullMeshConnectivityCheckOutcome == false
+								&& lobbyDuringMeshCheck.LastFullMeshConnectivityCheckMissingConnections.Count > 0)
+							{
+								missingConnectionMessages = lobbyDuringMeshCheck.BuildMissingConnectionMessages(
+									lobbyDuringMeshCheck.LastFullMeshConnectivityCheckMissingConnections);
+							}
+
+							await AbortQuickMatchAutoStart(reason, missingConnectionMessages);
 						}
 					}
 
@@ -1119,6 +1366,8 @@ static class MatchmakingManager
 						return;
 					}
 
+					bool bMatchStillValidAtStart = VerifyMatchIsStillValid(lobbyAfterCountdown, out string startVerifyFailureReason);
+
 					bool bStartGame;
 					bool bAbortStart;
 					lock (m_StateLock)
@@ -1132,7 +1381,7 @@ static class MatchmakingManager
 						{
 							m_bHasStartedCountdown = false;
 							m_StartTime = -1;
-							bStartGame = !m_bAutoStartInvalidated;
+							bStartGame = !m_bAutoStartInvalidated && bMatchStillValidAtStart;
 							bAbortStart = !bStartGame;
 							if (bStartGame)
 							{
@@ -1148,7 +1397,10 @@ static class MatchmakingManager
 					}
 					else if (bAbortStart)
 					{
-						await AbortQuickMatchAutoStart("QuickMatch auto-start was aborted because a player left during match setup.");
+						string abortReason = !bMatchStillValidAtStart
+							? $"QuickMatch auto-start was aborted because the match is no longer valid: {startVerifyFailureReason}."
+							: "QuickMatch auto-start was aborted because a player left during match setup.";
+						await AbortQuickMatchAutoStart(abortReason);
 					}
 
 					return;
@@ -1159,7 +1411,7 @@ static class MatchmakingManager
 				if (!m_bWaitingOnLobbyJoins && !m_bHasStartedCountdown)
 				{
 					// must have a min player count
-					if (MinPlayers != DesiredPlayers)
+					if (MinPlayers != MaxPlayers)
 					{
 						// have we hit the min player count? start a timer
 						// NOTE: >= not ==, a merge (or several joins in one tick) can jump straight past MinPlayers
@@ -1202,23 +1454,56 @@ static class MatchmakingManager
                         // expand
                         ExpandElo();
 
-						foreach (MatchmakingBucketMember member in m_lstMembers)
+						if (HasExceededMaxEloRange())
 						{
-							UserSession? memberSession = member.GetAssociatedSession();
-							if (memberSession != null)
+							// past this point Elo no longer gates merges or joins for this bucket - say so once and
+							// stop sending the per-step widening message, which no longer means anything
+							if (!m_bHasNotifiedSearchingAllSkillRanges)
 							{
-								await SendMatchmakingMessage(memberSession, "Expanding search criteria to find more players...");
+								m_bHasNotifiedSearchingAllSkillRanges = true;
+
+								foreach (MatchmakingBucketMember member in m_lstMembers)
+								{
+									UserSession? memberSession = member.GetAssociatedSession();
+									if (memberSession != null)
+									{
+										await SendMatchmakingMessage(memberSession, "Now searching all skill ranges...");
+									}
+								}
+							}
+						}
+						else
+						{
+							// same threshold IsAvgEloWithinThreshold uses for merges at this step, but keyed off
+							// this bucket's own average (merges also factor in the other bucket's average; the
+							// message doesn't have another bucket to consider)
+							int eloRangeForMessage = eloExpansionIteration * GetEloExpansionValueForThisBucket();
+
+							foreach (MatchmakingBucketMember member in m_lstMembers)
+							{
+								UserSession? memberSession = member.GetAssociatedSession();
+								if (memberSession != null)
+								{
+									await SendMatchmakingMessage(memberSession, $"Widening the skill range to ±{eloRangeForMessage} to find more players...");
+								}
 							}
 						}
                     }
 
                     // did we hit the timer OR have enough players to start?
                     bool bMinPlayersCountdownExpired = m_bReachedMinPlayers && (Environment.TickCount64 - m_timeReachedMinPlayers) > playlist.GracePeriodAtMinPlayersMSec;
-					if (bMinPlayersCountdownExpired || CurrentMemberCount() >= DesiredPlayers)
+					if (TryDetermineFormationSize(playlist, bMinPlayersCountdownExpired, out int formationSize))
 					{
 						// reset min player countdown
 						m_bReachedMinPlayers = false;
 						m_timeReachedMinPlayers = -1;
+
+						if (formationSize < CurrentMemberCount())
+						{
+							await SplitOffExcessMembersToNewBucketAsync(formationSize);
+						}
+
+						m_MatchFormedSize = formationSize;
 
 						lock (m_StateLock)
 						{
@@ -1256,20 +1541,47 @@ static class MatchmakingManager
 							if (dummyHostUserData != null)
 							{
 								// make a lobby
-								DetermineMap(out string strMapName, out string strMapPath);
+								if (!TryDetermineMapForSize(m_MatchFormedSize, out string strMapName, out string strMapPath, out bool bMapWasFallback))
+								{
+									Console.WriteLine("Matchmaking bucket {0} could not find a map for size {1}, skipping formation this tick", PlaylistID, m_MatchFormedSize);
+									return;
+								}
+
+								// Only speak up when there's something noteworthy, and never send both lines: the
+								// fallback note already states the match size, so it takes priority over the
+								// smaller-than-max note; when the map came from the group's own shared selection at
+								// full size, there's nothing worth telling the player.
+								string? strMapMessage = bMapWasFallback
+									? $"None of your selected maps fit a {m_MatchFormedSize}-player match, so {strMapName} was picked."
+									: m_MatchFormedSize < MaxPlayers
+										? $"Starting a {m_MatchFormedSize}-player match on {strMapName}."
+										: null;
+
+								if (strMapMessage != null)
+								{
+									foreach (MatchmakingBucketMember mapMessageMember in m_lstMembers)
+									{
+										UserSession? mapMessageSession = mapMessageMember.GetAssociatedSession();
+										if (mapMessageSession != null)
+										{
+											await SendMatchmakingMessage(mapMessageSession, strMapMessage);
+										}
+									}
+								}
 
 								using var scope = ServiceLocator.Services.CreateScope();
 								var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
 								await using var db = await factory.CreateDbContextAsync();
 
 								m_LobbyID = await lobbyManager.CreateLobby(db, dummyHostUser, dummyHostUserData.m_strDisplayName, "Quickmatch Lobby", strMapName, strMapPath + ".map",
-										true, playlist.DesiredPlayers, "", 12345, false, true, 10000, false, String.Empty, -5, false, Constants.g_DefaultCameraMaxHeight, dummyHostUser.ExeCRC, dummyHostUser.IniCRC, ELobbyType.QuickMatch,
+										true, m_MatchFormedSize, "", 12345, false, true, 10000, false, String.Empty, -5, false, Constants.g_DefaultCameraMaxHeight, dummyHostUser.ExeCRC, dummyHostUser.IniCRC, ELobbyType.QuickMatch,
 										dummyHostUser.AnticheatID);
 
 								// tell both to join our lobby
 								WebSocketMessage_MatchmakerJoinLobby joinAction = new WebSocketMessage_MatchmakerJoinLobby();
 								joinAction.msg_id = (int)EWebSocketMessageID.MATCHMAKING_ACTION_JOIN_PREARRANGED_LOBBY;
 								joinAction.lobby_id = m_LobbyID;
+								joinAction.lobby = lobbyManager.GetLobby(m_LobbyID);
 								byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(joinAction));
 
 								foreach (MatchmakingBucketMember member in m_lstMembers)
@@ -1309,7 +1621,7 @@ static class MatchmakingManager
 								ActiveUserDataCache? memberSession = member.GetAssociatedSession();
 								if (memberSession != null)
 								{
-									await SendMatchmakingMessage(memberSession, String.Format("A player has left and the starting countdown has been cancelled. Status: {0}/{1} players. ({2} required to start)", CurrentMemberCount(), DesiredPlayers, MinPlayers));
+									await SendMatchmakingMessage(memberSession, String.Format("A player has left and the starting countdown has been cancelled. Status: {0}/{1} players. ({2} required to start)", CurrentMemberCount(), MaxPlayers, MinPlayers));
 								}
 							}
 
@@ -1715,10 +2027,11 @@ static class MatchmakingManager
 										continue;
 									}
 
-									// must be within initial elo threshold for a join, otherwise we'll make a bucket and try to merge buckets using the elo iteration expansion algorithm
+									// must be within initial elo threshold for a join, otherwise we'll make a bucket and try to merge buckets using the elo iteration expansion algorithm -
+									// unless the bucket has already widened past the point of caring about Elo at all
 									int matchmakingElo = MatchmakingManager.GetMatchmakingElo(thisSessionUserData.GameStats);
 									int eloExpansionToUse = (mmBucket.GetAvgElo() >= EloConfig.HighEloThreshold || matchmakingElo >= EloConfig.HighEloThreshold) ? EloConfig.EloExpansionValue_HighELO : EloConfig.EloExpansionValue_Standard;
-									if (mmBucket.IsAvgEloWithinThreshold(matchmakingElo, eloExpansionToUse))
+									if (mmBucket.HasExceededMaxEloRange() || mmBucket.IsAvgEloWithinThreshold(matchmakingElo, eloExpansionToUse))
 									{
 										// TODO_MATCHMAKING: Squads
 										if (mmBucket.HasSpaceForUsers(1, thisSession.ExeCRC, thisSession.IniCRC, thisSession.AnticheatID))
@@ -1742,14 +2055,14 @@ static class MatchmakingManager
 								// didnt find a bucket? make one
 								if (bucketInUse == null)
 								{
-									MatchmakingBucket newBucket = new MatchmakingBucket(playlist.PlaylistID, thisSession, playlist.MinPlayers, playlist.DesiredPlayers, thisSession.MatchmakingMapIndicies, thisSession.ExeCRC, thisSession.IniCRC, thisSession.AnticheatID);
+									MatchmakingBucket newBucket = new MatchmakingBucket(playlist.PlaylistID, thisSession, playlist.MinPlayers, playlist.MaxPlayers, thisSession.MatchmakingMapIndicies, thisSession.ExeCRC, thisSession.IniCRC, thisSession.AnticheatID);
 									m_dictMatchmakingBuckets[thisSession.MatchmakingPlaylistID].Add(newBucket);
 									bucketInUse = newBucket;
 								}
 
 								// send status to use
 								await SendMatchmakingMessage(thisSession, String.Format("You are now matchmaking in playlist \"{0}\". There are currently {1} player(s) searching for a match in this playlist", playlist.Name, GetTotalQueuedPlayersInPlaylist(playlist.PlaylistID)));
-								await SendMatchmakingMessage(thisSession, String.Format("Status: {0}/{1} players. ({2} required to start)", bucketInUse.CurrentMemberCount(), bucketInUse.DesiredPlayers, bucketInUse.MinPlayers));
+								await SendMatchmakingMessage(thisSession, String.Format("Status: {0}/{1} players. ({2} required to start)", bucketInUse.CurrentMemberCount(), bucketInUse.MaxPlayers, bucketInUse.MinPlayers));
 
 								// now remove us from lstSessions, this list is essentially people who need sorted into a bucket
 								lstDestroy.Add(wrSession);
@@ -1838,6 +2151,32 @@ static class MatchmakingManager
 	{
 		bucket.MarkPendingDeletion();
 		m_bucketsPendingDeletion.Enqueue(bucket);
+	}
+
+	internal static void RegisterExistingBucket(UInt16 playlistID, MatchmakingBucket bucket)
+	{
+		m_dictMatchmakingBuckets.GetOrAdd(playlistID, _ => new ConcurrentBag<MatchmakingBucket>()).Add(bucket);
+	}
+
+	// Safe to call from inside Lobby.RemoveMember's gated callback: only touches m_StateLock.
+	public static void InvalidateAutoStartForLobby(Int64 lobbyID)
+	{
+		if (lobbyID == -1)
+		{
+			return;
+		}
+
+		foreach (var bucketsForPlaylist in m_dictMatchmakingBuckets.Values)
+		{
+			foreach (MatchmakingBucket bucket in bucketsForPlaylist)
+			{
+				if (bucket.OwnsLobby(lobbyID))
+				{
+					bucket.InvalidateAutoStart();
+					return;
+				}
+			}
+		}
 	}
 
 	public static async Task RegisterPlayer(UserSession plr, UInt16 playlistID, List<int> mapIndices, UInt32 exe_crc, UInt32 ini_crc, EKnownAnticheatID anticheatID)
