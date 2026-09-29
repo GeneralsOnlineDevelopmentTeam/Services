@@ -543,6 +543,13 @@ namespace GenOnlineService.Controllers
 					bool bOfficialMap = data["map_official"].GetBoolean();
 					int maxPlayers = data["max_players"].GetInt32();
 
+					// same limits as lobby creation
+					if ((strMap != null && strMap.Length > 255) || (strMapPath != null && strMapPath.Length > 512))
+					{
+						Response.StatusCode = (int)HttpStatusCode.BadRequest;
+						return null;
+					}
+
 					if (strMap != null && strMapPath != null)
 					{
 						await using var db = await _dbFactory.CreateDbContextAsync();
