@@ -978,7 +978,8 @@ namespace GenOnlineService.Controllers
 						}
 					}
 
-					if (lobbyInfo == null)
+					// only a lobby still in setup can start
+					if (lobbyInfo == null || lobbyInfo.State != ELobbyState.GAME_SETUP)
 					{
 						return;
 					}
