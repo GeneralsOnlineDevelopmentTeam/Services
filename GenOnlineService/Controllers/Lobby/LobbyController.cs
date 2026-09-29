@@ -501,7 +501,8 @@ namespace GenOnlineService.Controllers
 		internal static bool TryParseSlotState(UInt16 rawValue, out EPlayerType slotState)
 		{
 			slotState = (EPlayerType)rawValue;
-			return Enum.IsDefined(typeof(EPlayerType), slotState);
+			// hosts can open, close or fill a slot with AI, but never mark it as a human
+			return Enum.IsDefined(typeof(EPlayerType), slotState) && slotState != EPlayerType.SLOT_PLAYER;
 		}
 
 		// Rejects any wire value that isn't a real ELobbyUpdateField member, so an unknown/malformed
@@ -541,6 +542,13 @@ namespace GenOnlineService.Controllers
 					string? strMapPath = data["map_path"].GetString();
 					bool bOfficialMap = data["map_official"].GetBoolean();
 					int maxPlayers = data["max_players"].GetInt32();
+
+					// same limits as lobby creation
+					if ((strMap != null && strMap.Length > 255) || (strMapPath != null && strMapPath.Length > 512))
+					{
+						Response.StatusCode = (int)HttpStatusCode.BadRequest;
+						return null;
+					}
 
 					if (strMap != null && strMapPath != null)
 					{
@@ -648,8 +656,9 @@ namespace GenOnlineService.Controllers
 					return null;
 				}
 
+				// human slots are left alone; kicking is how a host removes a player
 				LobbyMember? TargetMember = lobby.GetMemberFromSlot(slot_index);
-				if (TargetMember != null)
+				if (TargetMember != null && TargetMember.SlotState != EPlayerType.SLOT_PLAYER)
 				{
 					TargetMember.SetPlayerSlotState(slot_state);
 				}
@@ -849,6 +858,13 @@ namespace GenOnlineService.Controllers
 							EUserSessionType sessionType = TokenHelper.GetSessionType(this);
 							if (user_id != -1 && SessionHelpers.SessionTypeHasAccessTo(sessionType, ESessionAccessType.Gameplay))
 							{
+								if (lobby.LobbyType == ELobbyType.QuickMatch && !lobby.MatchedUserIDs.Contains(user_id))
+								{
+									Response.StatusCode = (int)HttpStatusCode.Forbidden;
+									result.success = false;
+									return result;
+								}
+
 								UInt16 userPreferredPort = data["preferred_port"].GetUInt16();
 								bool bHasMap = data["has_map"].GetBoolean();
 								EKnownAnticheatID anticheatID = (EKnownAnticheatID)data["anticheat_id"].GetInt32();

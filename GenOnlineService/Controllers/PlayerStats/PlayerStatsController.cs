@@ -188,9 +188,16 @@ namespace GenOnlineService.Controllers
 						// TODO: Update client so this is an associative array and not just in order...
 						if (jsonReqData != null)
 						{
+							// anything past the known stats is ignored, which also bounds the work per request
+							int numStats = Enum.GetValues<EStatIndex>().Length;
 							int stat_id = 0;
 							foreach (JsonElement elem in jsonReqData)
 							{
+								if (stat_id >= numStats)
+								{
+									break;
+								}
+
 								// TODO: do we care about the string stats? they dont seem relevant, its things like system spec
 								try
 								{

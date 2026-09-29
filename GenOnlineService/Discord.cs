@@ -158,7 +158,7 @@ public class DiscordBot
                 if (channel != null)
                 {
                     string strDiscordMsg = String.Format("[NETWORK ROOM CHAT ID #{0}] {1}", roomID, strFormattedChatMsg);
-                    await channel.SendMessageAsync(strDiscordMsg).ConfigureAwait(true);
+                    await channel.SendMessageAsync(strDiscordMsg, allowedMentions: AllowedMentions.None).ConfigureAwait(true);
                 }
             }
 		}
@@ -751,7 +751,7 @@ public class DiscordBot
 		{
 			if (user != null)
 			{
-				user.SendMessageAsync(strMessage).ContinueWith(t => { }, TaskContinuationOptions.OnlyOnFaulted);
+				user.SendMessageAsync(strMessage, allowedMentions: AllowedMentions.None).ContinueWith(t => { }, TaskContinuationOptions.OnlyOnFaulted);
 			}
 		}
 		catch
@@ -799,7 +799,7 @@ public class DiscordBot
 			ISocketMessageChannel? channel = GetChannel(channelID);
 			if (channel != null)
 			{
-				channel.SendMessageAsync(strMessage).ContinueWith(t => { }, TaskContinuationOptions.OnlyOnFaulted);
+				channel.SendMessageAsync(strMessage, allowedMentions: AllowedMentions.None).ContinueWith(t => { }, TaskContinuationOptions.OnlyOnFaulted);
 			}
 		}
 		catch
@@ -823,7 +823,7 @@ public class DiscordBot
 					ISocketMessageChannel channel = (ISocketMessageChannel)discord.GetChannel(channelToUse);
 					if (channel != null)
 					{
-						RestUserMessage msg = await channel.SendMessageAsync(strMessage).ConfigureAwait(true);
+						RestUserMessage msg = await channel.SendMessageAsync(strMessage, allowedMentions: AllowedMentions.None).ConfigureAwait(true);
 					}
 				}
 			}

@@ -41,6 +41,9 @@ namespace GenOnlineService.Controllers
 			_dbFactory = dbFactory;
 		}
 
+		// longer chat is dropped rather than relayed
+		private const int MaxChatMessageLength = 512;
+
 		private static readonly JsonSerializerOptions JsonOpts = new()
 		{
 			PropertyNameCaseInsensitive = true,
@@ -522,7 +525,7 @@ namespace GenOnlineService.Controllers
 					WebSocketMessage_Social_FriendChatMessage_Inbound? chatMessage =
 						JsonSerializer.Deserialize<WebSocketMessage_Social_FriendChatMessage_Inbound>(payload, JsonOpts);
 
-					if (chatMessage != null)
+					if (chatMessage != null && (chatMessage.message?.Length ?? 0) <= MaxChatMessageLength)
 					{
 						if (!sourceUserData.TryConsumeChatMessage())
 						{
@@ -589,7 +592,7 @@ namespace GenOnlineService.Controllers
 					WebSocketMessage_NetworkRoomChatMessageInbound? chatMessage =
 						JsonSerializer.Deserialize<WebSocketMessage_NetworkRoomChatMessageInbound>(payload, JsonOpts);
 
-					if (chatMessage != null)
+					if (chatMessage != null && (chatMessage.message?.Length ?? 0) <= MaxChatMessageLength)
 					{
 						if (!sourceUserData.TryConsumeChatMessage())
 						{
@@ -875,7 +878,7 @@ namespace GenOnlineService.Controllers
 					WebSocketMessage_LobbyChatMessageInbound? chatMessage =
 						JsonSerializer.Deserialize<WebSocketMessage_LobbyChatMessageInbound>(payload, JsonOpts);
 
-					if (chatMessage != null)
+					if (chatMessage != null && (chatMessage.message?.Length ?? 0) <= MaxChatMessageLength)
 					{
 						// get lobby
 						Lobby? playerLobby = _lobbyManager.GetLobby(sourceUserSession.currentLobbyID);
@@ -978,7 +981,8 @@ namespace GenOnlineService.Controllers
 						}
 					}
 
-					if (lobbyInfo == null)
+					// only a lobby still in setup can start
+					if (lobbyInfo == null || lobbyInfo.State != ELobbyState.GAME_SETUP)
 					{
 						return;
 					}
