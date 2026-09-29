@@ -245,19 +245,23 @@ namespace GenOnlineService.Controllers
 							}
 						}
 
-						Console.WriteLine("[Source 1] User {0} Leave Any Lobby", user_id);
-						await _lobbyManager.LeaveAnyLobby(user_id);
-
-						// cleanup TURN credentials
-						TURNCredentialManager.DeleteCredentialsForUser(user_id);
-
-						// clear our lobby ID
-						UserSession? sourceData = WebSocketManager.GetSessionFromUser(user_id, sessionType);
-
-						if (sourceData != null)
+						// only the named lobby; a request for any other is a no-op
+						if (lobby != null && lobby.GetMemberFromUserID(user_id) != null)
 						{
-							sourceData.UpdateSessionLobbyID(-1);
-							// NOTE: We dont update the match history match ID here, that is done by the match history service
+							Console.WriteLine("[Source 1] User {0} Leave Lobby {1}", user_id, lobbyID);
+							await _lobbyManager.LeaveSpecificLobby(user_id, lobbyID);
+
+							// cleanup TURN credentials
+							TURNCredentialManager.DeleteCredentialsForUser(user_id);
+
+							// clear our lobby ID
+							UserSession? sourceData = WebSocketManager.GetSessionFromUser(user_id, sessionType);
+
+							if (sourceData != null)
+							{
+								sourceData.UpdateSessionLobbyID(-1);
+								// NOTE: We dont update the match history match ID here, that is done by the match history service
+							}
 						}
 
 						result.success = true;
@@ -624,8 +628,8 @@ namespace GenOnlineService.Controllers
 				{
 					Int64 KickedUserID = data["userid"].GetInt64();
 
-					// Target must be in this lobby, otherwise a host could wipe an arbitrary player's TURN/session state.
-					if (lobby.GetMemberFromUserID(KickedUserID) != null)
+					// Target must be in this lobby and not the host, otherwise a host could wipe an arbitrary player's TURN/session state.
+					if (KickedUserID != SourceMember.UserID && KickedUserID != lobby.Owner && lobby.GetMemberFromUserID(KickedUserID) != null)
 					{
 						return KickedUserID;
 					}
@@ -841,7 +845,7 @@ namespace GenOnlineService.Controllers
 							if (user_id != -1 && SessionHelpers.SessionTypeHasAccessTo(sessionType, ESessionAccessType.Gameplay))
 							{
 								UInt16 userPreferredPort = data["preferred_port"].GetUInt16();
-								bool bHasMap = data["has_map"].GetBoolean();
+								bool bHasMap = data.ContainsKey("has_map") && data["has_map"].GetBoolean(); // missing means no map
 								EKnownAnticheatID anticheatID = (EKnownAnticheatID)data["anticheat_id"].GetInt32();
 
 								// does the lobby have a password?
@@ -888,6 +892,14 @@ namespace GenOnlineService.Controllers
 									if (ShouldRejectJoinForCrcMismatch(playerSession.ExeCRC, playerSession.IniCRC, lobby.ExeCRC, lobby.IniCRC))
 									{
 										Response.StatusCode = (int)HttpStatusCode.Conflict;
+										result.success = false;
+										return result;
+									}
+
+									// don't strand them out of their current lobby; AddMember stays authoritative
+									if (lobby.GetMemberFromUserID(user_id) == null && !lobby.HasOpenSlot())
+									{
+										Response.StatusCode = (int)HttpStatusCode.NotAcceptable;
 										result.success = false;
 										return result;
 									}

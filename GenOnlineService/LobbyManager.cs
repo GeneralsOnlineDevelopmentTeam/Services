@@ -1145,8 +1145,11 @@ public async Task FinalizeACChecks()
 						Owner = member.UserID;
 
 						member.UpdateSlotIndex(0);
-						Members[0] = member;
-						Members[oldSlot] = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, -1, -1, -1, EPlayerType.SLOT_OPEN, oldSlot, true);
+						// one array swap, so lock-free readers never see the member twice
+						LobbyMember[] migratedMembers = (LobbyMember[])Members.Clone();
+						migratedMembers[0] = member;
+						migratedMembers[oldSlot] = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, -1, -1, -1, EPlayerType.SLOT_OPEN, oldSlot, true);
+						Members = migratedMembers;
 
 						member.SetReadyState(true);
 						DirtyRetransmitLobbyList();
@@ -1569,6 +1572,38 @@ public async Task FinalizeACChecks()
 			}
 
 			DirtyRetransmitLobbyList();
+		}
+
+		// Advisory pre-check for joiners; AddMember re-checks under the gate.
+		public bool HasOpenSlot()
+		{
+			if (State != ELobbyState.GAME_SETUP)
+			{
+				return false;
+			}
+
+			foreach (LobbyMember memberEntry in Members)
+			{
+				if (memberEntry.SlotState == EPlayerType.SLOT_OPEN)
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		public bool HasOtherHumans(Int64 excludedUserID)
+		{
+			foreach (LobbyMember memberEntry in Members)
+			{
+				if (memberEntry.SlotState == EPlayerType.SLOT_PLAYER && memberEntry.UserID != excludedUserID)
+				{
+					return true;
+				}
+			}
+
+			return false;
 		}
 
 		public int GetNumberOfHumans()
@@ -2175,6 +2210,12 @@ public async Task FinalizeACChecks()
 			{
 				if (ownedLobby.State == ELobbyState.GAME_SETUP) // only those in setup, in game games can continue
 				{
+					// other humans keep the lobby; the leave below migrates the host
+					if (ownedLobby.GetMemberFromUserID(UserID) != null && ownedLobby.HasOtherHumans(UserID))
+					{
+						continue;
+					}
+
 					await DeleteLobby(ownedLobby);
 				}
 			}
