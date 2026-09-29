@@ -501,7 +501,8 @@ namespace GenOnlineService.Controllers
 		internal static bool TryParseSlotState(UInt16 rawValue, out EPlayerType slotState)
 		{
 			slotState = (EPlayerType)rawValue;
-			return Enum.IsDefined(typeof(EPlayerType), slotState);
+			// hosts can open, close or fill a slot with AI, but never mark it as a human
+			return Enum.IsDefined(typeof(EPlayerType), slotState) && slotState != EPlayerType.SLOT_PLAYER;
 		}
 
 		// Rejects any wire value that isn't a real ELobbyUpdateField member, so an unknown/malformed
@@ -648,8 +649,9 @@ namespace GenOnlineService.Controllers
 					return null;
 				}
 
+				// human slots are left alone; kicking is how a host removes a player
 				LobbyMember? TargetMember = lobby.GetMemberFromSlot(slot_index);
-				if (TargetMember != null)
+				if (TargetMember != null && TargetMember.SlotState != EPlayerType.SLOT_PLAYER)
 				{
 					TargetMember.SetPlayerSlotState(slot_state);
 				}
