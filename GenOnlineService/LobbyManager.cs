@@ -708,6 +708,9 @@ namespace GenOnlineService
 
 		public ELobbyType LobbyType { get; private set; } = ELobbyType.CustomGame;
 
+		// quick match lobbies only admit the players the matchmaker paired
+		public HashSet<Int64> MatchedUserIDs { get; } = new();
+
 		public string Region { get; private set; } = "";
 		public int EstimatedLatency { get; private set; } = 999999;
 

@@ -1266,6 +1266,19 @@ static class MatchmakingManager
 										true, playlist.DesiredPlayers, "", 12345, false, true, 10000, false, String.Empty, -5, false, Constants.g_DefaultCameraMaxHeight, dummyHostUser.ExeCRC, dummyHostUser.IniCRC, ELobbyType.QuickMatch,
 										dummyHostUser.AnticheatID);
 
+								Lobby? quickMatchLobby = lobbyManager.GetLobby(m_LobbyID);
+								if (quickMatchLobby != null)
+								{
+									foreach (MatchmakingBucketMember member in m_lstMembers)
+									{
+										UserSession? memberSession = member.GetAssociatedSession();
+										if (memberSession != null)
+										{
+											quickMatchLobby.MatchedUserIDs.Add(memberSession.m_UserID);
+										}
+									}
+								}
+
 								// tell both to join our lobby
 								WebSocketMessage_MatchmakerJoinLobby joinAction = new WebSocketMessage_MatchmakerJoinLobby();
 								joinAction.msg_id = (int)EWebSocketMessageID.MATCHMAKING_ACTION_JOIN_PREARRANGED_LOBBY;

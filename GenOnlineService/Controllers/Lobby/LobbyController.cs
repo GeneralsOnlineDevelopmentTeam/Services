@@ -858,6 +858,13 @@ namespace GenOnlineService.Controllers
 							EUserSessionType sessionType = TokenHelper.GetSessionType(this);
 							if (user_id != -1 && SessionHelpers.SessionTypeHasAccessTo(sessionType, ESessionAccessType.Gameplay))
 							{
+								if (lobby.LobbyType == ELobbyType.QuickMatch && !lobby.MatchedUserIDs.Contains(user_id))
+								{
+									Response.StatusCode = (int)HttpStatusCode.Forbidden;
+									result.success = false;
+									return result;
+								}
+
 								UInt16 userPreferredPort = data["preferred_port"].GetUInt16();
 								bool bHasMap = data["has_map"].GetBoolean();
 								EKnownAnticheatID anticheatID = (EKnownAnticheatID)data["anticheat_id"].GetInt32();
