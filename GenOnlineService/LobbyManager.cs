@@ -1809,6 +1809,32 @@ public async Task FinalizeACChecks()
 			DirtyRetransmit();
 		}
 
+		/// <summary>
+		/// Applies the parts of a host Randomize roll for this member (HOST_ACTION_BULK_SLOT_UPDATE).
+		/// Unlike the single-field updates this does not touch the member's stored favorites: the
+		/// roll is not the player's choice.
+		/// </summary>
+		public void ApplyRolledSlot(int? side, int? color, int? startPos, int? team)
+		{
+			if (side.HasValue)
+			{
+				Side = side.Value;
+			}
+			if (color.HasValue)
+			{
+				Color = color.Value;
+			}
+			if (startPos.HasValue)
+			{
+				StartingPosition = startPos.Value;
+			}
+			if (team.HasValue)
+			{
+				UpdateTeam(team.Value);
+			}
+			DirtyRetransmit();
+		}
+
 		public void UpdateTeam(int team)
 		{
 			Team = team;
