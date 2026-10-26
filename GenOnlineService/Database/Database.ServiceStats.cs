@@ -20,7 +20,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using System.Text.Json;
 
-// TODO_EFCORE: When updating this, make sure we preserve old ON DUPLICATE behavior, to overwrite the old data since day_of_year key will be re-used
 public class ServiceStat
 {
 	public ServiceStat()
@@ -55,20 +54,6 @@ namespace Database
 {
 	public static class ServiceStats
 	{
-		public static readonly Func<AppDbContext, int, int, Task<ServiceStat?>> FindStatTracked =
-		EF.CompileAsyncQuery(
-			(AppDbContext db, int day, int hour) =>
-				db.ServiceStats.AsTracking().FirstOrDefault(s =>
-					s.DayOfYear == day &&
-					s.HourOfDay == hour)
-		);
-
-		public static readonly Func<AppDbContext, int, IAsyncEnumerable<ServiceStat>> FindOldStats =
-			EF.CompileAsyncQuery(
-				(AppDbContext db, int cutoff) =>
-					db.ServiceStats.Where(s => s.DayOfYear < cutoff)
-		);
-
 		public static async Task CommitStats(
 			AppDbContext db,
 			int day_of_year,
@@ -78,39 +63,20 @@ namespace Database
 		{
 			try
 			{
-				// UPSERT logic using precompiled query
-				var existing = await FindStatTracked(db, day_of_year, hour_of_day);
+				// Atomic upsert (GREATEST semantics), safe against concurrent/repeated commits for the same day+hour
+				await db.Database.ExecuteSqlInterpolatedAsync($@"
+					INSERT INTO service_stats (day_of_year, hour_of_day, player_peak, lobbies_peak)
+					VALUES ({day_of_year}, {hour_of_day}, {player_peak}, {lobbies_peak})
+					ON DUPLICATE KEY UPDATE
+						player_peak = GREATEST(player_peak, VALUES(player_peak)),
+						lobbies_peak = GREATEST(lobbies_peak, VALUES(lobbies_peak))");
 
-				if (existing == null)
-				{
-					// Insert new
-					var stat = new ServiceStat
-					{
-						DayOfYear = day_of_year,
-						HourOfDay = hour_of_day,
-						PlayerPeak = player_peak,
-						LobbiesPeak = lobbies_peak
-					};
-
-					db.ServiceStats.Add(stat);
-				}
-				else
-				{
-					// Update using GREATEST() semantics
-					existing.PlayerPeak = Math.Max(existing.PlayerPeak, player_peak);
-					existing.LobbiesPeak = Math.Max(existing.LobbiesPeak, lobbies_peak);
-				}
-
-				// NOTE: duplicate, unnecessary
-				//await db.SaveChangesAsync();
-
-				// DELETE old rows (precompiled)
+				// DELETE old rows
 				int cutoff = day_of_year - 30;
 
-				await foreach (var old in FindOldStats(db, cutoff))
-					db.ServiceStats.Remove(old);
-
-				await db.SaveChangesAsync();
+				await db.ServiceStats
+					.Where(s => s.DayOfYear < cutoff)
+					.ExecuteDeleteAsync();
 			}
 			catch (Exception ex)
 			{

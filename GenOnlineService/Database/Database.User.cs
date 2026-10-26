@@ -208,24 +208,19 @@ namespace Database
 				if (existing != null)
 					return;
 
-				// insert new (if doesnt exist)
-				var device = new UserDevice
-				{
-					UserID = userId,
-					HWID_0 = h0,
-					HWID_1 = h1,
-					HWID_2 = h2,
-					HWID_3 = hwid_3,
-					HWID_4 = hwid_4,
-					HWID_5 = hwid_5,
-					IPAddress = ipAddr
-				};
-
-				db.UserDevices.Add(device);
-				await db.SaveChangesAsync();
+				// insert new (if doesnt exist), as an atomic upsert since concurrent logins can race past the check above
+				await db.Database.ExecuteSqlInterpolatedAsync($@"
+					INSERT INTO user_devices (user_id, hwid_0, hwid_1, hwid_2, ip_addr, hwid_3, hwid_4, hwid_5)
+					VALUES ({userId}, {h0}, {h1}, {h2}, {ipAddr}, {hwid_3}, {hwid_4}, {hwid_5})
+					ON DUPLICATE KEY UPDATE user_id = user_id");
 			}
 			catch (Exception ex)
 			{
+				if (DbErrors.IsDuplicateKey(ex))
+				{
+					return;
+				}
+
 				Console.WriteLine($"[ERROR] RegisterUserDevice failed: {ex.Message}");
 				SentrySdk.CaptureException(ex);
 			}

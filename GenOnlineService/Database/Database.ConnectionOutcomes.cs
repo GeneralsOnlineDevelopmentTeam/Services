@@ -76,45 +76,21 @@ namespace Database
 			{
 				int dayOfYear = DateTime.UtcNow.DayOfYear;
 
-				// Load existing row (if any)
-				var existing = await db.ConnectionOutcomes
-					.Where(c => c.DayOfYear == dayOfYear)
-					.FirstOrDefaultAsync();
+				// Atomic upsert: the day_of_year row is created on first use and incremented in the database, so concurrent
+				// reports (e.g. at midnight, when the row doesn't exist yet) can't collide on the primary key or lose counts
+				int ipv4Inc = protocol == EIPVersion.IPV4 ? 1 : 0;
+				int ipv6Inc = protocol == EIPVersion.IPV6 ? 1 : 0;
+				int successInc = (outcome == EConnectionState.CONNECTED_DIRECT || outcome == EConnectionState.CONNECTED_RELAY) ? 1 : 0;
+				int failedInc = outcome == EConnectionState.CONNECTION_FAILED ? 1 : 0;
 
-				// If no row exists → create one
-				if (existing == null)
-				{
-					existing = new ConnectionOutcome
-					{
-						DayOfYear = dayOfYear,
-						Ipv4Count = 0,
-						Ipv6Count = 0,
-						SuccessCount = 0,
-						FailedCount = 0
-					};
-
-					db.ConnectionOutcomes.Add(existing);
-				}
-
-				// Increment protocol counters
-				if (protocol == EIPVersion.IPV4)
-					existing.Ipv4Count = (existing.Ipv4Count ?? 0) + 1;
-				else if (protocol == EIPVersion.IPV6)
-					existing.Ipv6Count = (existing.Ipv6Count ?? 0) + 1;
-
-				// Increment outcome counters
-				if (outcome == EConnectionState.CONNECTED_DIRECT ||
-					outcome == EConnectionState.CONNECTED_RELAY)
-				{
-					existing.SuccessCount = (existing.SuccessCount ?? 0) + 1;
-				}
-				else if (outcome == EConnectionState.CONNECTION_FAILED)
-				{
-					existing.FailedCount = (existing.FailedCount ?? 0) + 1;
-				}
-
-				// Persist insert/update
-				await db.SaveChangesAsync();
+				await db.Database.ExecuteSqlInterpolatedAsync($@"
+					INSERT INTO connection_outcomes (day_of_year, ipv4_count, ipv6_count, success_count, failed_count)
+					VALUES ({dayOfYear}, {ipv4Inc}, {ipv6Inc}, {successInc}, {failedInc})
+					ON DUPLICATE KEY UPDATE
+						ipv4_count = COALESCE(ipv4_count, 0) + VALUES(ipv4_count),
+						ipv6_count = COALESCE(ipv6_count, 0) + VALUES(ipv6_count),
+						success_count = COALESCE(success_count, 0) + VALUES(success_count),
+						failed_count = COALESCE(failed_count, 0) + VALUES(failed_count)");
 
 				// Cleanup: delete rows older than 30 days
 				int cutoff = dayOfYear - 30;

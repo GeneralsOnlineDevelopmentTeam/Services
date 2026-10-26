@@ -1237,6 +1237,10 @@ namespace GenOnlineService.Controllers
 							List<List<object>> result = JsonSerializer.Deserialize<List<List<object>>>(respElement.GetRawText(), JsonOpts);
 							//Console.WriteLine("Len: {0}", result.Count);
 
+							UInt64 mostRecentMatchID = sourceUserSession.GetLatestMatchID();
+							List<AcModuleReport> lstModulesToFlag = new();
+							HashSet<string> setSeenModules = new(StringComparer.Ordinal);
+
 							foreach (List<object> moduleData in result)
 							{
 								string strFullModulePath = moduleData[0].ToString().Replace('\\', '/').ToLower(); // Fix for linux
@@ -1245,50 +1249,28 @@ namespace GenOnlineService.Controllers
 								string strModulePath = Path.GetDirectoryName(strFullModulePath);
 								int sizeBytes = Convert.ToInt32(moduleData[1].ToString());
 
-								UInt64 mostRecentMatchID = sourceUserSession.GetLatestMatchID();
-
 								// is it whitelisted?
-								bool bShouldFlag = true;
-								if (Program.g_Config != null)
+								if (AntiCheatModuleAllowList.IsAllowed(strModuleFilename, strModulePath))
 								{
-									IConfiguration? acSettings = Program.g_Config.GetSection("AC");
-
-									if (acSettings != null)
-									{
-										List<string>? lstAllowedModules = acSettings.GetSection("allowed_modules").Get<List<string>>();
-										List<string>? lstAllowedModulePaths = acSettings.GetSection("allowed_module_paths").Get<List<string>>();
-
-										if (lstAllowedModules != null)
-										{
-											if (lstAllowedModules.Contains(strModuleFilename))
-											{
-												bShouldFlag = false;
-											}
-										}
-
-										if (lstAllowedModulePaths != null)
-										{
-											foreach (string strAllowedDir in lstAllowedModulePaths)
-											{
-												if (strModulePath.StartsWith(strAllowedDir))
-												{
-													bShouldFlag = false;
-												}
-											}
-										}
-									}
+									continue;
 								}
 
-								if (bShouldFlag)
+								// already reported this match (or earlier in this response)? then don't touch the DB
+								if (sourceUserSession.IsModuleFlagged(mostRecentMatchID, strModuleFilename) || !setSeenModules.Add(strModuleFilename))
 								{
-									await using var db = await _dbFactory.CreateDbContextAsync();
-									await Database.AntiCheat.FlagAccountForReview_Module(
-										db,
-										sourceUserSession.m_UserID,
-										mostRecentMatchID,
-										strModuleFilename,
-										strModulePath,
-										sizeBytes);
+									continue;
+								}
+
+								lstModulesToFlag.Add(new AcModuleReport(strModuleFilename, strModulePath, sizeBytes));
+							}
+
+							if (lstModulesToFlag.Count > 0)
+							{
+								// one context and one statement for the whole response
+								await using var db = await _dbFactory.CreateDbContextAsync();
+								if (await Database.AntiCheat.FlagAccountForReview_Modules(db, sourceUserSession.m_UserID, mostRecentMatchID, lstModulesToFlag))
+								{
+									sourceUserSession.MarkModulesFlagged(mostRecentMatchID, lstModulesToFlag.Select(m => m.ModuleName));
 								}
 							}
 

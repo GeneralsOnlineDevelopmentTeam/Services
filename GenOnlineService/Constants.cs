@@ -1239,6 +1239,45 @@ namespace GenOnlineService
 			return mostRecentMatchID;
 		}
 
+		// Modules already reported for the current match. Type2 probes repeat and the DB has a unique key
+		// on (user_id, match_id, module_name), so only the current match is relevant and older entries are dropped.
+		private const int MaxFlaggedModulesPerMatch = 4096;
+		private readonly object m_flaggedModulesLock = new();
+		private UInt64 m_flaggedModulesMatchID = 0;
+		private readonly HashSet<string> m_flaggedModules = new(StringComparer.Ordinal);
+
+		public bool IsModuleFlagged(UInt64 matchID, string moduleName)
+		{
+			lock (m_flaggedModulesLock)
+			{
+				return m_flaggedModulesMatchID == matchID && m_flaggedModules.Contains(moduleName);
+			}
+		}
+
+		// Call only after the DB write succeeded, so a transient failure is retried on the next probe
+		public void MarkModulesFlagged(UInt64 matchID, IEnumerable<string> moduleNames)
+		{
+			lock (m_flaggedModulesLock)
+			{
+				if (m_flaggedModulesMatchID != matchID)
+				{
+					m_flaggedModules.Clear();
+					m_flaggedModulesMatchID = matchID;
+				}
+
+				foreach (string moduleName in moduleNames)
+				{
+					// Bound memory against clients spamming unique names, the DB upsert stays idempotent anyway
+					if (m_flaggedModules.Count >= MaxFlaggedModulesPerMatch)
+					{
+						break;
+					}
+
+					m_flaggedModules.Add(moduleName);
+				}
+			}
+		}
+
 		public TimeSpan GetDuration()
 		{
 			return DateTime.Now - m_CreateTime;
