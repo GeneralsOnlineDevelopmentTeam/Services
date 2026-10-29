@@ -98,6 +98,7 @@ public static class Helpers
 
 public class DiscordBot
 {
+	private static readonly Microsoft.Extensions.Logging.ILogger s_log = AppLog.For(typeof(DiscordBot));
 	enum EBotAction
 	{
 		PushScriptedMessage
@@ -114,7 +115,7 @@ public class DiscordBot
 		_ = InitAsync().ContinueWith(t =>
 		{
 			if (t.IsFaulted)
-				Console.WriteLine("Discord initialization failed: " + t.Exception);
+				s_log.LogError(t.Exception, "Discord initialization failed");
 		}, TaskContinuationOptions.OnlyOnFaulted);
 #endif
 	}
@@ -705,8 +706,7 @@ public class DiscordBot
 
 	private static Task LogAsync(LogMessage log)
 	{
-		Console.WriteLine(log.ToString());
-		System.Diagnostics.Debug.WriteLine(log.ToString());
+		s_log.LogDebug("Discord: {DiscordLogMessage}", log.ToString());
 		return Task.CompletedTask;
 	}
 

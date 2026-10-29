@@ -84,6 +84,10 @@ namespace GenOnlineService.Controllers.LoginWithToken
 			}
 
 			POST_LoginWithToken_Result result = new POST_LoginWithToken_Result();
+			using IDisposable authenticationMetric = AppMetrics.TrackAuthentication(
+				"login_with_token",
+				bWasMonitor ? "monitor" : "client",
+				() => result.result.ToMetricLabel());
 
 			var options = new JsonSerializerOptions
 			{

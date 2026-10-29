@@ -41,3 +41,7 @@ GeneralsOnline Game Services Code provides RESTful web services which act as a r
 - Import the SQL structure to your database (GenOnlineService\Database_Structure\structure.sql)
 - When upgrading an existing database, apply new `GenOnlineService\Database_Structure\upgrade_*.sql` files in date order before starting the updated service
 - Run GenOnlineService.exe
+
+# Observability
+
+The service can export OpenTelemetry logs, metrics, and traces over OTLP, with Sentry as an optional destination for errors, logs, and traces. See [docs/observability.md](docs/observability.md) for configuration, coverage, metric names, privacy controls, and an Alloy example.
