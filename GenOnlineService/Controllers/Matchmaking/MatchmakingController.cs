@@ -88,8 +88,9 @@ namespace GenOnlineService.Controllers
 						}
 					}
 				}
-				catch
+				catch (Exception ex)
 				{
+					_logger.LogError(ex, "Malformed or failed matchmaking registration request");
 					Response.StatusCode = (int)HttpStatusCode.InternalServerError;
 				}
 			}

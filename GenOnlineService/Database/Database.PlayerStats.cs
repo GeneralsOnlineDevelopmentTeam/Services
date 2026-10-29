@@ -59,6 +59,8 @@ namespace Database
 {
 	public static class UserStats
 	{
+		private static readonly ILogger s_log = AppLog.For(typeof(UserStats));
+
 		private static readonly Func<AppDbContext, long, Task<string?>> _getUserStatsJson =
 	EF.CompileAsyncQuery(
 		(AppDbContext db, long userId) =>
@@ -90,8 +92,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] GetPlayerStats failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "GetPlayerStats failed");
 				return new PlayerStats(userId, EloConfig.BaseRating, 0, EloConfig.BaseRating);
 			}
 
@@ -123,8 +124,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] GetPlayerStats failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "GetPlayerStats failed");
 			}
 
 			return ps;
@@ -186,8 +186,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] UpdatePlayerStat failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "UpdatePlayerStat failed");
 			}
 		}
 

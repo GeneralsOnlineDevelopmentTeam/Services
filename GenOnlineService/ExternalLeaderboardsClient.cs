@@ -33,6 +33,7 @@ namespace GenOnlineService
 
     public static class ExternalLeaderboardsClient
     {
+		private static readonly ILogger s_log = AppLog.For(typeof(ExternalLeaderboardsClient));
         private static IConfigurationSection GetExternalLeaderboardsConfigSection()
         {
             if (Program.g_Config == null)
@@ -145,7 +146,7 @@ namespace GenOnlineService
                 {
                     sw.Stop();
 
-                    Console.WriteLine($"[INFO] External Match Ingest POST Response for match {matchID} was received in {sw.ElapsedMilliseconds}ms (status: {response.StatusCode}).");
+                    s_log.LogDebug("External Match Ingest POST response for match {MatchId} received in {ElapsedMilliseconds} ms with status {StatusCode}", matchID, sw.ElapsedMilliseconds, response.StatusCode);
 
                     responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
                     if (!response.IsSuccessStatusCode)
@@ -182,11 +183,11 @@ namespace GenOnlineService
                         using (var response = await client.SendAsync(request))
                         {
                             sw.Stop();
-                            Console.WriteLine($"[INFO] External ELO API call for player {playerId} took {sw.ElapsedMilliseconds}ms (status: {response.StatusCode}).");
+                            s_log.LogDebug("External ELO API call for player {PlayerId} took {ElapsedMilliseconds} ms with status {StatusCode}", playerId, sw.ElapsedMilliseconds, response.StatusCode);
 
                             if (!response.IsSuccessStatusCode)
                             {
-                                Console.WriteLine($"[ERROR] External ELO API call failed for player {playerId} with status: {response.StatusCode}");
+                                s_log.LogError("External ELO API call failed for player {PlayerId} with status {StatusCode}", playerId, response.StatusCode);
                                 return null;
                             }
 
@@ -194,7 +195,7 @@ namespace GenOnlineService
                             var result = JsonSerializer.Deserialize<EloRefreshResponse>(responseBody);
                             if (result?.data == null || !result.data.TryGetValue(playerId, out var entry))
                             {
-                                Console.WriteLine($"[ERROR] External ELO API response for player {playerId} did not contain that player_id or could not be deserialized: {responseBody}");
+                                s_log.LogError("External ELO API response for player {PlayerId} did not contain that player ID or could not be deserialized", playerId);
                                 return null;
                             }
 
@@ -205,7 +206,7 @@ namespace GenOnlineService
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[ERROR] Exception during external ELO API call for player {playerId}: {ex.Message}");
+                s_log.LogError(ex, "Exception during external ELO API call for player {PlayerId}", playerId);
                 return null;
             }
         }

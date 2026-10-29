@@ -88,6 +88,8 @@ namespace GenOnlineService
 
 	public class Lobby
 	{
+		private static readonly ILogger s_log = AppLog.For(typeof(Lobby));
+
 		public Int64 LobbyID { get; private set; } = -1;
 		public Int64 Owner { get; private set; } = -1;
 		public string Name { get; private set; } = "";
@@ -305,7 +307,7 @@ namespace GenOnlineService
 				.Distinct()
 				.Select(p => $"{p.Item1}<->{p.Item2}"));
 
-			Console.WriteLine("[Lobby {0}] Mesh check {1} attempt {2}/{3}: {4} after {5} ms with {6} humans{7}",
+			s_log.LogInformation("Lobby {LobbyId}: mesh check {MeshCheckId} attempt {Attempt}/{MaxAttempts} {MeshResult} after {ElapsedMs} ms with {HumanCount} humans{MeshDetail}",
 				LobbyID, FullMeshCheckID, FullMeshCheckAttempt, FullMeshCheckSettings.MaxAttempts,
 				bMeshComplete ? "complete" : "incomplete", elapsedMS, GetNumberOfHumans(),
 				bMeshComplete ? "" : $", missing {strMissing}{(strConnecting.Length > 0 ? $" (still connecting {strConnecting})" : "")}");
@@ -352,7 +354,7 @@ namespace GenOnlineService
 					continue;
 				}
 
-				Console.WriteLine("[Lobby {0}] Re-signalling {1} <-> {2} before mesh check retry", LobbyID, sourceMember.UserID, targetMember.UserID);
+				s_log.LogDebug("Lobby {LobbyId}: re-signalling {SourceUserId} <-> {TargetUserId} before mesh check retry", LobbyID, sourceMember.UserID, targetMember.UserID);
 
 				SendStartSignallingToMember(sourceMember, targetMember);
 				SendStartSignallingToMember(targetMember, sourceMember);
@@ -755,7 +757,7 @@ namespace GenOnlineService
 			DateTime abandonTime = DateTime.UtcNow;
 			if (TimePlayerAbandonedIngame.TryAdd(userId, abandonTime))
 			{
-				Console.WriteLine("[Lobby {0}] Recorded in-game abandon for user {1} at {2:O}", LobbyID, userId, abandonTime);
+				s_log.LogInformation("Lobby {LobbyId}: recorded in-game abandon for user {UserId} at {AbandonTime}", LobbyID, userId, abandonTime);
 			}
 		}
 
@@ -767,7 +769,7 @@ namespace GenOnlineService
 		{
 			if (TimePlayerAbandonedIngame.TryRemove(userId, out _))
 			{
-				Console.WriteLine("[Lobby {0}] Cleared in-game abandon record for reconnected user {1}", LobbyID, userId);
+				s_log.LogInformation("Lobby {LobbyId}: cleared in-game abandon record for reconnected user {UserId}", LobbyID, userId);
 			}
 		}
 
@@ -780,7 +782,7 @@ namespace GenOnlineService
 		{
 			if (ReportedOutcomes.TryAdd(userId, bWon))
 			{
-				Console.WriteLine("[Lobby {0}] Recorded reported outcome for user {1}: won={2}", LobbyID, userId, bWon);
+				s_log.LogInformation("Lobby {LobbyId}: recorded reported outcome for user {UserId}, won={Won}", LobbyID, userId, bWon);
 			}
 		}
 
@@ -874,9 +876,7 @@ namespace GenOnlineService
 
 			if (numHumanMembers == 0)
 			{
-				Console.ForegroundColor = ConsoleColor.Cyan;
-				Console.WriteLine("DeleteLobby: Source A");
-				Console.ForegroundColor = ConsoleColor.Gray;
+				s_log.LogInformation("Lobby {LobbyId}: last human member left, requesting destruction", LobbyID);
 
 				OnLobbyNeedsDestroyed?.Invoke(this);
 			}
@@ -1071,7 +1071,7 @@ public async Task FinalizeACChecks()
 						UserSession? sess = WebSocketManager.GetSessionFromUser(session.m_UserID, session.GetSessionType());
 						if (sess != null)
 						{
-							Console.WriteLine("[DIRTY LOBBY] Sending WS lobby update for lobby {0}", LobbyID);
+							s_log.LogDebug("Lobby {LobbyId}: sending WebSocket lobby update", LobbyID);
 							sess.QueueWebsocketSend(bytesJSON);
 						}
 					}
@@ -1279,7 +1279,7 @@ public async Task FinalizeACChecks()
 			// Notify lobby members and room browsers.
 			DirtyRetransmitLobbyList();
 
-			Console.WriteLine("User {0} joined lobby {1}: {2} (Slot was {3})", playerSession.m_UserID, LobbyID, true, slotIndex);
+			s_log.LogInformation("User {UserId} joined lobby {LobbyId} in slot {SlotIndex}", playerSession.m_UserID, LobbyID, slotIndex);
 			return true;
 			});
 		}
@@ -1347,7 +1347,7 @@ public async Task FinalizeACChecks()
 
 			// TODO_LOBBY: Optimize this
 			Int64 UserID = member.UserID;
-			Console.WriteLine("User {0} left lobby {1}", UserID, LobbyID);
+			s_log.LogInformation("User {UserId} left lobby {LobbyId}", UserID, LobbyID);
 
 			// AC dergister
 			WebSocketMessage_ACDeregisterPlayer remotePlayerAcMsg = new WebSocketMessage_ACDeregisterPlayer();
@@ -1360,7 +1360,7 @@ public async Task FinalizeACChecks()
 				{
 					if (remoteSession != null)
 					{
-						Console.WriteLine("Sent AC deregister for user {0} to user {1}", member.UserID, remoteMember.UserID);
+						s_log.LogDebug("Lobby {LobbyId}: sent AC deregister for user {UserId} to user {RemoteUserId}", LobbyID, member.UserID, remoteMember.UserID);
 						remoteSession.QueueWebsocketSend(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(remotePlayerAcMsg)));
 					}
 				}
@@ -1381,7 +1381,7 @@ public async Task FinalizeACChecks()
 					{
 						if (remoteSession != null)
 						{
-							Console.WriteLine("Sent network disconnect for user {0} to user {1}", member.UserID, remoteMember.UserID);
+							s_log.LogDebug("Lobby {LobbyId}: sent network disconnect for user {UserId} to user {RemoteUserId}", LobbyID, member.UserID, remoteMember.UserID);
 							remoteSession.QueueWebsocketSend(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(remotePlayerMsg)));
 						}
 					}
@@ -1450,7 +1450,7 @@ public async Task FinalizeACChecks()
 			var session = WebSocketManager.GetSessionFromUser(targetUserID, EUserSessionType.GameClient); // lobby member must be a game client
 			if (session != null)
 			{
-				Console.WriteLine("[DIRTY LOBBY] Sending WS lobby update for lobby {0}", LobbyID);
+				s_log.LogDebug("Lobby {LobbyId}: sending WebSocket lobby update", LobbyID);
 
 				WebSocketMessage_CurrentLobbyUpdate lobbyUpdate = new WebSocketMessage_CurrentLobbyUpdate();
 				lobbyUpdate.msg_id = (int)EWebSocketMessageID.LOBBY_CURRENT_LOBBY_UPDATE;
@@ -1614,8 +1614,7 @@ public async Task FinalizeACChecks()
 					}
 					catch (Exception ex)
 					{
-						Console.WriteLine($"[ERROR] UpdateState placeholder creation failed: {ex.Message}");
-						SentrySdk.CaptureException(ex);
+						s_log.LogError(ex, "Lobby {LobbyId}: UpdateState placeholder creation failed", LobbyID);
 					}
 
 					// calculate first probe time
@@ -1855,10 +1854,12 @@ public async Task FinalizeACChecks()
 		}
 
 		private readonly IServiceProvider _services;
+		private readonly ILogger<LobbyManager> _logger;
 
-		public LobbyManager(IServiceProvider services)
+		public LobbyManager(IServiceProvider services, ILogger<LobbyManager> logger)
 		{
 			_services = services;
+			_logger = logger;
         }
 
         public async Task Cleanup()
@@ -1872,7 +1873,7 @@ public async Task FinalizeACChecks()
 				TimeSpan timeSinceCreated = DateTime.UtcNow.Subtract(iterLobby.TimeCreated);
 				if (iterLobby.GetNumberOfHumans() == 0 && timeSinceCreated.TotalMinutes >= 1.0)
 				{
-                    Console.WriteLine("Garbage collecting lobby {0}", iterLobby.LobbyID);
+					_logger.LogInformation("Garbage collecting lobby {LobbyId}", iterLobby.LobbyID);
 
 					// mark for removal
 					lstLobbiesToRemove.Add(iterLobby);
@@ -1911,8 +1912,7 @@ public async Task FinalizeACChecks()
 				}
 				catch (Exception ex)
 				{
-					Console.WriteLine($"[ERROR] Failed to destroy lobby {lobbyToDestroy.LobbyID}: {ex}");
-					SentrySdk.CaptureException(ex);
+					_logger.LogError(ex, "Failed to destroy lobby {LobbyId}", lobbyToDestroy.LobbyID);
 				}
 			}
 		}
@@ -1921,11 +1921,11 @@ public async Task FinalizeACChecks()
 			UInt16 hostPreferredPort, bool bVanillaTeams, bool bTrackStats, UInt32 default_starting_cash, bool bPassworded, String strPassword, Int16 parentNetworkRoom, bool bAllowObservers,
 			UInt16 maxCamHeight, UInt32 exe_crc, UInt32 ini_crc, ELobbyType lobbyType, EKnownAnticheatID anticheatID)
 		{
-			Console.WriteLine("Created lobby");
+			_logger.LogInformation("Creating lobby for user {UserId}", owningSession.m_UserID);
 			// cant own two lobbies at once, unless in gameplay
 			await CleanupUserLobbiesNotStarted(owningSession.m_UserID);
 
-			Console.WriteLine("[Source 3] User {0} Leave Any Lobby", owningSession.m_UserID);
+			_logger.LogDebug("User {UserId} leaving any lobby before creating a lobby", owningSession.m_UserID);
 			await this.LeaveAnyLobby(owningSession.m_UserID);
 
 			int rng_seed = new Random().Next();
@@ -2134,7 +2134,7 @@ public async Task FinalizeACChecks()
 				LobbyMember? memberEntry = targetLobby.GetMemberFromUserID(userID);
 				if (memberEntry != null)
 				{
-					Console.WriteLine("User {0} Leave Specific Lobby", userID);
+					_logger.LogDebug("User {UserId} leaving specific lobby {LobbyId}", userID, targetLobby.LobbyID);
 					await targetLobby.RemoveMember(memberEntry);
 				}
 			}
@@ -2147,7 +2147,7 @@ public async Task FinalizeACChecks()
 				LobbyMember? member = lobbyInst.GetMemberFromUserID(userID);
 				if (member != null)
 				{
-					Console.WriteLine("User {0} Leave Any Lobby", userID);
+					_logger.LogDebug("User {UserId} leaving lobby {LobbyId}", userID, lobbyInst.LobbyID);
 					await lobbyInst.RemoveMember(member);
 				}
 			}
@@ -2182,8 +2182,7 @@ public async Task FinalizeACChecks()
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] DeleteLobby failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				_logger.LogError(ex, "DeleteLobby failed");
 				return false;
 			}
 		}
