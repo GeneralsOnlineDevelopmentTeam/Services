@@ -16,6 +16,7 @@
 **    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+using GenOnlineService;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using System.Text.Json;
@@ -64,6 +65,8 @@ public class DailyStatsConfiguration : IEntityTypeConfiguration<DailyStat>
 
 public static class DailyStatsManager
 {
+	private static readonly ILogger s_log = AppLog.For(typeof(DailyStatsManager));
+
 	public static DailyStat g_StatsContainer = new();
 
 	public static async Task LoadFromDB(AppDbContext db)
@@ -81,8 +84,7 @@ public static class DailyStatsManager
 		}
 		catch (Exception ex)
 		{
-			Console.WriteLine($"[ERROR] DailyStats.LoadFromDB failed: {ex.Message}");
-			SentrySdk.CaptureException(ex);
+			s_log.LogError(ex, "DailyStats.LoadFromDB failed");
 			g_StatsContainer = new DailyStat();
 		}
 	}
@@ -114,8 +116,7 @@ public static class DailyStatsManager
 		}
 		catch (Exception ex)
 		{
-			Console.WriteLine($"[ERROR] DailyStats.SaveToDB failed: {ex.Message}");
-			SentrySdk.CaptureException(ex);
+			s_log.LogError(ex, "DailyStats.SaveToDB failed");
 		}
 	}
 
@@ -144,8 +145,7 @@ public static class DailyStatsManager
 		}
 		catch (Exception ex)
 		{
-			Console.WriteLine($"[ERROR] RegisterOutcome failed: {ex.Message}");
-			SentrySdk.CaptureException(ex);
+			s_log.LogError(ex, "RegisterOutcome failed");
 		}
 	}
 }

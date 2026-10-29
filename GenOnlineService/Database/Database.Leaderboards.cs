@@ -16,6 +16,7 @@
 **    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+using GenOnlineService;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using System;
@@ -146,6 +147,8 @@ namespace Database
 {
 	public static class Leaderboards
 	{
+		private static readonly ILogger s_log = AppLog.For(typeof(Leaderboards));
+
 
 		public struct LeaderboardPoints
 		{
@@ -265,8 +268,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] CreateUserEntriesIfNotExists failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "CreateUserEntriesIfNotExists failed");
 			}
 		}
 
@@ -338,8 +340,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] GetBulkLeaderboardData failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "GetBulkLeaderboardData failed");
 			}
 
 			return results;
