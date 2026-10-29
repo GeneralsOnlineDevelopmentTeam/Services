@@ -329,7 +329,7 @@ namespace GenOnlineService.Controllers
 							if (playerSession != null)
 							{
 								// cleanup any zombie lobbies
-								await _lobbyManager.CleanupUserLobbiesNotStarted(user_id);
+								await _lobbyManager.CleanupUserLobbiesNotStartedAsync(user_id);
 
 								await using var db = await _dbFactory.CreateDbContextAsync();
 								string strDisplayName = await Database.Users.GetDisplayName(db, user_id);
