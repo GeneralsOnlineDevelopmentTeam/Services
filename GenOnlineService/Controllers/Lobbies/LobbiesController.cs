@@ -328,8 +328,6 @@ namespace GenOnlineService.Controllers
 
 							if (playerSession != null)
 							{
-								// cleanup any zombie lobbies
-								await _lobbyManager.CleanupUserLobbiesNotStarted(user_id);
 
 								await using var db = await _dbFactory.CreateDbContextAsync();
 								string strDisplayName = await Database.Users.GetDisplayName(db, user_id);
@@ -342,14 +340,9 @@ namespace GenOnlineService.Controllers
 									result.result = 1;
 									result.lobby_id = newLobbyID;
 
-									// TODO: What if this fails? just let them proceed? just means only direct connect people will be able to play
-									// get some turn credentials
-									TURNCredentialContainer? turnCredentials = await TURNCredentialManager.CreateCredentialsForUser(user_id);
-									if (turnCredentials != null)
-									{
-										result.turn_username = turnCredentials.m_strUsername;
-										result.turn_token = turnCredentials.m_strToken;
-									}
+									var credentials = await _lobbyManager.CreateLobbyRelayCredentialsAsync(playerSession, newLobbyID);
+									result.turn_username = credentials.Username;
+									result.turn_token = credentials.Token;
 								}
 								else
 								{

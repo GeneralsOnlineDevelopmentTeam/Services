@@ -228,8 +228,9 @@ namespace GenOnlineService.Controllers
 					GenOnlineService.Controllers.LoginWithToken.POST_LoginWithToken_Result internalResult = (GenOnlineService.Controllers.LoginWithToken.POST_LoginWithToken_Result)await loginWithTokenController.Post_InternalHandler("{\"challenge\": \"abc\", \"token\": \"iamatest\", \"client_id\": \"gen_online_60hz\"}", IPAddress.Loopback.ToString(), Program.BuildWebSocketUrl(Request, environment, contractVersion));
 					return internalResult;
 				}
-				catch
+				catch (Exception ex)
 				{
+					_logger.LogError(ex, "Monitoring LoginWithToken check failed");
 					Response.StatusCode = (int)HttpStatusCode.InternalServerError;
 				}
 			}
@@ -279,8 +280,9 @@ namespace GenOnlineService.Controllers
 
 					return internalResult;
 				}
-				catch
+				catch (Exception ex)
 				{
+					_logger.LogError(ex, "Monitoring VersionCheck failed");
 					Response.StatusCode = (int)HttpStatusCode.InternalServerError;
 				}
 			}
@@ -308,8 +310,9 @@ namespace GenOnlineService.Controllers
 					APIResult internalResult = await checkLoginController.Post_InternalHandler("{\"challenge\": \"abc\", \"nonce\": \"def\", \"code\": \"iamatest\", \"client_id\": \"gen_online_30hz\"}", IPAddress.Loopback.ToString(), Program.BuildWebSocketUrl(Request, environment, contractVersion));
 					return internalResult;
 				}
-				catch
+				catch (Exception ex)
 				{
+					_logger.LogError(ex, "Monitoring CheckLogin check failed");
 					Response.StatusCode = (int)HttpStatusCode.InternalServerError;
 				}
 			}
