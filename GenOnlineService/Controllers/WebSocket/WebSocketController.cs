@@ -23,6 +23,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System;
 using System.Buffers;
+using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Security.Claims;
 using System.Text;
@@ -34,11 +35,41 @@ namespace GenOnlineService.Controllers
 	{
 		private readonly LobbyManager _lobbyManager;
 		private readonly IDbContextFactory<AppDbContext> _dbFactory;
+		private readonly ILogger<WebSocketController> _logger;
+		private static readonly ILogger s_log = AppLog.For(typeof(WebSocketController));
+		private static readonly System.Collections.Concurrent.ConcurrentDictionary<Int64, long> s_lastMessageFailureLog = new();
+		private static readonly long s_messageFailureLogIntervalTicks = Stopwatch.Frequency * 60;
 
-		public WebSocketController(LobbyManager lobbyManager, IDbContextFactory<AppDbContext> dbFactory)
+		private static bool ShouldLogMessageFailure(Int64 userID)
+		{
+			if (s_lastMessageFailureLog.Count > 10000)
+			{
+				s_lastMessageFailureLog.Clear();
+			}
+
+			long now = Stopwatch.GetTimestamp();
+			bool shouldLog = false;
+			s_lastMessageFailureLog.AddOrUpdate(
+				userID,
+				_ =>
+				{
+					shouldLog = true;
+					return now;
+				},
+				(_, last) =>
+				{
+					shouldLog = now - last >= s_messageFailureLogIntervalTicks;
+					return shouldLog ? now : last;
+				});
+			return shouldLog;
+		}
+
+
+		public WebSocketController(LobbyManager lobbyManager, IDbContextFactory<AppDbContext> dbFactory, ILogger<WebSocketController> logger)
 		{
 			_lobbyManager = lobbyManager;
 			_dbFactory = dbFactory;
+			_logger = logger;
 		}
 
 		// longer chat is dropped rather than relayed
@@ -52,6 +83,7 @@ namespace GenOnlineService.Controllers
 
 		private static void QueueChatRateLimited(UserSession session, SharedUserData userData, string scopeType)
 		{
+			AppMetrics.RecordSecurityAction("chat_rate_limit", "rejected");
 			if (!userData.TryConsumeChatRateLimitNotice())
 			{
 				return;
@@ -149,7 +181,7 @@ namespace GenOnlineService.Controllers
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[WS] GeoIP DB unavailable ({ex.Message}); using fallback coordinates");
+				s_log.LogError(ex, "GeoIP DB unavailable; using fallback coordinates");
 				return null;
 			}
 		}
@@ -310,8 +342,7 @@ namespace GenOnlineService.Controllers
 				catch (Exception ex)
 				{
 					// Log unexpected errors
-					Console.WriteLine($"WebSocket error: {ex}");
-					SentrySdk.CaptureException(ex);
+					_logger.LogError(ex, "WebSocket error");
 					break;
 				}
 
@@ -366,10 +397,8 @@ namespace GenOnlineService.Controllers
 				await ProcessWSMessage(wsSess, sourceUserData, receiveResult, segment);
 			}
 
-			Console.ForegroundColor = ConsoleColor.Cyan;
 			SharedUserData? sourceData = WebSocketManager.GetSharedDataForUser(user_id);
-			Console.WriteLine("WEBSOCKET DISCONNECT FOR {0}", sourceData == null ? "NULL" : sourceData.m_strDisplayName);
-			Console.ForegroundColor = ConsoleColor.Gray;
+			_logger.LogDebug("WebSocket disconnect for user {UserId}", user_id);
 
 			// close the session
 			if (wsSess != null)
@@ -413,14 +442,14 @@ namespace GenOnlineService.Controllers
 			UInt64? requestID = GetRoomChangeRequestID(data);
 			if (data == null || !data.TryGetValue("room", out JsonElement roomValue))
 			{
-				Console.WriteLine($"Rejected network room selection without a room ID from user {session.m_UserID}.");
+				s_log.LogWarning("Rejected network room selection without a room ID from user {UserId}", session.m_UserID);
 				WebSocketManager.QueueRoomSelectionRejected(session, requestID, null, "A room must be selected.");
 				return;
 			}
 
 			if (roomValue.ValueKind != JsonValueKind.Number || !roomValue.TryGetInt16(out Int16 roomID))
 			{
-				Console.WriteLine($"Rejected invalid network room selection from user {session.m_UserID}; value must be an Int16.");
+				s_log.LogWarning("Rejected invalid network room selection from user {UserId}; value must be an Int16", session.m_UserID);
 				WebSocketManager.QueueRoomSelectionRejected(session, requestID, null, "That room is unavailable.");
 				return;
 			}
@@ -468,6 +497,7 @@ namespace GenOnlineService.Controllers
 			}
 
 			ReadOnlySpan<byte> payload = buffer.AsSpan();
+			int payloadLength = payload.Length;
 
 			WSMessageEnvelope envelope;
 			try
@@ -477,10 +507,19 @@ namespace GenOnlineService.Controllers
 			catch
 			{
 				// malformed
+				AppMetrics.RecordWebSocketFailure("inbound", "malformed");
 				return;
 			}
 
 			EWebSocketMessageID msgID = (EWebSocketMessageID)envelope.msg_id;
+			string messageType = Enum.IsDefined(msgID) ? msgID.ToMetricLabel() : "unknown";
+			string messageOutcome = messageType == "unknown" ? "ignored" : "success";
+			using Activity? messageActivity = AppMetrics.StartActivity(
+				"websocket.message.process",
+				ActivityKind.Consumer,
+				new("messaging.system", "websocket"),
+				new("messaging.operation.type", "process"),
+				new("message.type", messageType));
 
 			// Only allocate a Dictionary when we actually need arbitrary fields
 			Dictionary<string, JsonElement>? data = null;
@@ -1314,10 +1353,22 @@ namespace GenOnlineService.Controllers
 					}
 				}
 			}
-			catch
+			catch (Exception ex)
 			{
-				// swallow per-message exceptions to avoid killing the loop
-				// you can add Sentry logging here if desired
+				messageOutcome = "error";
+				AppMetrics.RecordException(messageActivity, ex);
+				AppMetrics.RecordWebSocketFailure("inbound", "error");
+				// log at Error at most once per user per minute, metrics and spans still count every failure
+				_logger.Log(
+					ShouldLogMessageFailure(sourceUserSession.m_UserID) ? LogLevel.Error : LogLevel.Debug,
+					ex,
+					"WebSocket message {MessageType} failed for user {UserId}",
+					messageType,
+					sourceUserSession.m_UserID);
+			}
+			finally
+			{
+				messageActivity?.SetTag("message.outcome", messageOutcome);
 			}
 		}
 	}

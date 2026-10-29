@@ -64,6 +64,8 @@ namespace Database
 {
 	public static class UserTokens
 	{
+		private static readonly ILogger s_log = AppLog.For(typeof(UserTokens));
+
 		public static async Task<List<UserTokenState>> GetAll(AppDbContext db)
 		{
 			try
@@ -72,8 +74,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] UserTokens.GetAll failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "UserTokens.GetAll failed");
 				return new List<UserTokenState>();
 			}
 		}
@@ -96,8 +97,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] UserTokens.Upsert failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "UserTokens.Upsert failed");
 			}
 		}
 
@@ -109,8 +109,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] UserTokens.GetBannedUserIDs failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "UserTokens.GetBannedUserIDs failed");
 				throw;
 			}
 		}
@@ -124,6 +123,8 @@ namespace GenOnlineService
 	// survives a restart.
 	public static class TokenRevocationManager
 	{
+		private static readonly ILogger s_log = AppLog.For(typeof(TokenRevocationManager));
+
 		private sealed class CachedState
 		{
 			public int Generation;
@@ -176,7 +177,7 @@ namespace GenOnlineService
 				s_bannedUsers = new HashSet<Int64>(banned);
 			}
 
-			Console.WriteLine($"[TokenRevocation] Loaded {s_state.Count} token state entries, {banned.Count} banned users.");
+			s_log.LogInformation("Loaded {StateEntryCount} token state entries, {BannedUserCount} banned users", s_state.Count, banned.Count);
 		}
 
 		public static int GetGeneration(Int64 userID, EUserSessionType sessionType)
@@ -247,7 +248,7 @@ namespace GenOnlineService
 		// Invalidates every token previously issued to this user across all session types.
 		public static async Task RevokeAllTokensForUser(Int64 userID, string reason)
 		{
-			Console.WriteLine($"[TokenRevocation] Revoking all tokens for user {userID} ({reason}).");
+			s_log.LogInformation("Revoking all tokens for user {UserId} ({Reason})", userID, reason);
 
 			foreach (EUserSessionType sessionType in s_allSessionTypes)
 			{
@@ -309,8 +310,7 @@ namespace GenOnlineService
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] TokenRevocation.Persist failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "TokenRevocation.Persist failed");
 			}
 		}
 

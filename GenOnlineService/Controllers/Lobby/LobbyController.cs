@@ -211,65 +211,18 @@ namespace GenOnlineService.Controllers
 		[Authorize(Roles = "GameClient")]
 		public async Task<APIResult> Delete(Int64 lobbyID)
 		{
-			RouteHandler_DELETE_Lobby_Result result = new RouteHandler_DELETE_Lobby_Result();
-
-			using (var reader = new StreamReader(HttpContext.Request.Body))
+			var result = new RouteHandler_DELETE_Lobby_Result();
+			using var reader = new StreamReader(HttpContext.Request.Body);
+			await reader.ReadToEndAsync();
+			try
 			{
-				string jsonData = await reader.ReadToEndAsync();
-				var options = new JsonSerializerOptions
-				{
-					PropertyNameCaseInsensitive = true
-				};
-
-				try
-				{
-					// TODO: Dont let them join more than 1 lobby
-					// need a lobby ID
-					int leavingPersonSlot = -1;
-					Int64 user_id = TokenHelper.GetUserID(this);
-					EUserSessionType sessionType = TokenHelper.GetSessionType(this);
-					if (user_id != -1 && SessionHelpers.SessionTypeHasAccessTo(sessionType, ESessionAccessType.Gameplay))
-					{
-						Lobby? lobby = _lobbyManager.GetLobby(lobbyID);
-						if (lobby != null)
-						{
-							foreach (var member in lobby.Members)
-							{
-								if (member.SlotState == EPlayerType.SLOT_PLAYER)
-								{
-									if (member.UserID == user_id)
-									{
-										leavingPersonSlot = member.SlotIndex;
-									}
-								}
-							}
-						}
-
-						Console.WriteLine("[Source 1] User {0} Leave Any Lobby", user_id);
-						await _lobbyManager.LeaveAnyLobby(user_id);
-
-						// cleanup TURN credentials
-						TURNCredentialManager.DeleteCredentialsForUser(user_id);
-
-						// clear our lobby ID
-						UserSession? sourceData = WebSocketManager.GetSessionFromUser(user_id, sessionType);
-
-						if (sourceData != null)
-						{
-							sourceData.UpdateSessionLobbyID(-1);
-							// NOTE: We dont update the match history match ID here, that is done by the match history service
-						}
-
-						result.success = true;
-					}
-
-				}
-				catch
-				{
-					return result;
-				}
+				result.success = await _lobbyManager.LeaveAsync(new LeaveLobbyCommand(
+					TokenHelper.GetUserID(this), TokenHelper.GetSessionType(this)));
 			}
-
+			catch
+			{
+				return result;
+			}
 			return result;
 		}
 
@@ -410,94 +363,57 @@ namespace GenOnlineService.Controllers
 		[Authorize(Roles = "GameClient")]
 		public async Task<APIResult> Post(Int64 lobbyID)
 		{
-			RouteHandler_POST_Lobby_Result result = new RouteHandler_POST_Lobby_Result();
-
-			using (var reader = new StreamReader(HttpContext.Request.Body))
+			var result = new RouteHandler_POST_Lobby_Result();
+			using var reader = new StreamReader(HttpContext.Request.Body);
+			string jsonData = await reader.ReadToEndAsync();
+			try
 			{
-				string jsonData = await reader.ReadToEndAsync();
-				var options = new JsonSerializerOptions
+				var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(jsonData);
+				if (data == null || !data.ContainsKey("field")) return result;
+				long userID = TokenHelper.GetUserID(this);
+				if (userID == -1) return result;
+				var lobby = _lobbyManager.GetLobby(lobbyID);
+				if (lobby == null) return result;
+
+				if (data["field"].GetInt32() == (int)ELobbyUpdateField.HOST_ACTION_KICK_USER)
 				{
-					PropertyNameCaseInsensitive = true
-				};
-
-				try
-				{
-					// TODO: Dont let them join more than 1 lobby
-
-					var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(jsonData, options);
-
-					if (data != null
-						&& data.ContainsKey("field")
-						)
-					{
-						// TODO_NGMP: For all things which modify lobbies, we should check if the player is really in the lobby
-						// get requesting user
-						Int64 user_id = TokenHelper.GetUserID(this);
-						if (user_id != -1)
-						{
-							Lobby? lobby = _lobbyManager.GetLobby(lobbyID);
-
-							if (lobby != null)
-							{
-								// check the user is in the lobby, otherwise bail
-								LobbyMember? SourceMember = lobby.GetMemberFromUserID(user_id);
-
-								if (SourceMember == null)
-								{
-									Response.StatusCode = (int)HttpStatusCode.Unauthorized;
-									return result;
-								}
-
-								if (!TryParseLobbyUpdateField(data["field"].GetInt32(), out ELobbyUpdateField field))
-								{
-									Response.StatusCode = (int)HttpStatusCode.BadRequest;
-									return result;
-								}
-
-								// check permissions
-								ELobbyUpdatePermissions updatePerms = g_dictLobbyUpdatePermissionsTable[field];
-
-								if (updatePerms == ELobbyUpdatePermissions.LobbyOwner) // check owner
-								{
-									if (user_id != lobby.Owner)
-									{
-										Response.StatusCode = (int)HttpStatusCode.Unauthorized;
-										result.success = false;
-										return result;
-									}
-								}
-
-								// Every mutation below touches this lobby's Members, slot state, or ready state,
-								// so the whole field-update dispatch runs as one atomic operation under the
-								// per-lobby gate instead of each setter mutating state unguarded.
-								// A kick can't finish the actual removal in here: RemoveMember acquires this
-								// same lobby's gate, which is not reentrant, so ApplyLobbyFieldUpdateAsync only
-								// validates the target and hands the user ID back for PerformKickAsync to
-								// process once the gate below has been released.
-								Int64? kickedUserID = await lobby.RunExclusiveAsync(() => ApplyLobbyFieldUpdateAsync(lobby, SourceMember, field, data));
-
-								if (kickedUserID.HasValue)
-								{
-									await PerformKickAsync(lobby, kickedUserID.Value);
-								}
-                            }
-                        }
-
-                    }
-
-				}
-				catch
-				{
+					long? targetID = data.TryGetValue("userid", out var target) && target.ValueKind == JsonValueKind.Number
+						&& target.TryGetInt64(out long parsedTarget) ? parsedTarget : null;
+					var status = await _lobbyManager.KickAsync(new KickLobbyMemberCommand(lobbyID, userID, targetID));
+					if (status is LobbyMembershipStatus.ActorNotMember or LobbyMembershipStatus.ActorNotHost)
+						Response.StatusCode = (int)HttpStatusCode.Unauthorized;
+					// Legacy kick responses leave success false, even when removal succeeds.
 					return result;
 				}
-			}
 
+				await lobby.RunExclusiveAsync(async () =>
+				{
+					var sourceMember = lobby.GetMemberFromUserID(userID);
+					if (sourceMember == null)
+					{
+						Response.StatusCode = (int)HttpStatusCode.Unauthorized;
+						return;
+					}
+					if (!TryParseLobbyUpdateField(data["field"].GetInt32(), out ELobbyUpdateField field))
+					{
+						Response.StatusCode = (int)HttpStatusCode.BadRequest;
+						return;
+					}
+					if (g_dictLobbyUpdatePermissionsTable[field] == ELobbyUpdatePermissions.LobbyOwner && userID != lobby.Owner)
+					{
+						Response.StatusCode = (int)HttpStatusCode.Unauthorized;
+						return;
+					}
+					await ApplyLobbyFieldUpdateAsync(lobby, sourceMember, field, data);
+				});
+			}
+			catch
+			{
+				return result;
+			}
 			return result;
 		}
 
-		// Rejects any wire value that isn't a real EPlayerType member, so a malformed or
-		// out-of-range slot_state from HOST_ACTION_SET_SLOT_STATE can't be cast into an enum value
-		// the rest of the lobby code (SetPlayerSlotState, IsAI, serialization, ...) never expects.
 		internal static bool TryParseSlotState(UInt16 rawValue, out EPlayerType slotState)
 		{
 			slotState = (EPlayerType)rawValue;
@@ -505,23 +421,14 @@ namespace GenOnlineService.Controllers
 			return Enum.IsDefined(typeof(EPlayerType), slotState) && slotState != EPlayerType.SLOT_PLAYER;
 		}
 
-		// Rejects any wire value that isn't a real ELobbyUpdateField member, so an unknown/malformed
-		// field can't be cast into an enum value that then gets indexed straight into
-		// g_dictLobbyUpdatePermissionsTable (which previously threw KeyNotFoundException, silently
-		// swallowed by Post's outer catch, for anything out of range).
 		internal static bool TryParseLobbyUpdateField(int rawValue, out ELobbyUpdateField field)
 		{
 			field = (ELobbyUpdateField)rawValue;
 			return Enum.IsDefined(typeof(ELobbyUpdateField), field);
 		}
 
-		// Runs the per-field lobby update dispatch. Must only be called from inside
-		// lobby.RunExclusiveAsync: every branch here mutates this lobby's Members, slot
-		// state/fields, or ready state, and previously ran completely unguarded.
-		// Returns the kicked user's ID when HOST_ACTION_KICK_USER validated a real target, so the
-		// caller can run the actual removal after releasing the gate; null for every other field
-		// (including a kick request with no valid target).
-		private async Task<Int64?> ApplyLobbyFieldUpdateAsync(Lobby lobby, LobbyMember SourceMember, ELobbyUpdateField field, Dictionary<string, JsonElement> data)
+		// Caller holds the lobby gate.
+		private async Task ApplyLobbyFieldUpdateAsync(Lobby lobby, LobbyMember SourceMember, ELobbyUpdateField field, Dictionary<string, JsonElement> data)
 		{
 			// reset everyones ready states when anything changes (minus dummy actions)
 			if (field != ELobbyUpdateField.HOST_ACTION_FORCE_START
@@ -547,7 +454,7 @@ namespace GenOnlineService.Controllers
 					if ((strMap != null && strMap.Length > 255) || (strMapPath != null && strMapPath.Length > 512))
 					{
 						Response.StatusCode = (int)HttpStatusCode.BadRequest;
-						return null;
+						return;
 					}
 
 					if (strMap != null && strMapPath != null)
@@ -630,22 +537,6 @@ namespace GenOnlineService.Controllers
 					SourceMember.UpdateHasMap(bHasMap);
 				}
 			}
-			else if (field == ELobbyUpdateField.HOST_ACTION_KICK_USER)
-			{
-				if (data.ContainsKey("userid"))
-				{
-					Int64 KickedUserID = data["userid"].GetInt64();
-
-					// the target must actually be in THIS lobby, otherwise a host could wipe the
-					// TURN credentials / lobby state of any arbitrary online player. Checked here,
-					// under the gate, so it can't race a concurrent leave/kick of the same target;
-					// the actual removal runs after the gate is released (see PerformKickAsync).
-					if (lobby.GetMemberFromUserID(KickedUserID) != null)
-					{
-						return KickedUserID;
-					}
-				}
-			}
 			else if (field == ELobbyUpdateField.HOST_ACTION_SET_SLOT_STATE)
 			{
 				UInt16 slot_index = data["slot_index"].GetUInt16();
@@ -653,7 +544,7 @@ namespace GenOnlineService.Controllers
 				if (!TryParseSlotState(data["slot_state"].GetUInt16(), out EPlayerType slot_state))
 				{
 					Response.StatusCode = (int)HttpStatusCode.BadRequest;
-					return null;
+					return;
 				}
 
 				// human slots are left alone; kicking is how a host removes a player
@@ -796,165 +687,44 @@ namespace GenOnlineService.Controllers
 				}
 			}
 
-			return null;
-		}
-
-		// Runs the parts of a kick that RemoveMember itself performs (leaving the lobby, which
-		// acquires this same lobby's gate) plus TURN/session cleanup - all after
-		// ApplyLobbyFieldUpdateAsync's gate has been released, never from inside it.
-		private async Task PerformKickAsync(Lobby lobby, Int64 kickedUserID)
-		{
-			// TODO: we should communicate the kick to the user...
-			await _lobbyManager.LeaveSpecificLobby(kickedUserID, lobby.LobbyID);
-
-			// cleanup TURN credentials
-			TURNCredentialManager.DeleteCredentialsForUser(kickedUserID);
-
-			// clear our lobby ID
-			UserSession? sourceData = WebSocketManager.GetSessionFromUser(kickedUserID, EUserSessionType.GameClient); // user being kicked must be a game client
-
-			if (sourceData != null)
-			{
-				sourceData.UpdateSessionLobbyID(-1);
-				// NOTE: We dont update the match history match ID here, that is done by the match history service
-			}
-
-			// we have to manually send to the kicked user... they won't get the dirty lobby update anymore
-			await lobby.DirtyRetransmitToSingleMember(kickedUserID);
+			return;
 		}
 
 		[HttpPut("{lobbyID}")]
 		[Authorize(Roles = "GameClient")]
 		public async Task<APIResult> Put(Int64 lobbyID)
 		{
-			RouteHandler_PUT_Lobby_Result result = new RouteHandler_PUT_Lobby_Result();
-
-			using (var reader = new StreamReader(HttpContext.Request.Body))
+			var result = new RouteHandler_PUT_Lobby_Result();
+			using var reader = new StreamReader(HttpContext.Request.Body);
+			string jsonData = await reader.ReadToEndAsync();
+			try
 			{
-				string jsonData = await reader.ReadToEndAsync();
-
-				var options = new JsonSerializerOptions
-				{
-					PropertyNameCaseInsensitive = true
-				};
-
-				try
-				{
-					// TODO: Dont let them join more than 1 lobby
-
-					var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(jsonData, options);
-
-					if (data != null
-						&& data.ContainsKey("preferred_port")
-						&& data.ContainsKey("anticheat_id")
-						)
-					{
-
-						Lobby? lobby = _lobbyManager.GetLobby(lobbyID);
-
-						if (lobby != null)
-						{
-							Int64 user_id = TokenHelper.GetUserID(this);
-							EUserSessionType sessionType = TokenHelper.GetSessionType(this);
-							if (user_id != -1 && SessionHelpers.SessionTypeHasAccessTo(sessionType, ESessionAccessType.Gameplay))
-							{
-								if (lobby.LobbyType == ELobbyType.QuickMatch && !lobby.MatchedUserIDs.Contains(user_id))
-								{
-									Response.StatusCode = (int)HttpStatusCode.Forbidden;
-									result.success = false;
-									return result;
-								}
-
-								UInt16 userPreferredPort = data["preferred_port"].GetUInt16();
-								bool bHasMap = data["has_map"].GetBoolean();
-								EKnownAnticheatID anticheatID = (EKnownAnticheatID)data["anticheat_id"].GetInt32();
-
-								// does the lobby have a password?
-								bool bLobbyPassworded = lobby.IsPassworded;
-								bool bUserProvidedPassword = data.ContainsKey("password");
-
-								// we need a password
-								if (bLobbyPassworded)
-								{
-									if (bUserProvidedPassword)
-									{
-										// do the passwords match?
-										string? strUserProvidedPassword = data["password"].GetString();
-
-										// if it doesnt match, bail, otherwise just proceed as normal
-										if (strUserProvidedPassword != lobby.Password)
-										{
-											Response.StatusCode = (int)HttpStatusCode.Unauthorized;
-											result.success = false;
-											return result;
-										}
-									}
-									else
-									{
-										// no password, no access
-										Response.StatusCode = (int)HttpStatusCode.Unauthorized;
-										result.success = false;
-										return result;
-									}
-								}
-
-								// must be running same AC
-								if (anticheatID != lobby.AnticheatID)
-								{
-									Response.StatusCode = (int)HttpStatusCode.ExpectationFailed;
-									result.success = false;
-									return result;
-								}
-
-								UserSession? playerSession = WebSocketManager.GetSessionFromUser(user_id, sessionType);
-
-								if (playerSession != null)
-								{
-									// leave any lobby
-									await _lobbyManager.LeaveAnyLobby(user_id);
-
-									await using var db = await _dbFactory.CreateDbContextAsync();
-									string strDisplayName = await Database.Users.GetDisplayName(db, user_id);
-									bool bJoinedSuccessfully = await _lobbyManager.JoinLobby(db, lobby, playerSession, strDisplayName, userPreferredPort, bHasMap);
-
-									result.success = bJoinedSuccessfully;
-
-									if (!bJoinedSuccessfully) // this basically means full, didnt find a slot in correct state
-									{
-										Response.StatusCode = (int)HttpStatusCode.NotAcceptable;
-									}
-									else
-									{
-										// TODO: What if this fails? just let them proceed? just means only direct connect people will be able to play
-										// get some turn credentials
-										TURNCredentialContainer? turnCredentials = await TURNCredentialManager.CreateCredentialsForUser(user_id);
-										if (turnCredentials != null)
-										{
-											result.turn_username = turnCredentials.m_strUsername;
-											result.turn_token = turnCredentials.m_strToken;
-										}
-
-										Response.StatusCode = (int)HttpStatusCode.OK;
-									}
-								}
-								else
-								{
-									Response.StatusCode = (int)HttpStatusCode.Unauthorized;
-								}
-							}
-
-						}
-					}
-
-				}
-				catch
-				{
-					return result;
-				}
+				var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(jsonData);
+				if (data == null || !data.ContainsKey("preferred_port") || !data.ContainsKey("anticheat_id")) return result;
+				var joined = await _lobbyManager.JoinAsync(new JoinLobbyCommand(lobbyID,
+					TokenHelper.GetUserID(this), TokenHelper.GetSessionType(this),
+					data["preferred_port"].GetUInt16(), data["has_map"].GetBoolean(),
+					(EKnownAnticheatID)data["anticheat_id"].GetInt32(),
+					data.TryGetValue("password", out var password) ? password.GetString() : null));
+				result.success = joined.Status == LobbyMembershipStatus.Success;
+				result.turn_username = joined.TurnUsername;
+				result.turn_token = joined.TurnToken;
+				Response.StatusCode = (int)MapMembershipStatus(joined.Status);
 			}
-			
+			catch
+			{
+				return result;
+			}
 			return result;
-
 		}
+
+		private static HttpStatusCode MapMembershipStatus(LobbyMembershipStatus status) => status switch
+		{
+			LobbyMembershipStatus.ActorNotMember or LobbyMembershipStatus.ActorNotHost or LobbyMembershipStatus.SessionUnavailable or LobbyMembershipStatus.PasswordMismatch => HttpStatusCode.Unauthorized,
+			LobbyMembershipStatus.NotMatched => HttpStatusCode.Forbidden,
+			LobbyMembershipStatus.AnticheatMismatch => HttpStatusCode.ExpectationFailed,
+			LobbyMembershipStatus.Success or LobbyMembershipStatus.NoChange => HttpStatusCode.OK,
+			_ => HttpStatusCode.NotAcceptable
+		};
 	}
 }
