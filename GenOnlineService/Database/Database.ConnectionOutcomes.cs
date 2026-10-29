@@ -39,7 +39,8 @@ public class ConnectionOutcomeConfiguration : IEntityTypeConfiguration<Connectio
 		builder.HasKey(x => x.DayOfYear);
 
 		builder.Property(x => x.DayOfYear)
-			.HasColumnName("day_of_year");
+			.HasColumnName("day_of_year")
+			.ValueGeneratedNever();
 
 		builder.Property(x => x.Ipv4Count)
 			.HasColumnName("ipv4_count");
@@ -61,6 +62,8 @@ namespace Database
 {
 	public static class ConnectionOutcomes
 	{
+		private static readonly ILogger s_log = AppLog.For(typeof(ConnectionOutcomes));
+
 		public static async Task StoreConnectionOutcome(
 	AppDbContext db,
 	EIPVersion protocol,
@@ -125,8 +128,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] StoreConnectionOutcome failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "StoreConnectionOutcome failed");
 			}
 		}
 

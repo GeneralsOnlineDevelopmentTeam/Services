@@ -85,14 +85,10 @@ public class MatchHistoryConfiguration : IEntityTypeConfiguration<MatchHistoryEn
 			.HasColumnName("finished");
 
 		entity.Property(e => e.Started)
-			.HasColumnName("started")
-			.HasColumnType("datetime")
-			.HasDefaultValueSql("current_timestamp()");
+			.HasColumnName("started");
 
 		entity.Property(e => e.TimeFinished)
-			.HasColumnName("time_finished")
-			.HasColumnType("datetime")
-			.HasDefaultValueSql("current_timestamp()");
+			.HasColumnName("time_finished");
 
 		entity.Property(e => e.MapName)
 			.HasColumnName("map_name")
@@ -109,15 +105,13 @@ public class MatchHistoryConfiguration : IEntityTypeConfiguration<MatchHistoryEn
 
 		entity.Property(e => e.LobbyType)
 			.HasColumnName("lobby_type")
-			.HasConversion<byte?>()
-			.HasColumnType("tinyint unsigned");
+			.HasConversion<byte?>();
 
 		entity.Property(e => e.VanillaTeams)
 			.HasColumnName("vanilla_teams");
 
 		entity.Property(e => e.StartingCash)
-			.HasColumnName("starting_cash")
-			.HasColumnType("int unsigned");
+			.HasColumnName("starting_cash");
 
 		entity.Property(e => e.LimitSuperweapons)
 			.HasColumnName("limit_superweapons");
@@ -129,29 +123,27 @@ public class MatchHistoryConfiguration : IEntityTypeConfiguration<MatchHistoryEn
 			.HasColumnName("allow_observers");
 
 		entity.Property(e => e.MaxCamHeight)
-			.HasColumnName("max_cam_height")
-			.HasColumnType("smallint unsigned");
+			.HasColumnName("max_cam_height");
 
 		entity.Property(e => e.ExeCRC)
-			.HasColumnName("exe_crc")
-			.HasColumnType("int unsigned");
+			.HasColumnName("exe_crc");
 
 		entity.Property(e => e.IniCRC)
-			.HasColumnName("ini_crc")
-			.HasColumnType("int unsigned");
+			.HasColumnName("ini_crc");
 
 		entity.Property(e => e.MapPath)
 			.HasColumnName("map_path")
-			.HasMaxLength(128);
+			.HasMaxLength(256);
+
+		// Serves the match feed: finished matches since a point in time, ordered by finish time
+		entity.HasIndex(e => new { e.Finished, e.TimeFinished, e.MatchId })
+			.HasDatabaseName("idx_finished_time");
 
 		// JSON columns
 		for (int i = 0; i < 8; i++)
 		{
 			entity.Property<string?>($"MemberSlot{i}")
-				.HasColumnName($"member_slot_{i}")
-				.HasColumnType("longtext")
-				.HasCharSet("utf8mb4")
-				.HasCollation("utf8mb4_bin");
+				.HasColumnName($"member_slot_{i}");
 		}
 	}
 }
@@ -172,8 +164,8 @@ public class ExternalPublicationConfiguration : IEntityTypeConfiguration<Externa
 		entity.ToTable("external_publication");
 		entity.HasKey(e => e.MatchId);
 		entity.Property(e => e.MatchId).HasColumnName("match_id").ValueGeneratedNever();
-		entity.Property(e => e.NextAttemptAt).HasColumnName("next_attempt_at").HasColumnType("datetime");
-		entity.Property(e => e.PublishedAt).HasColumnName("published_at").HasColumnType("datetime");
+		entity.Property(e => e.NextAttemptAt).HasColumnName("next_attempt_at");
+		entity.Property(e => e.PublishedAt).HasColumnName("published_at");
 		entity.Property(e => e.Attempts).HasColumnName("attempts").HasDefaultValue(0);
 		entity.Property(e => e.LastError).HasColumnName("last_error").HasMaxLength(512);
 		entity.HasIndex(e => new { e.PublishedAt, e.NextAttemptAt })
@@ -261,6 +253,8 @@ namespace Database
 	// TODO_EFCORE: Consider moving to zero-serialization model
 	public static class MatchHistory
 	{
+		private static readonly ILogger s_log = AppLog.For(typeof(MatchHistory));
+
 		private static readonly Expression<Func<MatchHistoryEntry, string?>>[] _slotSelectors =
 	{
 			m => m.MemberSlot0,
@@ -293,7 +287,7 @@ namespace Database
 	);
 
 
-		private static Expression<Func<SetPropertyCalls<MatchHistoryEntry>, SetPropertyCalls<MatchHistoryEntry>>>
+		private static Action<UpdateSettersBuilder<MatchHistoryEntry>>
 	BuildSetter(int slotIndex, string? json)
 		{
 			return slotIndex switch
@@ -311,7 +305,7 @@ namespace Database
 		}
 
 
-		private static readonly Action<SetPropertyCalls<MatchHistoryEntry>, string?>[] _slotSetters =
+		private static readonly Action<UpdateSettersBuilder<MatchHistoryEntry>, string?>[] _slotSetters =
 {
 	(s, v) => s.SetProperty(m => m.MemberSlot0, v),
 	(s, v) => s.SetProperty(m => m.MemberSlot1, v),
@@ -415,8 +409,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] CommitPlayerOutcome failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "CommitPlayerOutcome failed");
 			}
 		}
 
@@ -520,8 +513,11 @@ namespace Database
 				string rosterType = ComputeRosterType(playersPerTeam);
 
 				// Build EF entity
+				DateTime now = DateTime.UtcNow;
 				var entity = new MatchHistoryEntry
 				{
+					Started = now,
+					TimeFinished = now,
 					Owner = lobby.Owner,
 					Name = lobby.Name,
 					MapName = lobby.MapName,
@@ -561,8 +557,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] CreatePlaceholderMatchHistory failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "CreatePlaceholderMatchHistory failed");
 				return 0;
 			}
 		}
@@ -714,11 +709,12 @@ namespace Database
 				//    in-game) over TimeMemberLeft (recorded when the player was structurally removed from the
 				//    lobby, which can happen much later, or earlier due to a fresh-session reconnect, skewing
 				//    the order relative to the actual in-game quit order).
-				Console.WriteLine($"[WinnerDet] Match={lobby.MatchID} LobbyID={lobby.LobbyID}: no winner in DB — timestamp fallback. IngameAbandon={lobby.TimePlayerAbandonedIngame.Count} MemberLeft={lobby.TimeMemberLeft.Count}");
+				s_log.LogInformation("Match {MatchId} lobby {LobbyId}: no winner in DB, falling back to abandon timestamps. IngameAbandon={IngameAbandonCount} MemberLeft={MemberLeftCount}",
+					lobby.MatchID, lobby.LobbyID, lobby.TimePlayerAbandonedIngame.Count, lobby.TimeMemberLeft.Count);
 				foreach (var _kv in lobby.TimePlayerAbandonedIngame)
-					Console.WriteLine($"[WinnerDet]   IngameAbandon: user={_kv.Key} at={_kv.Value:O}");
+					s_log.LogDebug("Match {MatchId}: IngameAbandon user={UserId} at={AbandonTime}", lobby.MatchID, _kv.Key, _kv.Value);
 				foreach (var _kv in lobby.TimeMemberLeft)
-					Console.WriteLine($"[WinnerDet]   MemberLeft:    user={_kv.Key} at={_kv.Value:O}");
+					s_log.LogDebug("Match {MatchId}: MemberLeft user={UserId} at={LeftTime}", lobby.MatchID, _kv.Key, _kv.Value);
 				// 6a. In a 1v1, drop anyone who reported a loss - see BuildFallbackCandidates.
 				string strRosterType = await db.MatchHistory
 					.Where(m => m.MatchId == (long)lobby.MatchID)
@@ -726,7 +722,8 @@ namespace Database
 					.FirstOrDefaultAsync() ?? String.Empty;
 
 				List<int> lstCandidateSlots = BuildFallbackCandidates(members, strRosterType, lobby.ReportedOutcomes);
-				Console.WriteLine($"[WinnerDet] Match={lobby.MatchID}: rosterType='{strRosterType}' reported={lobby.ReportedOutcomes.Count} candidates=[{String.Join(",", lstCandidateSlots)}]");
+				s_log.LogInformation("Match {MatchId}: rosterType={RosterType} reported={ReportedOutcomeCount} candidates=[{CandidateSlots}]",
+					lobby.MatchID, strRosterType, lobby.ReportedOutcomes.Count, String.Join(",", lstCandidateSlots));
 
 				DateTime latestLeave = DateTime.MinValue;
 				MatchdataMemberModel? lastPlayerNullable = null;
@@ -757,7 +754,8 @@ namespace Database
 						abandonSource = "MemberLeft";
 					}
 
-					Console.WriteLine($"[WinnerDet]   Slot={kv.Key} user={model.user_id} side={model.side} team={model.team} time={abandonTime:O} src={abandonSource}");
+					s_log.LogDebug("Match {MatchId}: slot={Slot} user={UserId} side={Side} team={Team} time={AbandonTime} src={AbandonSource}",
+						lobby.MatchID, kv.Key, model.user_id, model.side, model.team, abandonTime, abandonSource);
 					if (abandonTime > latestLeave)
 					{
 						latestLeave = abandonTime;
@@ -772,12 +770,13 @@ namespace Database
 				{
 					lastSlot = lstCandidateSlots[0];
 					lastPlayerNullable = members[lastSlot];
-					Console.WriteLine($"[WinnerDet] Match={lobby.MatchID}: sole remaining candidate slot={lastSlot} user={lastPlayerNullable.Value.user_id} has no abandon timestamp — awarding anyway.");
+					s_log.LogInformation("Match {MatchId}: sole remaining candidate slot={Slot} user={UserId} has no abandon timestamp, awarding anyway",
+						lobby.MatchID, lastSlot, lastPlayerNullable.Value.user_id);
 				}
 
 				if (lastPlayerNullable == null)
 				{
-					Console.WriteLine($"[WinnerDet] Match={lobby.MatchID}: no valid abandon timestamps found — fully inconclusive, clearing won flags.");
+					s_log.LogWarning("Match {MatchId}: no valid abandon timestamps found, fully inconclusive, clearing won flags", lobby.MatchID);
 					foreach (var kv in members)
 					{
 						if (kv.Value.side == Constants.OBSERVER_SIDE_VALUE)
@@ -790,7 +789,8 @@ namespace Database
 
 				MatchdataMemberModel lastPlayer = lastPlayerNullable.Value;
 				int winningTeam = lastPlayer.team;
-				Console.WriteLine($"[WinnerDet] Match={lobby.MatchID}: winner selected → user={lastPlayer.user_id} slot={lastSlot} team={winningTeam} at={latestLeave:O}");
+				s_log.LogInformation("Match {MatchId}: winner selected, user={UserId} slot={Slot} team={Team} at={LeaveTime}",
+					lobby.MatchID, lastPlayer.user_id, lastSlot, winningTeam, latestLeave);
 
 				// 7. Mark last player + teammates as winners, explicitly clear everyone else.
 				foreach (var kv in members)
@@ -802,13 +802,14 @@ namespace Database
 					bool isWinner = model.user_id == lastPlayer.user_id ||
 						(winningTeam != -1 && model.team == winningTeam);
 
-					Console.WriteLine($"[WinnerDet] Match={lobby.MatchID}: marking slot={kv.Key} user={model.user_id} as {(isWinner ? "WINNER" : "loser")}.");
+					s_log.LogDebug("Match {MatchId}: marking slot={Slot} user={UserId} as {Result}",
+						lobby.MatchID, kv.Key, model.user_id, isWinner ? "WINNER" : "loser");
 					await UpdateMatchHistorySetWinFlag(db, lobby.MatchID, kv.Key, isWinner, cancellationToken);
 				}
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] DetermineLobbyWinnerIfNotPresent failed: {ex.Message}");
+				s_log.LogError(ex, "DetermineLobbyWinnerIfNotPresent failed");
 				throw;
 			}
 		}
@@ -855,7 +856,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] UpdateMatchHistorySetWinFlag failed: {ex.Message}");
+				s_log.LogError(ex, "UpdateMatchHistorySetWinFlag failed");
 				throw;
 			}
 		}
@@ -942,8 +943,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] GetMatchesInRange failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "GetMatchesInRange failed");
 			}
 
 			return collection;
@@ -997,8 +997,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] GetMatchesSince failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "GetMatchesSince failed");
 			}
 
 			return collection;
@@ -1025,8 +1024,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] GetHighestMatchID failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "GetHighestMatchID failed");
 				return -1;
 			}
 		}
@@ -1116,6 +1114,18 @@ namespace Database
 			return pending
 				.Select(item => new ExternalPublicationWorkItem(item.MatchId, item.Attempts + 1))
 				.ToList();
+		}
+
+		public static async Task<DateTime?> GetOldestUnpublishedMatchTime(
+			AppDbContext db,
+			CancellationToken cancellationToken)
+		{
+			return await (
+				from publication in db.ExternalPublications.AsNoTracking()
+				join match in db.MatchHistory.AsNoTracking() on publication.MatchId equals match.MatchId
+				where publication.PublishedAt == null && match.Finished
+				select (DateTime?)match.TimeFinished)
+				.MinAsync(cancellationToken);
 		}
 
 		public static async Task MarkExternalPublicationSucceeded(
@@ -1209,7 +1219,7 @@ namespace Database
 		}
 
 		// METADATA
-		private static Expression<Func<SetPropertyCalls<MatchHistoryEntry>, SetPropertyCalls<MatchHistoryEntry>>>
+		private static Action<UpdateSettersBuilder<MatchHistoryEntry>>
 	BuildSlotSetter(int slotIndex, string updatedJson)
 		{
 			return slotIndex switch
@@ -1295,8 +1305,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] UpdateLeaderboardAndElo failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "UpdateLeaderboardAndElo failed");
 			}
 		}
 		private static async Task<List<MatchdataMemberModel>> LoadMatchMembersAsync(
@@ -1349,7 +1358,8 @@ namespace Database
 					if (a.user_id >= b.user_id)
 						continue;
 
-					Console.WriteLine($"[ELO] Pairing a={a.user_id}(won={a.won}) vs b={b.user_id}(won={b.won}) → result={(a.won ? "PlayerAWins" : "PlayerBWins")}");
+					s_log.LogDebug("ELO pairing a={PlayerA}(won={AWon}) vs b={PlayerB}(won={BWon}), result={Result}",
+						a.user_id, a.won, b.user_id, b.won, a.won ? "PlayerAWins" : "PlayerBWins");
 					ref EloData A = ref CollectionsMarshal.GetValueRefOrAddDefault(
 						dictElo, a.user_id, out _);
 

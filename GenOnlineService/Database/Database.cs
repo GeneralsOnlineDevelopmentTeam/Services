@@ -18,9 +18,54 @@
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
-using System.Text.Json;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using MySqlConnector;
+using Npgsql;
 
-public class AppDbContext : DbContext
+// All timestamps are UTC. MySQL hands back Unspecified and timestamptz refuses anything but Utc on write.
+// Unspecified values are assumed to already be UTC, which is how the service has always used them.
+public sealed class UtcDateTimeConverter : ValueConverter<DateTime, DateTime>
+{
+	public UtcDateTimeConverter()
+		: base(v => ToUtc(v), v => DateTime.SpecifyKind(v, DateTimeKind.Utc))
+	{
+	}
+
+	private static DateTime ToUtc(DateTime value)
+	{
+		return value.Kind switch
+		{
+			DateTimeKind.Utc => value,
+			DateTimeKind.Local => value.ToUniversalTime(),
+			_ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+		};
+	}
+}
+
+public static class DbHelpers
+{
+	public static bool IsUniqueViolation(Exception? ex)
+	{
+		for (Exception? current = ex; current != null; current = current.InnerException)
+		{
+			if (current is PostgresException pgEx && pgEx.SqlState == PostgresErrorCodes.UniqueViolation)
+			{
+				return true;
+			}
+
+			if (current is MySqlException mySqlEx && mySqlEx.ErrorCode == MySqlErrorCode.DuplicateKeyEntry)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+}
+
+// Provider neutral model, provider differences live in Database.Providers.cs.
+// Every model change needs a migration for BOTH contexts.
+public abstract class AppDbContext : DbContext
 {
 	public DbSet<User> Users => Set<User>();
 	public DbSet<UserDevice> UserDevices => Set<UserDevice>();
@@ -46,9 +91,29 @@ public class AppDbContext : DbContext
 	public DbSet<AcReviewNewAccountGame> AcReviewsNewAccountGames => Set<AcReviewNewAccountGame>();
 	public DbSet<AcReviewProbe> AcReviewsProbes => Set<AcReviewProbe>();
 
-	public AppDbContext(DbContextOptions<AppDbContext> options)
+	// Non-generic so the derived contexts can pass their own DbContextOptions<TDerived>
+	protected AppDbContext(DbContextOptions options)
 		: base(options)
 	{
+	}
+
+	protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+	{
+		base.ConfigureConventions(configurationBuilder);
+
+		configurationBuilder.Properties<DateTime>().HaveConversion<UtcDateTimeConverter>();
+	}
+
+	// Every JSON column, so the derived contexts can set the provider specific column type
+	protected static void ConfigureJsonColumns(ModelBuilder modelBuilder, Action<PropertyBuilder> configure)
+	{
+		configure(modelBuilder.Entity<DailyStat>().Property(e => e.Stats));
+		configure(modelBuilder.Entity<UserStatsEntry>().Property(e => e.Stats));
+
+		for (int i = 0; i < 8; i++)
+		{
+			configure(modelBuilder.Entity<MatchHistoryEntry>().Property<string?>($"MemberSlot{i}"));
+		}
 	}
 
 	protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -58,6 +123,7 @@ public class AppDbContext : DbContext
 
 		modelBuilder.ApplyConfiguration(new UserConfiguration());
 		modelBuilder.ApplyConfiguration(new UserDevicesConfiguration());
+		modelBuilder.ApplyConfiguration(new WebSessionConfiguration());
 		modelBuilder.ApplyConfiguration(new DailyStatsConfiguration());
 		modelBuilder.ApplyConfiguration(new LeaderboardDailyConfiguration());
 		modelBuilder.ApplyConfiguration(new LeaderboardMonthlyConfiguration());

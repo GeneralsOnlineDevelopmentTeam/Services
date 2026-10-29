@@ -53,10 +53,10 @@ public class UserTokenStateConfiguration : IEntityTypeConfiguration<UserTokenSta
 		builder.Property(e => e.UserID).HasColumnName("user_id");
 		builder.Property(e => e.SessionType).HasColumnName("session_type");
 		builder.Property(e => e.TokenGeneration).HasColumnName("token_generation");
-		builder.Property(e => e.RefreshJti).HasColumnName("refresh_jti").HasColumnType("varchar(64)");
-		builder.Property(e => e.PreviousRefreshJti).HasColumnName("previous_refresh_jti").HasColumnType("varchar(64)");
-		builder.Property(e => e.PreviousRefreshJtiExpires).HasColumnName("previous_refresh_jti_expires").HasColumnType("datetime");
-		builder.Property(e => e.Updated).HasColumnName("updated").HasColumnType("datetime");
+		builder.Property(e => e.RefreshJti).HasColumnName("refresh_jti").HasMaxLength(64);
+		builder.Property(e => e.PreviousRefreshJti).HasColumnName("previous_refresh_jti").HasMaxLength(64);
+		builder.Property(e => e.PreviousRefreshJtiExpires).HasColumnName("previous_refresh_jti_expires");
+		builder.Property(e => e.Updated).HasColumnName("updated");
 	}
 }
 
@@ -64,6 +64,8 @@ namespace Database
 {
 	public static class UserTokens
 	{
+		private static readonly ILogger s_log = AppLog.For(typeof(UserTokens));
+
 		public static async Task<List<UserTokenState>> GetAll(AppDbContext db)
 		{
 			try
@@ -72,8 +74,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] UserTokens.GetAll failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "UserTokens.GetAll failed");
 				return new List<UserTokenState>();
 			}
 		}
@@ -82,22 +83,47 @@ namespace Database
 		{
 			try
 			{
-				int sessionTypeValue = (int)sessionType;
+				DateTime now = DateTime.UtcNow;
 
-				await db.Database.ExecuteSqlInterpolatedAsync($@"
-					INSERT INTO user_token_state (user_id, session_type, token_generation, refresh_jti, previous_refresh_jti, previous_refresh_jti_expires, updated)
-					VALUES ({userID}, {sessionTypeValue}, {tokenGeneration}, {refreshJti}, {previousRefreshJti}, {previousRefreshJtiExpires}, UTC_TIMESTAMP())
-					ON DUPLICATE KEY UPDATE
-						token_generation = VALUES(token_generation),
-						refresh_jti = VALUES(refresh_jti),
-						previous_refresh_jti = VALUES(previous_refresh_jti),
-						previous_refresh_jti_expires = VALUES(previous_refresh_jti_expires),
-						updated = VALUES(updated)");
+				Task<int> UpdateExisting() => db.UserTokenStates
+					.Where(t => t.UserID == userID && t.SessionType == sessionType)
+					.ExecuteUpdateAsync(s => s
+						.SetProperty(t => t.TokenGeneration, tokenGeneration)
+						.SetProperty(t => t.RefreshJti, refreshJti)
+						.SetProperty(t => t.PreviousRefreshJti, previousRefreshJti)
+						.SetProperty(t => t.PreviousRefreshJtiExpires, previousRefreshJtiExpires)
+						.SetProperty(t => t.Updated, now));
+
+				if (await UpdateExisting() > 0)
+				{
+					return;
+				}
+
+				db.UserTokenStates.Add(new UserTokenState
+				{
+					UserID = userID,
+					SessionType = sessionType,
+					TokenGeneration = tokenGeneration,
+					RefreshJti = refreshJti,
+					PreviousRefreshJti = previousRefreshJti,
+					PreviousRefreshJtiExpires = previousRefreshJtiExpires,
+					Updated = now
+				});
+
+				try
+				{
+					await db.SaveChangesAsync();
+				}
+				catch (DbUpdateException ex) when (DbHelpers.IsUniqueViolation(ex))
+				{
+					// A concurrent call inserted the row first, last write wins
+					db.ChangeTracker.Clear();
+					await UpdateExisting();
+				}
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] UserTokens.Upsert failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "UserTokens.Upsert failed");
 			}
 		}
 
@@ -105,12 +131,12 @@ namespace Database
 		{
 			try
 			{
-				return await db.Users.AsNoTracking().Where(u => u.IsBanned).Select(u => u.ID).ToListAsync();
+				// "!= false" so MySQL matches any non-zero value (banned <> 0), not just 1
+				return await db.Users.AsNoTracking().Where(u => u.IsBanned != false).Select(u => u.ID).ToListAsync();
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] UserTokens.GetBannedUserIDs failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "UserTokens.GetBannedUserIDs failed");
 				throw;
 			}
 		}
@@ -124,6 +150,8 @@ namespace GenOnlineService
 	// survives a restart.
 	public static class TokenRevocationManager
 	{
+		private static readonly ILogger s_log = AppLog.For(typeof(TokenRevocationManager));
+
 		private sealed class CachedState
 		{
 			public int Generation;
@@ -164,7 +192,7 @@ namespace GenOnlineService
 					Generation = row.TokenGeneration,
 					RefreshJti = row.RefreshJti ?? String.Empty,
 					PreviousRefreshJti = row.PreviousRefreshJti ?? String.Empty,
-					PreviousRefreshJtiExpires = DateTime.SpecifyKind(row.PreviousRefreshJtiExpires, DateTimeKind.Utc)
+					PreviousRefreshJtiExpires = row.PreviousRefreshJtiExpires
 				};
 			}
 
@@ -176,7 +204,7 @@ namespace GenOnlineService
 				s_bannedUsers = new HashSet<Int64>(banned);
 			}
 
-			Console.WriteLine($"[TokenRevocation] Loaded {s_state.Count} token state entries, {banned.Count} banned users.");
+			s_log.LogInformation("Loaded {StateEntryCount} token state entries, {BannedUserCount} banned users", s_state.Count, banned.Count);
 		}
 
 		public static int GetGeneration(Int64 userID, EUserSessionType sessionType)
@@ -247,7 +275,7 @@ namespace GenOnlineService
 		// Invalidates every token previously issued to this user across all session types.
 		public static async Task RevokeAllTokensForUser(Int64 userID, string reason)
 		{
-			Console.WriteLine($"[TokenRevocation] Revoking all tokens for user {userID} ({reason}).");
+			s_log.LogInformation("Revoking all tokens for user {UserId} ({Reason})", userID, reason);
 
 			foreach (EUserSessionType sessionType in s_allSessionTypes)
 			{
@@ -309,8 +337,7 @@ namespace GenOnlineService
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] TokenRevocation.Persist failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "TokenRevocation.Persist failed");
 			}
 		}
 

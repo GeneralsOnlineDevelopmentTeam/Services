@@ -128,6 +128,7 @@ namespace GenOnlineService.Controllers
 
 	class VersionHelper
 	{
+		private static readonly ILogger s_log = AppLog.For(typeof(VersionHelper));
 		public static APIResult Get_ManifestHandler()
 		{
 			GET_VersionManifest_Result manifest = new GET_VersionManifest_Result();
@@ -140,8 +141,9 @@ namespace GenOnlineService.Controllers
 				manifest.execrc_30 = CRC32Calculator.CalculateCRC32(Path.Combine(Directory.GetCurrentDirectory(), "crcfiles", "GeneralsOnlineZH_30.exe"));
 				manifest.execrc_60 = CRC32Calculator.CalculateCRC32(Path.Combine(Directory.GetCurrentDirectory(), "crcfiles", "GeneralsOnlineZH_60.exe"));
 			}
-			catch (Exception)
+			catch (Exception ex)
 			{
+				s_log.LogError(ex, "Failed to calculate executable CRCs for the version manifest");
 				// Keep default 0 values on failure
 			}
 #endif
@@ -242,9 +244,9 @@ namespace GenOnlineService.Controllers
 											return response.Content.Headers.ContentLength.Value;
 										}
 									}
-									catch (HttpRequestException)
+									catch (HttpRequestException ex)
 									{
-										// TODO: Log exception or handle error
+										s_log.LogWarning(ex, "Failed to determine patch download size");
 									}
 
 									return -1; // Return -1 if the size could not be determined

@@ -44,6 +44,8 @@ public class FriendConfiguration : IEntityTypeConfiguration<FriendEntry>
 		builder.ToTable("friends");
 
 		builder.HasKey(f => new { f.UserId1, f.UserId2 });
+		builder.HasIndex(f => f.UserId2)
+			.HasDatabaseName("ix_friends_user_id_2");
 
 		builder.Property(f => f.UserId1)
 			.HasColumnName("user_id_1");
@@ -60,6 +62,8 @@ public class FriendRequestConfiguration : IEntityTypeConfiguration<FriendRequest
 		builder.ToTable("friends_requests");
 
 		builder.HasKey(f => new { f.SourceUserId, f.TargetUserId });
+		builder.HasIndex(f => f.TargetUserId)
+			.HasDatabaseName("ix_friends_requests_target_user_id");
 
 		builder.Property(f => f.SourceUserId)
 			.HasColumnName("source_user_id");
@@ -93,6 +97,8 @@ namespace Database
 {
 	public static class Social
 	{
+		private static readonly ILogger s_log = AppLog.For(typeof(Social));
+
 		private static readonly Func<AppDbContext, long, IAsyncEnumerable<FriendEntry>> _getFriends =
 		EF.CompileAsyncQuery(
 			(AppDbContext db, long userId) =>
@@ -138,8 +144,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] GetFriends failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "GetFriends failed");
 			}
 
 			return result;
@@ -154,8 +159,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] CountFriends failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "CountFriends failed");
 
 				// Treat an unreadable count as full so the friends limit is never bypassed.
 				return int.MaxValue;
@@ -174,8 +178,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] GetBlocked failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "GetBlocked failed");
 			}
 
 			return result;
@@ -193,8 +196,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] GetPendingFriendsRequests failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "GetPendingFriendsRequests failed");
 			}
 
 			return result;
@@ -213,8 +215,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] RemovePendingFriendRequest failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "RemovePendingFriendRequest failed");
 			}
 		}
 
@@ -240,14 +241,11 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				// If two concurrent calls both passed the existence check, MySQL will throw a
-				// duplicate-key error (ER_DUP_ENTRY, code 1062). The friendship was already
-				// created by the other call, so this is not an error worth reporting.
-				if (ex.InnerException is MySqlConnector.MySqlException mysqlEx && mysqlEx.Number == 1062)
+				// A concurrent call already created the friendship
+				if (DbHelpers.IsUniqueViolation(ex))
 					return;
 
-				Console.WriteLine($"[ERROR] CreateFriendship failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "CreateFriendship failed");
 			}
 		}
 
@@ -263,8 +261,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] RemoveFriendship failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "RemoveFriendship failed");
 			}
 		}
 
@@ -282,8 +279,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] AddBlock failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "AddBlock failed");
 			}
 		}
 
@@ -297,8 +293,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] RemoveBlock failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "RemoveBlock failed");
 			}
 		}
 
@@ -316,8 +311,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] AddPendingFriendRequest failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "AddPendingFriendRequest failed");
 			}
 		}
 

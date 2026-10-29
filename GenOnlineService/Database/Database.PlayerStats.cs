@@ -38,19 +38,12 @@ public class UserStatsConfiguration : IEntityTypeConfiguration<UserStatsEntry>
 		builder.HasKey(x => x.UserId);
 
 		builder.Property(x => x.UserId)
-			.HasColumnName("user_id");
+			.HasColumnName("user_id")
+			.ValueGeneratedNever();
 
 		builder.Property(x => x.Stats)
 			.HasColumnName("stats")
-			.HasColumnType("longtext")
-			.UseCollation("utf8mb4_bin")     // matches your CREATE TABLE
 			.IsRequired();
-
-		// JSON validity constraint
-		builder.HasCheckConstraint(
-			"CK_user_stats_v2_stats_json_valid",
-			"json_valid(`stats`)"
-		);
 	}
 }
 
@@ -59,6 +52,8 @@ namespace Database
 {
 	public static class UserStats
 	{
+		private static readonly ILogger s_log = AppLog.For(typeof(UserStats));
+
 		private static readonly Func<AppDbContext, long, Task<string?>> _getUserStatsJson =
 	EF.CompileAsyncQuery(
 		(AppDbContext db, long userId) =>
@@ -90,8 +85,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] GetPlayerStats failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "GetPlayerStats failed");
 				return new PlayerStats(userId, EloConfig.BaseRating, 0, EloConfig.BaseRating);
 			}
 
@@ -123,8 +117,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] GetPlayerStats failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "GetPlayerStats failed");
 			}
 
 			return ps;
@@ -186,8 +179,7 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] UpdatePlayerStat failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				s_log.LogError(ex, "UpdatePlayerStat failed");
 			}
 		}
 

@@ -16,6 +16,7 @@
 **    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+using GenOnlineService;
 using Microsoft.EntityFrameworkCore;		
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using System.Text.Json;
@@ -64,22 +65,20 @@ public class AcReviewCrcConfiguration : IEntityTypeConfiguration<AcReviewCrc>
 		entity.HasKey(e => new { e.UserId, e.OriginalCrc, e.DiffCrc, e.MostRecentMatch });
 
 		entity.Property(e => e.UserId)
-			.HasColumnName("user_id")
-			.HasColumnType("bigint(20)");
+			.HasColumnName("user_id");
 
 		entity.Property(e => e.OriginalCrc)
 			.HasColumnName("original_crc")
-			.HasColumnType("varchar(64)")
+			.HasMaxLength(64)
 			.IsRequired();
 
 		entity.Property(e => e.DiffCrc)
 			.HasColumnName("diff_crc")
-			.HasColumnType("varchar(64)")
+			.HasMaxLength(64)
 			.IsRequired();
 
 		entity.Property(e => e.MostRecentMatch)
-			.HasColumnName("most_recent_match")
-			.HasColumnType("bigint(20) unsigned");
+			.HasColumnName("most_recent_match");
 	}
 }
 
@@ -93,30 +92,26 @@ public class AcReviewModuleConfiguration : IEntityTypeConfiguration<AcReviewModu
 
 		entity.Property(e => e.ReportId)
 			.HasColumnName("report_id")
-			.HasColumnType("bigint(20) unsigned")
 			.ValueGeneratedOnAdd();
 
 		entity.Property(e => e.UserId)
-			.HasColumnName("user_id")
-			.HasColumnType("bigint(20) unsigned");
+			.HasColumnName("user_id");
 
 		entity.Property(e => e.MatchId)
-			.HasColumnName("match_id")
-			.HasColumnType("bigint(20) unsigned");
+			.HasColumnName("match_id");
 
 		entity.Property(e => e.ModuleName)
 			.HasColumnName("module_name")
-			.HasColumnType("varchar(128)")
+			.HasMaxLength(128)
 			.IsRequired();
 
 		entity.Property(e => e.ModulePath)
 			.HasColumnName("module_path")
-			.HasColumnType("varchar(512)")
+			.HasMaxLength(512)
 			.IsRequired();
 
 		entity.Property(e => e.ModuleSize)
-			.HasColumnName("module_size")
-			.HasColumnType("bigint(20) unsigned");
+			.HasColumnName("module_size");
 
 		entity.HasIndex(e => new { e.UserId, e.MatchId, e.ModuleName })
 			.IsUnique()
@@ -134,16 +129,13 @@ public class AcReviewNewAccountGameConfiguration : IEntityTypeConfiguration<AcRe
 
 		entity.Property(e => e.ReportId)
 			.HasColumnName("report_id")
-			.HasColumnType("bigint(20) unsigned")
 			.ValueGeneratedOnAdd();
 
 		entity.Property(e => e.UserId)
-			.HasColumnName("user_id")
-			.HasColumnType("bigint(20) unsigned");
+			.HasColumnName("user_id");
 
 		entity.Property(e => e.MatchId)
-			.HasColumnName("match_id")
-			.HasColumnType("bigint(20) unsigned");
+			.HasColumnName("match_id");
 	}
 }
 
@@ -157,20 +149,17 @@ public class AcReviewProbeConfiguration : IEntityTypeConfiguration<AcReviewProbe
 
 		entity.Property(e => e.ReportId)
 			.HasColumnName("report_id")
-			.HasColumnType("bigint(20) unsigned")
 			.ValueGeneratedOnAdd();
 
 		entity.Property(e => e.UserId)
-			.HasColumnName("user_id")
-			.HasColumnType("bigint(20) unsigned");
+			.HasColumnName("user_id");
 
 		entity.Property(e => e.MatchId)
-			.HasColumnName("match_id")
-			.HasColumnType("bigint(20) unsigned");
+			.HasColumnName("match_id");
 
 		entity.Property(e => e.Reason)
 			.HasColumnName("reason")
-			.HasColumnType("varchar(256)")
+			.HasMaxLength(256)
 			.IsRequired();
 	}
 }
@@ -181,6 +170,8 @@ namespace Database
 {
 	public static class AntiCheat
 	{
+		private static readonly ILogger s_log = AppLog.For(typeof(AntiCheat));
+
 		public static async Task AC_BanUser(AppDbContext db, long userId, string reason)
 		{
 			try
@@ -194,11 +185,12 @@ namespace Database
 						.SetProperty(u => u.BanVerifiedBy, "x64")
 						.SetProperty(u => u.BanAliases, "")
 					);
+				AppMetrics.RecordSecurityAction("anticheat_", "success");
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] AC_BanUser failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				AppMetrics.RecordSecurityAction("anticheat_", "error");
+				s_log.LogError(ex, "AC_BanUser failed");
 			}
 		}
 
@@ -221,11 +213,12 @@ namespace Database
 				});
 
 				await db.SaveChangesAsync();
+				AppMetrics.RecordSecurityAction("anticheat_", "success");
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] FlagAccountForReview failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				AppMetrics.RecordSecurityAction("anticheat_", "error");
+				s_log.LogError(ex, "FlagAccountForReview failed");
 			}
 		}
 
@@ -250,11 +243,12 @@ namespace Database
 				});
 
 				await db.SaveChangesAsync();
+				AppMetrics.RecordSecurityAction("anticheat_", "success");
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] FlagAccountForReview_Module failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				AppMetrics.RecordSecurityAction("anticheat_", "error");
+				s_log.LogError(ex, "FlagAccountForReview_Module failed");
 			}
 		}
 
@@ -276,11 +270,12 @@ namespace Database
 				});
 
 				await db.SaveChangesAsync();
+				AppMetrics.RecordSecurityAction("anticheat_", "success");
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] FlagAccountForReview_SuspectProbes failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				AppMetrics.RecordSecurityAction("anticheat_", "error");
+				s_log.LogError(ex, "FlagAccountForReview_SuspectProbes failed");
 			}
 		}
 
@@ -299,11 +294,12 @@ namespace Database
 				});
 
 				await db.SaveChangesAsync();
+				AppMetrics.RecordSecurityAction("anticheat_", "success");
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] FlagAccountForReview_NewAccount_FirstMatches failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				AppMetrics.RecordSecurityAction("anticheat_", "error");
+				s_log.LogError(ex, "FlagAccountForReview_NewAccount_FirstMatches failed");
 			}
 		}
 
