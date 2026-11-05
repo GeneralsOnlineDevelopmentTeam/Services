@@ -758,34 +758,36 @@ namespace GenOnlineService.Controllers
 			{
 				if (data.ContainsKey("slots"))
 				{
-					await using var db = await _dbFactory.CreateDbContextAsync();
 					foreach (JsonElement slotEntry in data["slots"].EnumerateArray())
 					{
 						try
 						{
-							if (!slotEntry.TryGetProperty("slot_index", out var slotIndexProp) ||
-								!slotEntry.TryGetProperty("side", out var sideProp) ||
-								!slotEntry.TryGetProperty("color", out var colorProp) ||
-								!slotEntry.TryGetProperty("start_pos", out var startPosProp) ||
-								!slotEntry.TryGetProperty("team", out var teamProp))
+							if (!slotEntry.TryGetProperty("slot_index", out var slotIndexProp))
+							{
+								continue;
+							}
+							int slotIndex = slotIndexProp.GetInt32();
+
+							LobbyMember? TargetMember = lobby.GetMemberFromSlot(slotIndex);
+							if (TargetMember == null)
 							{
 								continue;
 							}
 
-							int slotIndex = slotIndexProp.GetInt32();
-							int side = sideProp.GetInt32();
-							int color = colorProp.GetInt32();
-							int start_pos = startPosProp.GetInt32();
-							int team = teamProp.GetInt32();
-
-							LobbyMember? TargetMember = lobby.GetMemberFromSlot(slotIndex);
-							if (TargetMember != null)
+							// A slot that changed hands since the host took its snapshot is left
+							// alone: the newcomer must not inherit the departed player's roll.
+							if (slotEntry.TryGetProperty("user_id", out var userIdProp) && userIdProp.GetInt64() != TargetMember.UserID)
 							{
-								await TargetMember.UpdateSide(db, side, start_pos);
-								await TargetMember.UpdateColor(db, color);
-								TargetMember.UpdateStartPos(start_pos);
-								TargetMember.UpdateTeam(team);
+								continue;
 							}
+
+							// Only the fields present are applied, and none of them is persisted
+							// as the member's favorite: a roll is not a choice.
+							int? side = slotEntry.TryGetProperty("side", out var sideProp) ? sideProp.GetInt32() : null;
+							int? color = slotEntry.TryGetProperty("color", out var colorProp) ? colorProp.GetInt32() : null;
+							int? startPos = slotEntry.TryGetProperty("start_pos", out var startPosProp) ? startPosProp.GetInt32() : null;
+							int? team = slotEntry.TryGetProperty("team", out var teamProp) ? teamProp.GetInt32() : null;
+							TargetMember.ApplyRolledSlot(side, color, startPos, team);
 						}
 						catch
 						{
