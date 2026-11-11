@@ -30,6 +30,7 @@ using System.Net.WebSockets;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 public class LatencyEntry
 {
 	public Int64 user_id { get; set; }
@@ -105,6 +106,8 @@ namespace GenOnlineService.Controllers
 		}
 
 		public bool success { get; set; } = false;
+		// Why a refused host action was refused, for the lobby chat. Empty on success.
+		public string error { get; set; } = String.Empty;
 	}
 
     public enum ELobbyJoinability
@@ -134,8 +137,26 @@ namespace GenOnlineService.Controllers
 		AI_START_POS = 16,
 		MAX_CAMERA_HEIGHT = 17,
         JOINABILITY = 18,
-		HOST_ACTION_BULK_SLOT_UPDATE = 19
+		HOST_ACTION_BULK_SLOT_UPDATE = 19,
+		HOST_ACTION_ARM_RESUME = 20,
+		LOCAL_PLAYER_HAS_RESUME_REPLAY = 21,
+		// Resume-from-replay: the host places every
+		// slot (occupant, kind, faction, color, start position, team) the way the recording had it.
+		HOST_ACTION_ALIGN_SLOTS = 22
     };
+
+	public class RouteHandler_ResumeReplay_Result : APIResult
+	{
+		public override Type GetReturnType()
+		{
+			return this.GetType();
+		}
+
+		public bool success { get; set; } = false;
+		public long total { get; set; } = 0;
+		public long from { get; set; } = 0;
+		public string data { get; set; } = String.Empty;
+	}
 
 	public class RouteHandler_PUT_Lobby_Result : APIResult
 	{
@@ -402,8 +423,21 @@ namespace GenOnlineService.Controllers
 			[ELobbyUpdateField.AI_START_POS] = ELobbyUpdatePermissions.LobbyOwner,
 			[ELobbyUpdateField.MAX_CAMERA_HEIGHT] = ELobbyUpdatePermissions.LobbyOwner,
 			[ELobbyUpdateField.JOINABILITY] = ELobbyUpdatePermissions.LobbyOwner,
-			[ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE] = ELobbyUpdatePermissions.LobbyOwner
+			[ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE] = ELobbyUpdatePermissions.LobbyOwner,
+			[ELobbyUpdateField.HOST_ACTION_ARM_RESUME] = ELobbyUpdatePermissions.LobbyOwner,
+			[ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY] = ELobbyUpdatePermissions.Anyone,
+			[ELobbyUpdateField.HOST_ACTION_ALIGN_SLOTS] = ELobbyUpdatePermissions.LobbyOwner
 		};
+
+		// Resume-from-replay source transfer (see HOST_ACTION_ARM_RESUME): the host posts the file in
+		// base64 chunks, guests read it back in chunks. Replays are command logs, a long match is a few MB.
+		private const int ResumeReplayMaxChunkBytes = 512 * 1024;
+		private const int ResumeReplayMaxReadBytes = 256 * 1024;
+		private const int ResumeReplayMaxChunkRequestBytes = ResumeReplayMaxChunkBytes * 4 / 3 + 4096; // base64 plus JSON framing
+		private static readonly Regex ResumeReplayFileNamePattern = new Regex("^[0-9]{8}\\.rep$", RegexOptions.Compiled);
+
+		// Why ApplyLobbyFieldUpdateAsync refused a host action, for the lobby chat (a controller lives for one request).
+		private string m_strFieldUpdateError = String.Empty;
 
 
 		[HttpPost("{lobbyID}")]
@@ -474,7 +508,10 @@ namespace GenOnlineService.Controllers
 								// same lobby's gate, which is not reentrant, so ApplyLobbyFieldUpdateAsync only
 								// validates the target and hands the user ID back for PerformKickAsync to
 								// process once the gate below has been released.
+								m_strFieldUpdateError = String.Empty;
 								Int64? kickedUserID = await lobby.RunExclusiveAsync(() => ApplyLobbyFieldUpdateAsync(lobby, SourceMember, field, data));
+								result.error = m_strFieldUpdateError;
+								result.success = m_strFieldUpdateError.Length == 0 && Response.StatusCode == (int)HttpStatusCode.OK;
 
 								if (kickedUserID.HasValue)
 								{
@@ -526,10 +563,33 @@ namespace GenOnlineService.Controllers
 			// reset everyones ready states when anything changes (minus dummy actions)
 			if (field != ELobbyUpdateField.HOST_ACTION_FORCE_START
 				&& field != ELobbyUpdateField.LOCAL_PLAYER_HAS_MAP
+				&& field != ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY
 				&& field != ELobbyUpdateField.HOST_ACTION_KICK_USER)
 			{
 				lobby.ResetReadyStates();
 			}
+
+			// Resume-from-replay: the recording fixes every slot's occupant, faction, color, start
+			// position and team (the map, cash and superweapon handlers disarm inside the lobby), so
+			// a slot change disarms. The host re-arms after fixing the lobby.
+			//
+			// Decided after the update, on whether the
+			// roster actually changed, not on the field name. The arming client's own UI echoes the
+			// slot it was just moved to (MY_SIDE / MY_COLOR / MY_START_POS with the values the
+			// alignment set), and HOST_ACTION_ALIGN_SLOTS is the first half of arming itself; both
+			// used to disarm the arm that had just been made, so the host had to arm twice
+			// (2026-10-14: "Resume disarmed: the next start is a fresh game" right after every arm).
+			bool bSlotField = field == ELobbyUpdateField.MY_SIDE
+				|| field == ELobbyUpdateField.MY_COLOR
+				|| field == ELobbyUpdateField.MY_START_POS
+				|| field == ELobbyUpdateField.MY_TEAM
+				|| field == ELobbyUpdateField.AI_SIDE
+				|| field == ELobbyUpdateField.AI_COLOR
+				|| field == ELobbyUpdateField.AI_TEAM
+				|| field == ELobbyUpdateField.AI_START_POS
+				|| field == ELobbyUpdateField.HOST_ACTION_SET_SLOT_STATE
+				|| field == ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE;
+			string strRosterBefore = bSlotField ? lobby.RosterFingerprint() : String.Empty;
 
 			if (field == ELobbyUpdateField.LOBBY_MAP)
 			{
@@ -795,6 +855,109 @@ namespace GenOnlineService.Controllers
 					lobby.DirtyRetransmit();
 				}
 			}
+			else if (field == ELobbyUpdateField.HOST_ACTION_ALIGN_SLOTS)
+			{
+				// Resume-from-replay: the recording fixes who sat where, so the host sends the whole
+				// arrangement in one request and the lobby is rebuilt to match. Every current human
+				// must be placed exactly once and the owner must stay in slot 0; anything else is
+				// refused with a reason the host can show, and the lobby is left as it was.
+				if (!data.ContainsKey("slots") || data["slots"].ValueKind != JsonValueKind.Array)
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					m_strFieldUpdateError = "no slots";
+					return null;
+				}
+				List<LobbySlotSpec> specs = new List<LobbySlotSpec>();
+				foreach (JsonElement slotEntry in data["slots"].EnumerateArray())
+				{
+					LobbySlotSpec spec = new LobbySlotSpec();
+					if (!slotEntry.TryGetProperty("slot_index", out var idxProp) || !idxProp.TryGetInt32(out spec.SlotIndex)
+						|| !slotEntry.TryGetProperty("slot_state", out var stateProp) || !stateProp.TryGetInt32(out int stateInt))
+					{
+						Response.StatusCode = (int)HttpStatusCode.BadRequest;
+						m_strFieldUpdateError = "malformed slot entry";
+						return null;
+					}
+					spec.SlotState = (EPlayerType)stateInt;
+					spec.UserID = slotEntry.TryGetProperty("user_id", out var uidProp) && uidProp.TryGetInt64(out Int64 uid) ? uid : -1;
+					spec.Side = slotEntry.TryGetProperty("side", out var sideProp) && sideProp.TryGetInt32(out int side) ? side : -1;
+					spec.Color = slotEntry.TryGetProperty("color", out var colorProp) && colorProp.TryGetInt32(out int color) ? color : -1;
+					spec.StartPos = slotEntry.TryGetProperty("start_pos", out var spProp) && spProp.TryGetInt32(out int sp) ? sp : -1;
+					spec.Team = slotEntry.TryGetProperty("team", out var teamProp) && teamProp.TryGetInt32(out int team) ? team : -1;
+					specs.Add(spec);
+				}
+				string? alignError = await lobby.AlignSlots(specs);
+				if (alignError != null)
+				{
+					Console.WriteLine($"[Lobby {lobby.LobbyID}] Resume: ALIGN_SLOTS from user {SourceMember.UserID} refused: {alignError}");
+					Response.StatusCode = (int)HttpStatusCode.Conflict;
+					m_strFieldUpdateError = alignError;
+					return null;
+				}
+			}
+			else if (field == ELobbyUpdateField.HOST_ACTION_ARM_RESUME)
+			{
+				// Resume-from-replay: the host arms the resume source it uploaded (POST {lobbyID}/resume_replay).
+				// The client replays it in lockstep up to handoff_frame on game start, so the lobby
+				// must start from the replay's seed. handoff_frame 0 disarms. Every refusal is an
+				// explicit error: a client that announced an arm the service dropped would have
+				// every guest start a fresh match.
+				if (data.ContainsKey("replay_file"))
+				{
+					// legacy field from clients that still name the file: only the recorder's own name is acceptable
+					string? replayFile = data["replay_file"].ValueKind == JsonValueKind.String ? data["replay_file"].GetString() : null;
+					if (replayFile == null || (replayFile.Length > 0 && !ResumeReplayFileNamePattern.IsMatch(replayFile)))
+					{
+						Response.StatusCode = (int)HttpStatusCode.BadRequest;
+						m_strFieldUpdateError = "bad replay file name";
+						return null;
+					}
+				}
+				if (!data.ContainsKey("handoff_frame")
+					|| data["handoff_frame"].ValueKind != JsonValueKind.Number
+					|| !data["handoff_frame"].TryGetUInt32(out UInt32 handoffFrame))
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					m_strFieldUpdateError = "no handoff frame";
+					return null;
+				}
+				int rngSeed = 0;
+				if (handoffFrame != 0
+					&& (!data.ContainsKey("rng_seed")
+						|| data["rng_seed"].ValueKind != JsonValueKind.Number
+						|| !data["rng_seed"].TryGetInt32(out rngSeed)))
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					m_strFieldUpdateError = "no rng seed";
+					return null;
+				}
+				if (!lobby.UpdateResumeArm(handoffFrame, rngSeed))
+				{
+					// arming without an uploaded source
+					Response.StatusCode = (int)HttpStatusCode.Conflict;
+					m_strFieldUpdateError = "no resume source uploaded";
+					return null;
+				}
+			}
+			else if (field == ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY)
+			{
+				// whether this member holds a usable copy of the resume source (the way has_map works)
+				if (data.ContainsKey("has_resume_replay") && (data["has_resume_replay"].ValueKind == JsonValueKind.True || data["has_resume_replay"].ValueKind == JsonValueKind.False))
+				{
+					SourceMember.UpdateHasResumeReplay(data["has_resume_replay"].GetBoolean());
+				}
+				else
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					m_strFieldUpdateError = "bad has_resume_replay";
+					return null;
+				}
+			}
+
+			if (bSlotField && lobby.RosterFingerprint() != strRosterBefore)
+			{
+				lobby.ClearResumeArm($"slot change ({field}) by user {SourceMember.UserID}");
+			}
 
 			return null;
 		}
@@ -821,6 +984,138 @@ namespace GenOnlineService.Controllers
 
 			// we have to manually send to the kicked user... they won't get the dirty lobby update anymore
 			await lobby.DirtyRetransmitToSingleMember(kickedUserID);
+		}
+
+		/// <summary>
+		/// Resume-from-replay source upload (lobby owner only). The file arrives in base64 chunks with an
+		/// offset; offset 0 starts a new file and replaces whatever the lobby held. The service keeps it
+		/// in memory with the lobby until the lobby is deleted.
+		/// </summary>
+		[HttpPost("{lobbyID}/resume_replay")]
+		[Authorize(Roles = "GameClient")]
+		[RequestSizeLimit(ResumeReplayMaxChunkRequestBytes)]
+		public async Task<APIResult> PostResumeReplay(Int64 lobbyID)
+		{
+			RouteHandler_ResumeReplay_Result result = new RouteHandler_ResumeReplay_Result();
+
+			Int64 user_id = TokenHelper.GetUserID(this);
+			Lobby? lobby = _lobbyManager.GetLobby(lobbyID);
+			if (lobby == null)
+			{
+				Response.StatusCode = (int)HttpStatusCode.NotFound;
+				return result;
+			}
+			if (user_id == -1 || lobby.Owner != user_id)
+			{
+				Response.StatusCode = (int)HttpStatusCode.Unauthorized;
+				return result;
+			}
+
+			long offset;
+			long total;
+			byte[] bytes;
+			try
+			{
+				using var reader = new StreamReader(HttpContext.Request.Body);
+				string jsonData = await reader.ReadToEndAsync();
+				var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(jsonData, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+				if (data == null || !data.ContainsKey("offset") || !data.ContainsKey("total") || !data.ContainsKey("data")
+					|| !data["offset"].TryGetInt64(out offset) || !data["total"].TryGetInt64(out total))
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					return result;
+				}
+				bytes = Convert.FromBase64String(data["data"].GetString() ?? String.Empty);
+			}
+			catch
+			{
+				Response.StatusCode = (int)HttpStatusCode.BadRequest;
+				return result;
+			}
+
+			if (bytes.Length == 0 || bytes.Length > ResumeReplayMaxChunkBytes || offset < 0 || total <= 0 || total > Lobby.ResumeReplayMaxBytes)
+			{
+				Response.StatusCode = (int)HttpStatusCode.BadRequest;
+				return result;
+			}
+
+			// the first chunk must open like a replay (RecorderClass writes the GENREP tag first)
+			if (offset == 0 && !Lobby.LooksLikeReplay(bytes))
+			{
+				Response.StatusCode = (int)HttpStatusCode.BadRequest;
+				return result;
+			}
+
+			// under the lobby gate: offset 0 disarms, and an arm request must not interleave with that
+			bool bAppended = false;
+			long currentLength = 0;
+			bool bOverCapacity = false;
+			await lobby.RunExclusiveAsync(() =>
+			{
+				bAppended = lobby.AppendResumeReplay(offset, total, bytes, out currentLength, out bOverCapacity);
+				return Task.CompletedTask;
+			});
+			if (!bAppended)
+			{
+				if (bOverCapacity)
+				{
+					// the service-wide budget for held resume replays is spent
+					Response.StatusCode = (int)HttpStatusCode.InsufficientStorage;
+					return result;
+				}
+				// offset disagreement (lost reply, duplicate send): tell the uploader where we really are
+				Response.StatusCode = (int)HttpStatusCode.Conflict;
+				result.total = currentLength;
+				return result;
+			}
+
+			result.success = true;
+			result.total = currentLength;
+			return result;
+		}
+
+		/// <summary>
+		/// Resume-from-replay source download (lobby members only), from the given byte offset.
+		/// </summary>
+		[HttpGet("{lobbyID}/resume_replay")]
+		[Authorize(Roles = "GameClient")]
+		public APIResult GetResumeReplay(Int64 lobbyID, [FromQuery] long from = 0)
+		{
+			RouteHandler_ResumeReplay_Result result = new RouteHandler_ResumeReplay_Result();
+
+			Int64 user_id = TokenHelper.GetUserID(this);
+			Lobby? lobby = _lobbyManager.GetLobby(lobbyID);
+			if (lobby == null)
+			{
+				Response.StatusCode = (int)HttpStatusCode.NotFound;
+				return result;
+			}
+			if (user_id == -1 || lobby.GetMemberFromUserID(user_id) == null)
+			{
+				Response.StatusCode = (int)HttpStatusCode.Unauthorized;
+				return result;
+			}
+			if (from < 0)
+			{
+				Response.StatusCode = (int)HttpStatusCode.BadRequest;
+				return result;
+			}
+
+			byte[] bytes = lobby.ReadResumeReplay(from, ResumeReplayMaxReadBytes, out long total);
+			if (total == 0)
+			{
+				Response.StatusCode = (int)HttpStatusCode.NotFound;
+				return result;
+			}
+
+			result.success = true;
+			result.total = total;
+			result.from = from;
+			if (bytes.Length > 0)
+			{
+				result.data = Convert.ToBase64String(bytes);
+			}
+			return result;
 		}
 
 		[HttpPut("{lobbyID}")]
